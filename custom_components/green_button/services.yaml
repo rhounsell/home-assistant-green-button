@@ -1,0 +1,52 @@
+delete_statistics:
+  name: Delete Statistics
+  description: Delete statistics
+  fields:
+    statistic_id:
+      name: Statistic ID
+      description: The ID of the statistics to clear. Must start with `green_button_import:`.
+      required: true
+      example: "green_button_import:home_energy_consumption"
+      selector:
+        text:
+
+import_espi_xml:
+  name: Import ESPI XML
+  description: Import usage data from an XML string containing the ESPI atom format.
+  fields:
+    xml:
+      name: XML
+      description: "The XML document to import."
+      required: true
+      selector:
+        text:
+          multiline: true
+
+log_statistics:
+  name: Log Statistics
+  description: Log Statistics
+  target:
+    entity:
+      domain: number
+      integration: green_button
+  fields:
+    start:
+      name: Start
+      description: Start
+      required: true
+      selector:
+        datetime:
+    end:
+      name: End
+      description: End
+      required: true
+      selector:
+        datetime:
+
+reset:
+  name: Reset
+  description: Reset
+  target:
+    entity:
+      domain: number
+      integration: green_button

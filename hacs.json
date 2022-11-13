@@ -1,0 +1,5 @@
+{
+  "name": "Green Button integration",
+  "homeassistant": "2022.11.1",
+  "render_readme": true
+}

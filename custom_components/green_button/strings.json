@@ -1,0 +1,40 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "description": "Configure the Green Button integration.",
+        "data": {
+          "name": "[%key:common::config_flow::data::name%]",
+          "usage_point_href": "UsagePoint HREF",
+          "energy_unit": "Energy Unit",
+          "cost_currency": "Cost Currency",
+          "xml": "XML"
+        }
+      }
+    },
+    "error": {
+      "invalid_espi_xml": "Invalid ESPI XML.",
+      "no_usage_points_found": "No UsagePoints found in the XML. You need exactly one.",
+      "multiple_usage_points_found": "Multiple UsagePoints found in the XML. You need exactly one.",
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+      "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
+      "unknown": "[%key:common::config_flow::error::unknown%]"
+    },
+    "abort": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "description": "",
+        "data": {
+          "name": "[%key:component::green_button::config::step::user::data::name%]",
+          "usage_point_href": "[%key:component::green_button::config::step::user::data::usage_point_href%]",
+          "energy_unit": "[%key:component::green_button::config::step::user::data::energy_unit%]",
+          "cost_currency": "[%key:component::green_button::config::step::user::data::cost_currency%]"
+        }
+      }
+    }
+  }
+}
