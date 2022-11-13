@@ -1,14 +1,15 @@
 """Module containing parsers for the Energy Services Provider Interface (ESPI) Atom feed defined by the North American Energy Standards Board."""
-from collections.abc import Callable
 import datetime
-from typing import Final, TypeVar
+from collections.abc import Callable
+from homeassistant.components import sensor
+from homeassistant.const import UnitOfEnergy
+from typing import Final
+from typing import TypeVar
 from xml.etree import ElementTree as ET
 
 from defusedxml import ElementTree as defusedET
 
-from homeassistant.components import sensor
-from homeassistant.components.green_button import model
-from homeassistant.const import UnitOfEnergy
+from .. import model
 
 T = TypeVar("T")
 
