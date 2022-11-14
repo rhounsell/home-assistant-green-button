@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
+
 from homeassistant import config_entries
 from homeassistant import data_entry_flow
-from typing import Any
 
 from . import configs
 from . import const

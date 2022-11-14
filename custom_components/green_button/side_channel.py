@@ -1,10 +1,11 @@
 """A module containing utilities to set and get side channels."""
 from __future__ import annotations
 
-from homeassistant.core import HomeAssistant
 from typing import Any
 from typing import Generic
 from typing import TypeVar
+
+from homeassistant.core import HomeAssistant
 
 from . import model
 from . import state

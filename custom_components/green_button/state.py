@@ -6,12 +6,13 @@ import typing
 from collections.abc import Collection
 from collections.abc import MutableMapping
 from collections.abc import MutableSequence
+from typing import Protocol
+from typing import runtime_checkable
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_platform
-from typing import Protocol
-from typing import runtime_checkable
 
 from . import const
 from . import model

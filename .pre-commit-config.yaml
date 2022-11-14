@@ -1,3 +1,6 @@
+default_language_version:
+  python: python3.9
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v3.3.0
@@ -6,25 +9,18 @@ repos:
       - id: check-yaml
       - id: end-of-file-fixer
       - id: trailing-whitespace
-  - repo: local
+  - repo: https://github.com/psf/black
+    rev: 22.10.0
     hooks:
       - id: black
-        name: black
-        entry: black
-        language: system
-        types: [python]
-        require_serial: true
+  - repo: https://github.com/PyCQA/flake8
+    rev: 5.0.4
+    hooks:
       - id: flake8
-        name: flake8
-        entry: flake8
-        language: system
-        types: [python]
-        require_serial: true
+  - repo: https://github.com/asottile/reorder_python_imports
+    rev: v3.9.0
+    hooks:
       - id: reorder-python-imports
-        name: Reorder python imports
-        entry: reorder-python-imports
-        language: system
-        types: [python]
         args: [--application-directories=custom_components]
   - repo: https://github.com/pre-commit/mirrors-prettier
     rev: v2.2.1

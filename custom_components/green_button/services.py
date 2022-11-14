@@ -12,6 +12,11 @@ import re
 from collections.abc import Awaitable
 from collections.abc import Callable
 from collections.abc import Coroutine
+from typing import Any
+from typing import final
+from typing import Protocol
+
+import voluptuous as vol
 from homeassistant.components.recorder import statistics
 from homeassistant.components.recorder import util as recorder_util
 from homeassistant.core import HomeAssistant
@@ -21,11 +26,6 @@ from homeassistant.helpers import entity as ha_entity
 from homeassistant.helpers import entity_platform
 from homeassistant.helpers import service
 from homeassistant.helpers.typing import ServiceDataType
-from typing import Any
-from typing import final
-from typing import Protocol
-
-import voluptuous as vol
 
 from . import const
 from . import model

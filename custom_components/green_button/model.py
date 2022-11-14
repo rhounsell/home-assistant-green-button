@@ -10,8 +10,9 @@ import datetime
 import functools
 from collections.abc import Collection
 from collections.abc import Sequence
-from homeassistant.components import sensor
 from typing import final
+
+from homeassistant.components import sensor
 
 
 @final
