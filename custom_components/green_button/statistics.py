@@ -2,24 +2,28 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
 import dataclasses
 import datetime
 import decimal
 import logging
-from typing import Any, Literal, Protocol, TypeVar, final
-
+from collections.abc import Callable
+from collections.abc import Sequence
 from homeassistant import exceptions
 from homeassistant.components import recorder
-from homeassistant.components.recorder import (
-    db_schema as recorder_db_schema,
-    statistics,
-    tasks,
-    util as recorder_util,
-)
+from homeassistant.components.recorder import db_schema as recorder_db_schema
+from homeassistant.components.recorder import statistics
+from homeassistant.components.recorder import tasks
+from homeassistant.components.recorder import util as recorder_util
 from homeassistant.core import HomeAssistant
+from typing import Any
+from typing import final
+from typing import Literal
+from typing import Protocol
+from typing import TypeVar
 
-from . import const, model, state
+from . import const
+from . import model
+from . import state
 
 _LOGGER = logging.getLogger(__name__)
 

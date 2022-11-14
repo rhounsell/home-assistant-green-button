@@ -6,18 +6,21 @@ import datetime
 import decimal
 import enum
 import logging
-from typing import Final
-
-import slugify
-
 from homeassistant.components import number
 from homeassistant.components.recorder import util as recorder_util
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_platform
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from typing import Final
 
-from . import configs, const, model, state, statistics
+import slugify
+
+from . import configs
+from . import const
+from . import model
+from . import state
+from . import statistics
 
 _LOGGER = logging.getLogger(__name__)
 

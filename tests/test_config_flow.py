@@ -1,11 +1,11 @@
 """Test the Green Button config flow."""
-from unittest.mock import patch
-
 from homeassistant import config_entries
-from homeassistant.components.green_button.config_flow import CannotConnect, InvalidAuth
+from homeassistant.components.green_button.config_flow import CannotConnect
+from homeassistant.components.green_button.config_flow import InvalidAuth
 from homeassistant.components.green_button.const import DOMAIN
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from unittest.mock import patch
 
 
 async def test_form(hass: HomeAssistant) -> None:

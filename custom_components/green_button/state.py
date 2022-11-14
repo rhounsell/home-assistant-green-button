@@ -1,17 +1,22 @@
 """A module defining classes that store the component's runtime state."""
 from __future__ import annotations
 
-from collections.abc import Collection, MutableMapping, MutableSequence
 import dataclasses
 import typing
-from typing import Protocol, runtime_checkable
-
+from collections.abc import Collection
+from collections.abc import MutableMapping
+from collections.abc import MutableSequence
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_platform
+from typing import Protocol
+from typing import runtime_checkable
 
-from . import const, model, services, side_channel
+from . import const
+from . import model
+from . import services
+from . import side_channel
 
 
 class PlatformState(Protocol):

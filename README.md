@@ -14,9 +14,9 @@ TODO
 
 **This component will set up the following platforms.**
 
-| Platform        | Description                                                               |
-| --------------- | ------------------------------------------------------------------------- |
-| `number`        | TODO                                                                      |
+| Platform | Description |
+| -------- | ----------- |
+| `number` | TODO        |
 
 ## Installation
 

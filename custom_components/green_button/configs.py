@@ -1,19 +1,21 @@
 """Module containing config classes for the component."""
 from __future__ import annotations
 
-from collections.abc import Mapping
 import dataclasses
-from typing import Any, Final, final
-
-import voluptuous as vol
-
+from collections.abc import Mapping
 from homeassistant.backports import enum as backports_enum
 from homeassistant.components import sensor
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import selector
+from typing import Any
+from typing import Final
+from typing import final
 
-from . import model, side_channel
+import voluptuous as vol
+
+from . import model
+from . import side_channel
 from .parsers import espi
 
 

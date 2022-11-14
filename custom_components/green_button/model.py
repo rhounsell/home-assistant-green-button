@@ -5,13 +5,13 @@ North American Energy Standards Board.
 """
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
 import dataclasses
 import datetime
 import functools
-from typing import final
-
+from collections.abc import Collection
+from collections.abc import Sequence
 from homeassistant.components import sensor
+from typing import final
 
 
 @final
