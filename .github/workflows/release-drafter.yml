@@ -4,10 +4,23 @@ on:
     branches:
       - main
       - master
+  # pull_request event is required only for autolabeler
+  pull_request:
+  # pull_request_target event is required for autolabeler to support PRs from forks
+  pull_request_target:
+
+permissions:
+  contents: read
+
 jobs:
   draft_release:
     name: Release Drafter
     runs-on: ubuntu-latest
+    permissions:
+      # write permission is required to create a github release
+      contents: write
+      # write permission is required for autolabeler
+      pull-requests: write
     steps:
       - name: Run release-drafter
         uses: release-drafter/release-drafter@v5.21.1
