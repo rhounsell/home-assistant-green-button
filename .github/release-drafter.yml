@@ -1,3 +1,5 @@
+name-template: "v$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
 categories:
   - title: ":boom: Breaking Changes"
     label: "breaking"
@@ -11,8 +13,6 @@ categories:
     label: "performance"
   - title: ":rotating_light: Testing"
     label: "testing"
-  - title: ":construction_worker: Continuous Integration"
-    label: "ci"
   - title: ":books: Documentation"
     label: "documentation"
   - title: ":hammer: Refactoring"
@@ -22,7 +22,21 @@ categories:
   - title: ":package: Dependencies"
     labels:
       - "dependencies"
-      - "build"
+version-resolver:
+  major:
+    labels:
+      - breaking
+      - removal
+  minor:
+    labels:
+      - enhancement
+  patch:
+    labels:
+      - bug
+  default: patch
+exclude-lables:
+  - ci
+  - github_actions
 template: |
   ## Changes
 
