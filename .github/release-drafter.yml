@@ -34,7 +34,7 @@ version-resolver:
     labels:
       - bug
   default: patch
-exclude-lables:
+exclude-labels:
   - ci
   - github_actions
 template: |
