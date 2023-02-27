@@ -1,16 +1,13 @@
 {
   "domain": "green_button",
   "name": "Green Button",
-  "version": "0.1.0",
-  "config_flow": true,
-  "documentation": "https://github.com/vqvu/home-assistant-green-button",
-  "issue_tracker": "https://github.com/vqvu/home-assistant-green-button/issues",
-  "requirements": ["defusedxml==0.7.1"],
-  "ssdp": [],
-  "zeroconf": [],
-  "homekit": {},
-  "dependencies": ["number", "recorder"],
   "codeowners": ["@vqvu"],
+  "config_flow": true,
+  "dependencies": ["number", "recorder"],
+  "documentation": "https://github.com/vqvu/home-assistant-green-button",
   "iot_class": "assumed_state",
-  "loggers": ["custom_components.green_button"]
+  "issue_tracker": "https://github.com/vqvu/home-assistant-green-button/issues",
+  "loggers": ["custom_components.green_button"],
+  "requirements": ["defusedxml==0.7.1"],
+  "version": "0.1.0"
 }
