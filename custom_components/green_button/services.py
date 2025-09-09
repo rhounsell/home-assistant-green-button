@@ -203,7 +203,7 @@ class Service:
         return new_service
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=False)
 class _EntityServiceAction(abc.ABC):
     """The base class for all entity service actions."""
 
@@ -313,7 +313,7 @@ class _LogStatisticsAction(_EntityServiceAction):
 
 
 @final
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=False)
 class _ResetEntityAction(_EntityServiceAction):
     @classmethod
     def create_spec(cls) -> _EntityServiceActionSpec:
