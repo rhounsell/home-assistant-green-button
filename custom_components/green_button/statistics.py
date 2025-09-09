@@ -546,7 +546,7 @@ class _ComputeUpdatedPeriodStatisticsTask(tasks.RecorderTask):
 
 
 @final
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=False)
 class _ImportStatisticsTask(tasks.RecorderTask):
     hass: HomeAssistant
     entity: state.GreenButtonEntity
@@ -598,7 +598,7 @@ class _ImportStatisticsTask(tasks.RecorderTask):
 
 
 @final
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=False)
 class _AdjustStatisticsTask(tasks.RecorderTask):
     _MIN_CHANGE = decimal.Decimal(10) ** -10
 
@@ -654,7 +654,7 @@ class _AdjustStatisticsTask(tasks.RecorderTask):
 
 
 @final
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=False)
 class _ClearStatisticsTask(tasks.RecorderTask):
     hass: HomeAssistant
     statistic_id: str
