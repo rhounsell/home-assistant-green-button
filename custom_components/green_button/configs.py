@@ -8,7 +8,8 @@ from typing import Final
 from typing import final
 
 import voluptuous as vol
-from homeassistant.backports import enum as backports_enum
+#from homeassistant.backports import enum as backports_enum
+from enum import StrEnum
 from homeassistant.components import sensor
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -28,11 +29,12 @@ class InvalidUserInputError(ValueError):
         self.errors = errors
 
 
-class _MeterReadingConfigField(backports_enum.StrEnum):
-    ID: Final = "id"
-    SENSOR_DEVICE_CLASS: Final = "sensor_device_class"
-    UNIT_OF_MEASUREMENT: Final = "unit_of_measurement"
-    CURRENCY: Final = "currency"
+#class _MeterReadingConfigField(backports_enum.StrEnum):
+class _MeterReadingConfigField(StrEnum):
+    ID = "id"
+    SENSOR_DEVICE_CLASS = "sensor_device_class"
+    UNIT_OF_MEASUREMENT = "unit_of_measurement"
+    CURRENCY = "currency"
 
 
 @final
@@ -151,7 +153,7 @@ class ComponentConfig:
                 vol.Required(
                     _ComponentConfigField.XML,
                     default=user_input.get(_ComponentConfigField.XML),
-                ): selector.TextSelector(
+                ): selector.TextSelector( # type: ignore
                     selector.TextSelectorConfig(
                         multiline=True,
                     )
