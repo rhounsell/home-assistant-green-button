@@ -11,24 +11,22 @@ from . import state
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.NUMBER, Platform.SENSOR]
+PLATFORMS: list[Platform] = [Platform.SENSOR]
 
+async def async_setup_entry(hass, entry):
+    from .coordinator import GreenButtonCoordinator
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Green Button from a config entry."""
-    _LOGGER.info("Setting up ConfigEntry: %r", entry.unique_id)
-
-    global_state = await state.async_ensure_setup(hass)
-    await global_state.async_setup_entry(hass, entry)
+    # You may want to get the XML path from entry.data or options
+    xml_path = entry.data.get("xml_path")
+    coordinator = GreenButtonCoordinator(hass, xml_path)
+    await coordinator.async_config_entry_first_refresh()
+    hass.data["green_button_coordinator"] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
     return True
 
-
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        await state.get(hass).async_unload_entry(entry)
-
+async def async_unload_entry(hass, entry):
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        hass.data.pop("green_button_coordinator")
     return unload_ok
