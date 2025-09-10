@@ -5,7 +5,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from . import model
-from .const import DOMAIN 
+from .const import DOMAIN
 from .parsers import espi
 
 _LOGGER: Final = logging.getLogger(__name__)
