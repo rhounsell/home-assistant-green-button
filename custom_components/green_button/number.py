@@ -1,4 +1,5 @@
 """Platform for creating a sensor containing the last known update."""
+# TODO delete this file
 from __future__ import annotations
 
 import asyncio
@@ -13,8 +14,8 @@ from homeassistant.components import number
 from homeassistant.components.recorder import util as recorder_util
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity
-from homeassistant.helpers import entity_platform
+# from homeassistant.helpers import entity
+from homeassistant.const import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import configs
@@ -28,14 +29,14 @@ _LOGGER = logging.getLogger(__name__)
 
 _MOST_RECENT_ENERGY_READING_NUMBER_DESCRIPTION = number.NumberEntityDescription(
     key="green_button_last_energy_reading",
-    entity_category=entity.EntityCategory.DIAGNOSTIC,
+    entity_category=EntityCategory.DIAGNOSTIC,
     native_step=1,
     icon="mdi:lightning-bolt",
 )
 
 _MOST_RECENT_COST_READING_NUMBER_DESCRIPTION = number.NumberEntityDescription(
     key="green_button_most_recent_cost_reading",
-    entity_category=entity.EntityCategory.DIAGNOSTIC,
+    entity_category=EntityCategory.DIAGNOSTIC,
     native_step=float(10**-5),  # Hundred thousandth
     icon="mdi:cash",
 )
