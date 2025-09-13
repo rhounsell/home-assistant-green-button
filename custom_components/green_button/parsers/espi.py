@@ -114,7 +114,6 @@ class GreenButtonFeed:
             out.append(usage_point.to_usage_point())
         return out
 
-
 class EspiEntry:
     """A wrapper around an atom Entry XML element."""
 
@@ -266,11 +265,32 @@ class EspiEntry:
             ),
         )
 
-
 def parse_xml(value: str) -> list[model.UsagePoint]:
     """Parse an ESPI atom feed XML string."""
     try:
         root = defusedET.fromstring(value)
         return GreenButtonFeed(root).to_usage_points()
+    except ET.ParseError as ex:
+        raise EspiXmlParseError("Invalid XML.") from ex
+
+def parse_interval_blocks_xml(value: str) -> list[model.IntervalBlock]:
+    """Parse an ESPI atom feed XML string for IntervalBlocks (no UsagePoints)."""
+    try:
+        root = defusedET.fromstring(value)
+        feed = GreenButtonFeed(root)
+        interval_blocks: list[model.IntervalBlock] = []
+        # Find all IntervalBlock entries
+        for entry in feed.find_entries("IntervalBlock"):
+            # You may need to provide a default ReadingType if not present
+            # Here we use a dummy ReadingType; adjust as needed for your data
+            reading_type = model.ReadingType(
+                id="unknown",
+                power_of_ten_multiplier=-3,
+                unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+                currency="CAD",
+            )
+            interval_block = entry.create_interval_block_parser(reading_type)(entry)
+            interval_blocks.append(interval_block)
+        return interval_blocks
     except ET.ParseError as ex:
         raise EspiXmlParseError("Invalid XML.") from ex

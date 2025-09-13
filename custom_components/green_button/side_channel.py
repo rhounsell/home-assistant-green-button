@@ -49,8 +49,10 @@ class SideChannels:
         self._get_entry_side_channels(entry_unique_id)[key.name] = value
 
 
-INITIAL_IMPORT_USAGE_POINT: SideChannelKey[model.UsagePoint] = SideChannelKey(
-    "initial_import_usage_point"
+# INITIAL_IMPORT_USAGE_POINT: SideChannelKey[model.UsagePoint] = SideChannelKey(
+#     "initial_import_usage_point"
+INITIAL_IMPORT_INTERVAL_BLOCK: SideChannelKey[model.IntervalBlock] = SideChannelKey(
+    "initial_import_interval_block"
 )
 
 

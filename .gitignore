@@ -2,5 +2,4 @@ __pycache__
 pythonenv*
 .python-version
 .coverage
-venv
-.venv
+**/.ha_venv/

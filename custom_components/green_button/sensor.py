@@ -4,7 +4,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.setup import SetupPhases, async_pause_setup
 
 from .const import DOMAIN
 from .coordinator import GreenButtonCoordinator
@@ -35,7 +34,7 @@ class GreenButtonEnergySensor(CoordinatorEntity, SensorEntity):
     @cached_property
     def native_value(self) -> float | None:
         """Return the latest energy value."""
-        if self.coordinator.usage_points:
+        if self.coordinator.interval_blocks:
             # Replace with actual logic to extract the latest value from self.coordinator.data
             return self.coordinator.get_latest_cumulative_energy_kwh()
         return None
