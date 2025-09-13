@@ -6,6 +6,7 @@ import asyncio
 import datetime
 import decimal
 import enum
+from functools import cached_property
 import logging
 from typing import Final
 
@@ -111,16 +112,20 @@ class _GreenButtonNumber(number.RestoreNumber):
         }
         self._attr_native_value = 0.0
 
-    @property
+    @cached_property
     def name(self) -> str:
         name = super().name
-        assert name is not None
+        # assert name is not None
+        if not isinstance(name, str):
+            raise ValueError("Entity name is undefined")
         return name
 
-    @property
+    @cached_property
     def native_unit_of_measurement(self) -> str:
         native_unit_of_measurement = super().native_unit_of_measurement
-        assert native_unit_of_measurement is not None
+        # assert native_unit_of_measurement is not None
+        if not isinstance(native_unit_of_measurement, str):
+            raise ValueError("native_unit_of_measurement is undefined")
         return native_unit_of_measurement
 
     @property
@@ -241,6 +246,11 @@ class _GreenButtonNumber(number.RestoreNumber):
             statistics.clear_statistic(self.hass, self.long_term_statistics_id),
         )
 
+    # added because it's declared as abstract in the base class
+    async def async_set_value(self, value: float) -> None:
+        """Set the value of the number entity."""
+        self._attr_native_value = value # pylint: disable=protected-access # Access to protected member is intentional
+        # Add any additional logic here if needed
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback

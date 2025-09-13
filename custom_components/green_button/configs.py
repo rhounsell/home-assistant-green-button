@@ -106,7 +106,7 @@ class ComponentConfig:
     name: str
     unique_id: str
     meter_reading_configs: list[MeterReadingConfig]
-    initial_usage_point: model.UsagePoint | None
+    initial_interval_block: model.IntervalBlock | None
 
     def set_side_channels(self, hass: HomeAssistant):
         """Set the config's side channel values.
@@ -114,11 +114,11 @@ class ComponentConfig:
         This is used to pass data from the config to the component setup code
         without serializing it through ConfigEntry data.
         """
-        if self.initial_usage_point is not None:
+        if self.initial_interval_block is not None:
             side_channel.get(hass).set(
                 self.unique_id,
-                side_channel.INITIAL_IMPORT_USAGE_POINT,
-                self.initial_usage_point,
+                side_channel.INITIAL_IMPORT_INTERVAL_BLOCK,
+                self.initial_interval_block
             )
 
     def to_mapping(self) -> Mapping[str, Any]:
@@ -166,32 +166,32 @@ class ComponentConfig:
         `make_config_entry_step_schema`.
         """
         try:
-            usage_points = espi.parse_xml(user_input[_ComponentConfigField.XML])
+            interval_blocks = espi.parse_interval_blocks_xml(user_input[_ComponentConfigField.XML])
         except espi.EspiXmlParseError as ex:
             raise InvalidUserInputError(
                 {_ComponentConfigField.XML: "invalid_espi_xml"}
             ) from ex
 
-        if not usage_points:
+        if not interval_blocks:
             raise InvalidUserInputError(
                 {_ComponentConfigField.XML: "no_usage_points_found"}
             )
-        if len(usage_points) > 1:
-            raise InvalidUserInputError(
-                {_ComponentConfigField.XML: "multiple_usage_points_found"}
-            )
+        # if len(interval_blocks) > 1:
+        #     raise InvalidUserInputError(
+        #         {_ComponentConfigField.XML: "multiple_usage_points_found"}
+        #     )
 
-        usage_point = usage_points[0]
+        interval_block = interval_blocks[0]
         meter_reading_configs = [
-            MeterReadingConfig.from_model(usage_point, meter_reading)
-            for meter_reading in usage_point.meter_readings
+            MeterReadingConfig.from_model(interval_blocks, meter_reading)
+            for meter_reading in interval_blocks.meter_readings
         ]
 
         return ComponentConfig(
             name=user_input[_ComponentConfigField.NAME],
-            unique_id=usage_point.id,
+            unique_id="none",
             meter_reading_configs=meter_reading_configs,
-            initial_usage_point=usage_point,
+            initial_interval_block=interval_block,
         )
 
     @classmethod

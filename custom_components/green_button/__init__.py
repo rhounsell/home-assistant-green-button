@@ -17,7 +17,7 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
 
-    # You may want to get the XML path from entry.data or options
+    # TODO You may want to get the XML path from entry.data or options
     xml_path = config_entry.data.get("xml_path")
     hass.data.setdefault(DOMAIN, {})
     coordinator = GreenButtonCoordinator(hass, xml_path)
