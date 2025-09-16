@@ -2,6 +2,10 @@
   "$schema": "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.schema.json",
   "image": "ludeeus/container:integration-debian",
   "name": "Green Button integration development",
+  "mounts": [
+    "source=${localWorkspaceFolder}/,target=/workspace,type=bind,consistency=cached",
+    "source=${localWorkspaceFolder}/custom_components,target=/config/custom_components,type=bind,consistency=cached"
+  ],
   "workspaceFolder": "/workspace",
   "portsAttributes": {
     "8123": {
