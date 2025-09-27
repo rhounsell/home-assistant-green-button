@@ -116,10 +116,94 @@ class GreenButtonFeed:
             out.append(usage_point.to_usage_point())
 
         if not out:
-            # Hydro Ottawa gives only links to usage data.
-            # Create a default useage point.
-            out = [model.UsagePoint.default_usage_point()]
+            # No explicit UsagePoint entries - create default usage point
+            # and associate only energy consumed meter readings (flowDirection=1)
+            out = [self._create_default_usage_point_with_consumed_energy()]
         return out
+
+    def _create_default_usage_point_with_consumed_energy(self) -> model.UsagePoint:
+        """Create a default usage point with only energy consumed data."""
+        logger = logging.getLogger(__name__)
+
+        # Get all reading types and filter for energy consumed (flowDirection=1)
+        reading_type_entries = self.find_entries("ReadingType")
+        consumed_energy_reading_types = []
+
+        for rt_entry in reading_type_entries:
+            try:
+                # Check if this is energy consumed data (flowDirection=1)
+                flow_direction = rt_entry.parse_child_text("espi:flowDirection", int)
+                if flow_direction == 1:  # Energy consumed
+                    reading_type = rt_entry.to_reading_type()
+                    consumed_energy_reading_types.append((rt_entry, reading_type))
+                    logger.info(
+                        "Found energy consumed ReadingType: %s (flowDirection=%d)",
+                        reading_type.id,
+                        flow_direction,
+                    )
+                else:
+                    logger.info(
+                        "Skipping ReadingType with flowDirection=%d (not consumed energy)",
+                        flow_direction,
+                    )
+            except (ValueError, EspiXmlParseError) as ex:
+                logger.warning("Failed to parse ReadingType entry: %s", ex)
+                continue
+
+        # Find meter readings that match consumed energy reading types
+        meter_reading_entries = self.find_entries("MeterReading")
+        consumed_meter_readings = []
+
+        for mr_entry in meter_reading_entries:
+            try:
+                # Find the related ReadingType for this MeterReading
+                related_rt_hrefs = mr_entry.find_related_hrefs()
+
+                # Check if any of the related reading types are for consumed energy
+                for rt_entry, reading_type in consumed_energy_reading_types:
+                    rt_href = rt_entry.find_self_href()
+                    if rt_href in related_rt_hrefs:
+                        # This meter reading is for consumed energy
+                        meter_reading = self._create_meter_reading_with_reading_type(
+                            mr_entry, reading_type
+                        )
+                        consumed_meter_readings.append(meter_reading)
+                        logger.info(
+                            "Associated MeterReading %s with consumed energy ReadingType %s",
+                            meter_reading.id,
+                            reading_type.id,
+                        )
+                        break
+            except (ValueError, EspiXmlParseError) as ex:
+                logger.warning("Failed to process MeterReading entry: %s", ex)
+                continue
+
+        logger.info(
+            "Created default usage point with %d consumed energy meter readings",
+            len(consumed_meter_readings),
+        )
+
+        return model.UsagePoint(
+            id="default_usage_point",
+            sensor_device_class=sensor.SensorDeviceClass.ENERGY,
+            meter_readings=consumed_meter_readings,
+        )
+
+    def _create_meter_reading_with_reading_type(
+        self, mr_entry: "EspiEntry", reading_type: model.ReadingType
+    ) -> model.MeterReading:
+        """Create a MeterReading with the given ReadingType and associated IntervalBlocks."""
+        # Find related interval blocks for this meter reading
+        interval_blocks = mr_entry.find_related_entries(
+            "IntervalBlock",
+            mr_entry.create_interval_block_parser(reading_type),
+        )
+
+        return model.MeterReading(
+            id=mr_entry.find_self_href(),
+            reading_type=reading_type,
+            interval_blocks=interval_blocks,
+        )
 
 
 class EspiEntry:
