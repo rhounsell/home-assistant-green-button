@@ -1,4 +1,5 @@
 """A module defining classes that store the component's runtime state."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -65,30 +66,34 @@ class GreenButtonEntity(Protocol):
         """Reset the entity and its statistics."""
 
 
-# @typing.final
-# @dataclasses.dataclass(frozen=True)
-# class SensorPlatformState:
-#     """An object holding the state for a specific sensor platform."""
+@typing.final
+@dataclasses.dataclass(frozen=True)
+class SensorPlatformState:
+    """An object holding the state for a specific sensor platform."""
 
-#     platform: entity_platform.EntityPlatform
-#     service: services.EntityService
-#     entities: MutableSequence[sensor.GreenButtonSensor]
+    platform: entity_platform.EntityPlatform
+    service: services.EntityService
+    entities: MutableSequence[GreenButtonEntity]
 
-#     def add_sensors(self, entities: Collection[sensor.GreenButtonSensor]) -> None:
-#         self.entities.extend(entities)
+    def add_sensors(self, entities: Collection[GreenButtonEntity]) -> None:
+        """Add sensors to the state."""
+        self.entities.extend(entities)
 
-#     @classmethod
-#     async def create(
-#         cls,
-#         hass: HomeAssistant,
-#         entry: ConfigEntry,
-#         platform: entity_platform.EntityPlatform,
-#     ) -> "SensorPlatformState":
-#         return cls(
-#             service=await services.EntityService.create(hass, platform),
-#             platform=platform,
-#             entities=[],
-#         )
+    @classmethod
+    async def create(
+        cls,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        platform: entity_platform.EntityPlatform,
+    ) -> SensorPlatformState:
+        """Create a new instance."""
+        return cls(
+            service=await services.EntityService.async_create_and_register(
+                hass, platform
+            ),
+            platform=platform,
+            entities=[],
+        )
 
 
 @typing.final
@@ -110,7 +115,7 @@ class NumberPlatformState:
         hass: HomeAssistant,
         entry: ConfigEntry,
         platform: entity_platform.EntityPlatform,
-    ) -> "NumberPlatformState":
+    ) -> NumberPlatformState:
         """Create a new instance."""
         return cls(
             service=await services.EntityService.async_create_and_register(
@@ -128,6 +133,17 @@ class EntryState:
 
     platform_states: MutableMapping[Platform, PlatformState]
 
+    async def async_setup_sensor_platform(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        platform: entity_platform.EntityPlatform,
+    ) -> SensorPlatformState:
+        """Set up a SensorPlatformState."""
+        platform_state = await SensorPlatformState.create(hass, entry, platform)
+        self.platform_states[Platform.SENSOR] = platform_state
+        return platform_state
+
     async def async_setup_number_platform(
         self,
         hass: HomeAssistant,
@@ -140,7 +156,7 @@ class EntryState:
         return platform_state
 
     @classmethod
-    async def create(cls, hass: HomeAssistant, entry: ConfigEntry) -> "EntryState":
+    async def create(cls, hass: HomeAssistant, entry: ConfigEntry) -> EntryState:
         """Create a new instance."""
         return cls(platform_states={})
 
@@ -177,7 +193,7 @@ class State:
         self.entry_states.pop(unique_id)
 
     @classmethod
-    async def create(cls, hass: HomeAssistant) -> "State":
+    async def create(cls, hass: HomeAssistant) -> State:
         """Create a new instance."""
         return cls(
             service=await services.Service.async_create_and_register(hass),

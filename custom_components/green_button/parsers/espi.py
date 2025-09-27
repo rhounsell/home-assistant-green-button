@@ -1,5 +1,7 @@
 """Module containing parsers for the Energy Services Provider Interface (ESPI) Atom feed defined by the North American Energy Standards Board."""
+
 import datetime
+import logging
 from collections.abc import Callable
 from typing import Final
 from typing import TypeVar
@@ -112,7 +114,13 @@ class GreenButtonFeed:
         out = []
         for usage_point in self.find_entries("UsagePoint"):
             out.append(usage_point.to_usage_point())
+
+        if not out:
+            # Hydro Ottawa gives only links to usage data.
+            # Create a default useage point.
+            out = [model.UsagePoint.default_usage_point()]
         return out
+
 
 class EspiEntry:
     """A wrapper around an atom Entry XML element."""
@@ -265,32 +273,61 @@ class EspiEntry:
             ),
         )
 
+
 def parse_xml(value: str) -> list[model.UsagePoint]:
     """Parse an ESPI atom feed XML string."""
-    try:
-        root = defusedET.fromstring(value)
-        return GreenButtonFeed(root).to_usage_points()
-    except ET.ParseError as ex:
-        raise EspiXmlParseError("Invalid XML.") from ex
+    logger = logging.getLogger(__name__)
 
-def parse_interval_blocks_xml(value: str) -> list[model.IntervalBlock]:
-    """Parse an ESPI atom feed XML string for IntervalBlocks (no UsagePoints)."""
     try:
         root = defusedET.fromstring(value)
-        feed = GreenButtonFeed(root)
-        interval_blocks: list[model.IntervalBlock] = []
-        # Find all IntervalBlock entries
-        for entry in feed.find_entries("IntervalBlock"):
-            # You may need to provide a default ReadingType if not present
-            # Here we use a dummy ReadingType; adjust as needed for your data
-            reading_type = model.ReadingType(
-                id="unknown",
-                power_of_ten_multiplier=-3,
-                unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-                currency="CAD",
-            )
-            interval_block = entry.create_interval_block_parser(reading_type)(entry)
-            interval_blocks.append(interval_block)
-        return interval_blocks
     except ET.ParseError as ex:
         raise EspiXmlParseError("Invalid XML.") from ex
+    else:
+        feed = GreenButtonFeed(root)
+
+        # Debug: Log what entries we found
+        logger.info("Found %d UsagePoint entries", len(feed.find_entries("UsagePoint")))
+        logger.info(
+            "Found %d MeterReading entries", len(feed.find_entries("MeterReading"))
+        )
+        logger.info(
+            "Found %d IntervalBlock entries", len(feed.find_entries("IntervalBlock"))
+        )
+        logger.info(
+            "Found %d ReadingType entries", len(feed.find_entries("ReadingType"))
+        )
+
+        usage_points = feed.to_usage_points()
+
+        # Debug: Log the parsed structure
+        for i, up in enumerate(usage_points):
+            logger.info(
+                "UsagePoint %d: id=%s, device_class=%s",
+                i,
+                up.id,
+                up.sensor_device_class,
+            )
+            logger.info("UsagePoint %d: %d meter readings", i, len(up.meter_readings))
+            for j, mr in enumerate(up.meter_readings):
+                logger.info(
+                    "  MeterReading %d: id=%s, %d interval blocks",
+                    j,
+                    mr.id,
+                    len(mr.interval_blocks),
+                )
+                for k, ib in enumerate(mr.interval_blocks):
+                    logger.info(
+                        "    IntervalBlock %d: id=%s, %d interval readings",
+                        k,
+                        ib.id,
+                        len(ib.interval_readings),
+                    )
+                    if ib.interval_readings:
+                        first_reading = ib.interval_readings[0]
+                        logger.info(
+                            "      First reading: start=%s, value=%d",
+                            first_reading.start,
+                            first_reading.value,
+                        )
+
+        return usage_points

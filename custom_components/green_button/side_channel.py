@@ -1,14 +1,12 @@
 """A module containing utilities to set and get side channels."""
+
 from __future__ import annotations
 
-from typing import Any
-from typing import Generic
-from typing import TypeVar
+from typing import Any, Generic, TypeVar
 
 from homeassistant.core import HomeAssistant
 
-from . import model
-from . import state
+from . import model, state
 
 _SIDE_CHANNEL_KEY = "side_channels"
 
@@ -49,10 +47,8 @@ class SideChannels:
         self._get_entry_side_channels(entry_unique_id)[key.name] = value
 
 
-# INITIAL_IMPORT_USAGE_POINT: SideChannelKey[model.UsagePoint] = SideChannelKey(
-#     "initial_import_usage_point"
-INITIAL_IMPORT_INTERVAL_BLOCK: SideChannelKey[model.IntervalBlock] = SideChannelKey(
-    "initial_import_interval_block"
+INITIAL_IMPORT_USAGE_POINT: SideChannelKey[model.UsagePoint] = SideChannelKey(
+    "initial_import_usage_point"
 )
 
 

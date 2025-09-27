@@ -5,21 +5,24 @@
     {
       // Example of attaching to local debug server
       "name": "Python: Attach Local",
-      "type": "python",
+      "type": "debugpy",
       "request": "attach",
-      "port": 5678,
-      "host": "localhost",
+      "connect": {
+        "port": 5678,
+        "host": "localhost"
+      },
       "pathMappings": [
         {
           "localRoot": "${workspaceFolder}",
           "remoteRoot": "."
         }
-      ]
+      ],
+      "justMyCode": false
     },
     {
       // Example of attaching to my production server
       "name": "Python: Attach Remote",
-      "type": "python",
+      "type": "debugpy",
       "request": "attach",
       "port": 5678,
       "host": "homeassistant.local",
