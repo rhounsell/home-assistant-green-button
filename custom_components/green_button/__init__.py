@@ -19,14 +19,29 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the Green Button component."""
-    # Set up services
-    await async_setup_services(hass)
-    return True
+    _LOGGER.info("Setting up Green Button component services")
+    try:
+        # Set up services
+        await async_setup_services(hass)
+    except ImportError as err:
+        _LOGGER.error("Failed to import services module: %s", err)
+        return False
+    except AttributeError as err:
+        _LOGGER.error("Service registration error: %s", err)
+        return False
+    else:
+        _LOGGER.info("Green Button component setup completed successfully")
+        return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Green Button from a config entry."""
     _LOGGER.debug("Setting up Green Button integration")
+
+    # Set up services if not already done
+    if not hass.services.has_service(DOMAIN, "import_espi_xml"):
+        _LOGGER.info("Setting up Green Button services from config entry")
+        await async_setup_services(hass)
 
     # Create the coordinator
     coordinator = GreenButtonCoordinator(hass, entry)

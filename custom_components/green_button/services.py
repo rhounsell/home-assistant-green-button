@@ -1,4 +1,7 @@
+# TODO Delete this file. No longer needed
+
 """A module containing the component's service implementations."""
+
 from __future__ import annotations
 
 import abc
@@ -329,7 +332,7 @@ class _ResetEntityAction(_EntityServiceAction):
 def entity_service(
     func: Callable[
         [EntityService, state.GreenButtonEntity, ServiceCall], Awaitable[None]
-    ]
+    ],
 ) -> Callable[
     [EntityService, ha_entity.Entity, ServiceCall], Coroutine[Any, Any, None]
 ]:
