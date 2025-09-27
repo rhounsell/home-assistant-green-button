@@ -8,7 +8,6 @@ import voluptuous as vol
 
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.service import async_register_admin_service
 
 from . import statistics
 from .const import DOMAIN
@@ -45,7 +44,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         try:
             # Parse the XML to get usage points
             usage_points = espi.parse_xml(xml_data)
-            _LOGGER.info("Found %d usage points in XML", len(usage_points))
+            total_meter_readings = sum(len(up.meter_readings) for up in usage_points)
+            _LOGGER.info(
+                "Parsed XML: found %d usage points with %d total meter readings",
+                len(usage_points),
+                total_meter_readings,
+            )
 
             # Get all Green Button config entries
             entries = list(hass.config_entries.async_entries(DOMAIN))
@@ -67,32 +71,14 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
                 # Update the coordinator with new XML data
                 await coordinator.async_add_data(xml_data)
-                _LOGGER.info("Updated coordinator for entry %s", entry.entry_id)
 
-                # Get all sensor entities for this coordinator and update their statistics
-                for usage_point in usage_points:
-                    for meter_reading in usage_point.meter_readings:
-                        # Find matching sensor entities by meter reading ID
-                        entity_registry = hass.helpers.entity_registry.async_get(hass)
-                        entities = (
-                            hass.helpers.entity_registry.async_entries_for_config_entry(
-                                entity_registry, entry.entry_id
-                            )
-                        )
+                # Trigger a coordinator refresh to notify all entities
+                await coordinator.async_refresh()
 
-                        for entity_entry in entities:
-                            if entity_entry.platform == "sensor":
-                                entity = hass.states.get(entity_entry.entity_id)
-                                if entity and hasattr(
-                                    entity, "async_update_sensor_and_statistics"
-                                ):
-                                    await entity.async_update_sensor_and_statistics(
-                                        meter_reading
-                                    )
-                                    _LOGGER.debug(
-                                        "Updated statistics for entity %s",
-                                        entity_entry.entity_id,
-                                    )
+                _LOGGER.info(
+                    "Updated coordinator and refreshed entities for entry %s",
+                    entry.entry_id,
+                )
 
             _LOGGER.info("ESPI XML import completed successfully")
 
@@ -114,23 +100,25 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             raise
 
     # Register services
-    async_register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_IMPORT_ESPI_XML,
-        import_espi_xml_service,
-        schema=IMPORT_ESPI_XML_SCHEMA,
-    )
+    try:
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_IMPORT_ESPI_XML,
+            import_espi_xml_service,
+            schema=IMPORT_ESPI_XML_SCHEMA,
+        )
 
-    async_register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_DELETE_STATISTICS,
-        delete_statistics_service,
-        schema=DELETE_STATISTICS_SCHEMA,
-    )
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_DELETE_STATISTICS,
+            delete_statistics_service,
+            schema=DELETE_STATISTICS_SCHEMA,
+        )
 
-    _LOGGER.info("Green Button services registered")
+        _LOGGER.info("Green Button services registered successfully")
+    except Exception as err:
+        _LOGGER.error("Failed to register Green Button services: %s", err)
+        raise
 
 
 async def async_unload_services(hass: HomeAssistant) -> None:

@@ -116,6 +116,27 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         """Return the statistic ID associated with the entity."""
         return f"sensor.{self.unique_id}"
 
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        # Update entity state (calls native_value property)
+        super()._handle_coordinator_update()
+
+        # Update statistics for all meter readings in coordinator data
+        if self.coordinator.data and "usage_points" in self.coordinator.data:
+            usage_points = self.coordinator.data["usage_points"]
+            for usage_point in usage_points:
+                for meter_reading in usage_point.meter_readings:
+                    if meter_reading.id == self._meter_reading_id:
+                        # Schedule statistics update (statistics system is idempotent)
+                        _LOGGER.debug(
+                            "Scheduling statistics update for sensor %s, meter reading %s",
+                            self.entity_id,
+                            meter_reading.id,
+                        )
+                        self.hass.async_create_task(
+                            self.update_sensor_and_statistics(meter_reading)
+                        )
+
     async def update_sensor_and_statistics(
         self, meter_reading: model.MeterReading
     ) -> None:

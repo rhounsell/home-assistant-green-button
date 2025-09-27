@@ -53,9 +53,24 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             usage_points = await self.hass.async_add_executor_job(
                 espi.parse_xml, xml_data
             )
-            self.usage_points = usage_points or []
+            new_usage_points = usage_points or []
+
+            # Log what we're processing
+            total_readings = sum(len(up.meter_readings) for up in new_usage_points)
+            _LOGGER.info(
+                "Processing %d usage points with %d total meter readings",
+                len(new_usage_points),
+                total_readings,
+            )
+
+            # Replace existing data (this handles duplicates by overwriting)
+            self.usage_points = new_usage_points
+
             # Update the data and notify all entities
             self.async_set_updated_data({"usage_points": self.usage_points})
+
+            _LOGGER.info("Successfully updated coordinator with new data")
+
         except Exception as err:
             _LOGGER.error("Error adding Green Button data: %s", err)
             raise UpdateFailed(f"Error adding Green Button data: {err}") from err
