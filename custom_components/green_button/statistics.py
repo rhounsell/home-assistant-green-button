@@ -1,4 +1,5 @@
 """A module defining calculators for statistics."""
+
 from __future__ import annotations
 
 import asyncio
@@ -24,7 +25,37 @@ from homeassistant.core import HomeAssistant
 
 from . import const
 from . import model
-from . import state
+
+
+class GreenButtonEntity(Protocol):
+    """Protocol for Green Button entities that support statistics."""
+
+    @property
+    def entity_id(self) -> str:
+        """Return the entity ID."""
+        ...
+
+    @property
+    def name(self) -> str:
+        """Return the entity name."""
+        ...
+
+    @property
+    def long_term_statistics_id(self) -> str:
+        """Return the statistic ID."""
+        ...
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        """Return the native unit of measurement."""
+        ...
+
+    async def update_sensor_and_statistics(
+        self, meter_reading: model.MeterReading
+    ) -> None:
+        """Update the entity's state and statistics."""
+        ...
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -185,7 +216,7 @@ def _merge_interval_blocks(
 
 
 def _to_table(
-    period: Literal["5minute", "hour"]
+    period: Literal["5minute", "hour"],
 ) -> type[recorder_db_schema.StatisticsShortTerm | recorder_db_schema.Statistics]:
     if period == "5minute":
         return recorder_db_schema.StatisticsShortTerm
@@ -549,7 +580,7 @@ class _ComputeUpdatedPeriodStatisticsTask(tasks.RecorderTask):
 @dataclasses.dataclass(frozen=False)
 class _ImportStatisticsTask(tasks.RecorderTask):
     hass: HomeAssistant
-    entity: state.GreenButtonEntity
+    entity: GreenButtonEntity
     samples: list[statistics.StatisticData]
     table: type[recorder_db_schema.StatisticsShortTerm | recorder_db_schema.Statistics]
     future: asyncio.Future[None]
@@ -579,7 +610,7 @@ class _ImportStatisticsTask(tasks.RecorderTask):
     def queue_task(
         cls,
         hass: HomeAssistant,
-        entity: state.GreenButtonEntity,
+        entity: GreenButtonEntity,
         samples: list[statistics.StatisticData],
         table: type[statistics.Statistics | statistics.StatisticsShortTerm],
     ) -> asyncio.Future[None]:
@@ -686,7 +717,7 @@ class _UpdateStatisticsTask:
         self,
         hass: HomeAssistant,
         stats_dao: _StatsDao,
-        entity: state.GreenButtonEntity,
+        entity: GreenButtonEntity,
         data_extractor: DataExtractor,
         meter_reading: model.MeterReading,
     ) -> None:
@@ -755,7 +786,7 @@ class _UpdateStatisticsTask:
     def create(
         cls,
         hass: HomeAssistant,
-        entity: state.GreenButtonEntity,
+        entity: GreenButtonEntity,
         data_extractor: DataExtractor,
         meter_reading: model.MeterReading,
     ) -> _UpdateStatisticsTask:
@@ -786,7 +817,24 @@ class DataExtractor(Protocol):
         """Get the native value from the IntervalReading."""
 
 
-def create_metadata(entity: state.GreenButtonEntity) -> statistics.StatisticMetaData:
+class DefaultDataExtractor:
+    """Default implementation of DataExtractor."""
+
+    def get_native_value(
+        self, interval_reading: model.IntervalReading
+    ) -> decimal.Decimal:
+        """Get the native value from the IntervalReading."""
+        if interval_reading.value is None:
+            return decimal.Decimal(0)
+
+        # Apply power of ten multiplier
+        power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
+        value = interval_reading.value * (10**power_multiplier)
+
+        return decimal.Decimal(value)
+
+
+def create_metadata(entity: GreenButtonEntity) -> statistics.StatisticMetaData:
     """Create the statistic metadata for the entity."""
     return {
         "has_mean": True,
@@ -800,7 +848,7 @@ def create_metadata(entity: state.GreenButtonEntity) -> statistics.StatisticMeta
 
 async def update_statistics(
     hass: HomeAssistant,
-    entity: state.GreenButtonEntity,
+    entity: GreenButtonEntity,
     data_extractor: DataExtractor,
     meter_reading: model.MeterReading,
 ) -> None:

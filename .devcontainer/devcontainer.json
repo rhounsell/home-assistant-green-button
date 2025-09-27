@@ -1,12 +1,13 @@
 {
   "$schema": "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.schema.json",
-  "image": "ludeeus/container:integration-debian",
+  // "image": "ludeeus/container:integration-debian",
+  "image": "ghcr.io/home-assistant/devcontainers/integration-debian:latest",
   "name": "Green Button integration development",
   "mounts": [
-    "source=${localWorkspaceFolder}/,target=/workspace,type=bind,consistency=cached",
+    "source=${localWorkspaceFolder}/..,target=/workspace,type=bind,consistency=cached",
     "source=${localWorkspaceFolder}/custom_components,target=/config/custom_components,type=bind,consistency=cached"
   ],
-  "workspaceFolder": "/workspace",
+  // "workspaceFolder": "/workspace",
   "portsAttributes": {
     "8123": {
       "label": "Home Assistant",

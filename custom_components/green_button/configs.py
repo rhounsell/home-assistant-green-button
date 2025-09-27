@@ -1,19 +1,22 @@
 """Module containing config classes for the component."""
+
 from __future__ import annotations
 
-from collections.abc import Mapping
 import dataclasses
-#from homeassistant.backports import enum as backports_enum
-from enum import StrEnum
-from typing import Any, Final, final
+from collections.abc import Mapping
+from typing import Any
+from typing import Final
+from typing import final
 
-from homeassistant.components import sensor
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import selector
 import voluptuous as vol
 
-from . import model, side_channel
+# from homeassistant.backports import enum as backports_enum
+from enum import StrEnum
+from homeassistant.components import sensor
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers import selector
+
+from . import model
 from .parsers import espi
 
 
@@ -26,7 +29,7 @@ class InvalidUserInputError(ValueError):
         self.errors = errors
 
 
-#class _MeterReadingConfigField(backports_enum.StrEnum):
+# class _MeterReadingConfigField(backports_enum.StrEnum):
 class _MeterReadingConfigField(StrEnum):
     ID = "id"
     SENSOR_DEVICE_CLASS = "sensor_device_class"
@@ -106,20 +109,7 @@ class ComponentConfig:
     name: str
     unique_id: str
     meter_reading_configs: list[MeterReadingConfig]
-    initial_interval_block: model.IntervalBlock | None
-
-    def set_side_channels(self, hass: HomeAssistant):
-        """Set the config's side channel values.
-
-        This is used to pass data from the config to the component setup code
-        without serializing it through ConfigEntry data.
-        """
-        if self.initial_interval_block is not None:
-            side_channel.get(hass).set(
-                self.unique_id,
-                side_channel.INITIAL_IMPORT_INTERVAL_BLOCK,
-                self.initial_interval_block
-            )
+    initial_usage_point: model.UsagePoint | None
 
     def to_mapping(self) -> Mapping[str, Any]:
         """Convert the config to a Mapping that can be stored in a ConfigEntry."""
@@ -150,7 +140,7 @@ class ComponentConfig:
                 vol.Required(
                     _ComponentConfigField.XML,
                     default=user_input.get(_ComponentConfigField.XML),
-                ): selector.TextSelector( # type: ignore
+                ): selector.TextSelector(  # type: ignore
                     selector.TextSelectorConfig(
                         multiline=True,
                     )
@@ -166,46 +156,55 @@ class ComponentConfig:
         `make_config_entry_step_schema`.
         """
         try:
-            interval_blocks = espi.parse_interval_blocks_xml(user_input[_ComponentConfigField.XML])
+            usage_points = espi.parse_xml(user_input[_ComponentConfigField.XML])
         except espi.EspiXmlParseError as ex:
             raise InvalidUserInputError(
                 {_ComponentConfigField.XML: "invalid_espi_xml"}
             ) from ex
 
-        if not interval_blocks:
+        if not usage_points:
             raise InvalidUserInputError(
                 {_ComponentConfigField.XML: "no_usage_points_found"}
             )
-        # if len(interval_blocks) > 1:
-        #     raise InvalidUserInputError(
-        #         {_ComponentConfigField.XML: "multiple_usage_points_found"}
-        #     )
+        if len(usage_points) > 1:
+            raise InvalidUserInputError(
+                {_ComponentConfigField.XML: "multiple_usage_points_found"}
+            )
 
-        interval_block = interval_blocks[0]
+        usage_point = usage_points[0]
         meter_reading_configs = [
-            MeterReadingConfig.from_model(interval_blocks, meter_reading)
-            for meter_reading in interval_blocks.meter_readings
+            MeterReadingConfig.from_model(usage_point, meter_reading)
+            for meter_reading in usage_point.meter_readings
         ]
 
         return ComponentConfig(
             name=user_input[_ComponentConfigField.NAME],
-            unique_id="none",
+            unique_id=usage_point.id,
             meter_reading_configs=meter_reading_configs,
-            initial_interval_block=interval_block,
+            initial_usage_point=usage_point,
         )
 
     @classmethod
-    def from_entry(cls, hass: HomeAssistant, entry: ConfigEntry) -> ComponentConfig:
+    def from_entry(cls, entry: ConfigEntry) -> ComponentConfig:
         """Create a config from a ConfigEntry.
 
-        This method will re-constitute side-channel configs.
+        This method creates the config from data stored in the config entry.
         """
         unique_id = entry.unique_id
         assert unique_id is not None
 
-        initial_usage_point = side_channel.get(hass).get(
-            unique_id, side_channel.INITIAL_IMPORT_USAGE_POINT
-        )
+        # Parse XML data if available to get initial_usage_point
+        initial_usage_point = None
+        xml_data = entry.data.get("xml")
+        if xml_data:
+            try:
+                usage_points = espi.parse_xml(xml_data)
+                if usage_points:
+                    initial_usage_point = usage_points[0]
+            except (ValueError, OSError):
+                # If XML parsing fails, continue without initial_usage_point
+                pass
+
         return ComponentConfig(
             name=entry.data[_ComponentConfigField.NAME],
             unique_id=entry.data[_ComponentConfigField.UNIQUE_ID],
