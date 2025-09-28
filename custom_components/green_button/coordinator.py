@@ -47,9 +47,17 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.usage_points = usage_points or []
             return {"usage_points": usage_points or []}
 
-    async def async_add_data(self, xml_data: str) -> None:
-        """Manually add new Green Button XML data and update entities."""
+    async def async_add_xml_data(self, xml_data: str) -> None:
+        """Add new Green Button XML data and update entities."""
         try:
+            # Store the XML data in config entry for future refreshes
+            data_updates = dict(self.config_entry.data)
+            data_updates["xml"] = xml_data
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, data=data_updates
+            )
+
+            # Parse and update immediately
             usage_points = await self.hass.async_add_executor_job(
                 espi.parse_xml, xml_data
             )
@@ -72,8 +80,8 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.info("Successfully updated coordinator with new data")
 
         except Exception as err:
-            _LOGGER.error("Error adding Green Button data: %s", err)
-            raise UpdateFailed(f"Error adding Green Button data: {err}") from err
+            _LOGGER.error("Error adding Green Button XML data: %s", err)
+            raise UpdateFailed(f"Error adding Green Button XML data: {err}") from err
 
     def get_meter_readings(self) -> list[model.MeterReading]:
         """Get all meter readings from usage points."""

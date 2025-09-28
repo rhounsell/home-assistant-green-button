@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
 from .coordinator import GreenButtonCoordinator
-from .services_coordinator import async_setup_services, async_unload_services
+from .services import async_setup_services, async_unload_services
 
 _LOGGER = logging.getLogger(__name__)
 
