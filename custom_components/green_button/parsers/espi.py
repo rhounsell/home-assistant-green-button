@@ -27,7 +27,8 @@ _UOM_MAP: Final = {
 
 
 _CURRENCY_MAP: Final = {
-    "840": "USD",
+    "124": "CAD",  # Canadian Dollar
+    "840": "USD",  # US Dollar
 }
 
 
@@ -55,18 +56,18 @@ def _parse_child_text(elem: ET.Element, xpath: str, parser: Callable[[str], T]) 
     text = matches[0].text
     if text is None:
         raise EspiXmlParseError(
-            f"Invalid value None at path {repr(xpath)} of entry:\n{_pretty_print(elem)}"
+            f"Invalid value None at path {xpath!r} of entry:\n{_pretty_print(elem)}"
         )
 
     try:
         return parser(text)
     except ValueError as ex:
         raise EspiXmlParseError(
-            f"Invalid value {repr(text)} at path '{xpath}' of entry:\n{_pretty_print(elem)}"
+            f"Invalid value {text!r} at path '{xpath}' of entry:\n{_pretty_print(elem)}"
         ) from ex
     except KeyError as ex:  # For Mappings.
         raise EspiXmlParseError(
-            f"Invalid value {repr(text)} at path '{xpath}' of entry:\n{_pretty_print(elem)}"
+            f"Invalid value {text!r} at path '{xpath}' of entry:\n{_pretty_print(elem)}"
         ) from ex
 
 
@@ -127,11 +128,17 @@ class GreenButtonFeed:
 
         # Get all reading types and filter for energy consumed (flowDirection=1)
         reading_type_entries = self.find_entries("ReadingType")
-        consumed_energy_reading_types = []
+        consumed_energy_reading_types: list[tuple[EspiEntry, ReadingType]] = []
+
+        logger.info(
+            "Found %d ReadingType entries to process", len(reading_type_entries)
+        )
 
         for rt_entry in reading_type_entries:
             try:
                 # Check if this is energy consumed data (flowDirection=1)
+                rt_href = rt_entry.find_self_href()
+                logger.debug("Processing ReadingType: %s", rt_href)
                 flow_direction = rt_entry.parse_child_text("espi:flowDirection", int)
                 if flow_direction == 1:  # Energy consumed
                     reading_type = rt_entry.to_reading_type()
@@ -193,17 +200,86 @@ class GreenButtonFeed:
         self, mr_entry: "EspiEntry", reading_type: model.ReadingType
     ) -> model.MeterReading:
         """Create a MeterReading with the given ReadingType and associated IntervalBlocks."""
+        logger = logging.getLogger(__name__)
+
+        mr_href = mr_entry.find_self_href()
+        mr_related_hrefs = mr_entry.find_related_hrefs()
+
+        logger.debug("MeterReading %s has related hrefs: %s", mr_href, mr_related_hrefs)
+
         # Find related interval blocks for this meter reading
         interval_blocks = mr_entry.find_related_entries(
             "IntervalBlock",
             mr_entry.create_interval_block_parser(reading_type),
         )
 
+        logger.info(
+            "MeterReading %s found %d related IntervalBlocks",
+            mr_href,
+            len(interval_blocks),
+        )
+
+        # If no interval blocks found via direct relations, try alternative matching
+        if not interval_blocks:
+            logger.warning(
+                "No IntervalBlocks found via direct relations, trying alternative matching"
+            )
+            interval_blocks = self._find_interval_blocks_for_meter_reading(
+                mr_entry, reading_type
+            )
+            logger.info(
+                "Alternative matching found %d IntervalBlocks for MeterReading %s",
+                len(interval_blocks),
+                mr_href,
+            )
+
         return model.MeterReading(
-            id=mr_entry.find_self_href(),
+            id=mr_href,
             reading_type=reading_type,
             interval_blocks=interval_blocks,
         )
+
+    def _find_interval_blocks_for_meter_reading(
+        self, mr_entry: "EspiEntry", reading_type: model.ReadingType
+    ) -> list[model.IntervalBlock]:
+        """Find IntervalBlocks that relate back to the given MeterReading."""
+        logger = logging.getLogger(__name__)
+
+        mr_href = mr_entry.find_self_href()
+        interval_block_entries = self.find_entries("IntervalBlock")
+        matching_blocks = []
+
+        logger.debug(
+            "Checking %d IntervalBlock entries for MeterReading %s",
+            len(interval_block_entries),
+            mr_href,
+        )
+
+        for ib_entry in interval_block_entries:
+            try:
+                ib_related_hrefs = ib_entry.find_related_hrefs()
+                logger.debug(
+                    "IntervalBlock %s has related hrefs: %s",
+                    ib_entry.find_self_href(),
+                    ib_related_hrefs,
+                )
+
+                # Check if this interval block relates back to our meter reading
+                if mr_href in ib_related_hrefs:
+                    parser = ib_entry.create_interval_block_parser(reading_type)
+                    interval_block = parser(ib_entry)
+                    matching_blocks.append(interval_block)
+                    logger.debug(
+                        "Matched IntervalBlock %s to MeterReading %s",
+                        ib_entry.find_self_href(),
+                        mr_href,
+                    )
+
+            except (ValueError, EspiXmlParseError) as ex:
+                logger.warning("Failed to process IntervalBlock entry: %s", ex)
+                continue
+
+        return matching_blocks
 
 
 class EspiEntry:
