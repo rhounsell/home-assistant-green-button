@@ -72,8 +72,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 # Update the coordinator with new XML data
                 await coordinator.async_add_data(xml_data)
 
-                # Trigger a coordinator refresh to notify all entities
-                await coordinator.async_refresh()
+                # Note: async_add_data() already calls async_set_updated_data()
+                # which notifies all entities, so no need for async_refresh()
 
                 _LOGGER.info(
                     "Updated coordinator and refreshed entities for entry %s",
