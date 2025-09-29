@@ -19,6 +19,7 @@ from homeassistant import exceptions
 from homeassistant.components import recorder
 from homeassistant.components.recorder import db_schema as recorder_db_schema
 from homeassistant.components.recorder import statistics
+from homeassistant.components.recorder.statistics import async_import_statistics
 from homeassistant.components.recorder import tasks
 from homeassistant.components.recorder import util as recorder_util
 from homeassistant.core import HomeAssistant
@@ -846,6 +847,43 @@ def create_metadata(entity: GreenButtonEntity) -> statistics.StatisticMetaData:
     }
 
 
+async def _generate_statistics_data(
+    hass: HomeAssistant,
+    entity: GreenButtonEntity,
+    data_extractor: DataExtractor,
+    meter_reading: model.MeterReading,
+) -> list[statistics.StatisticData]:
+    """Generate statistics data from meter reading with historical timestamps."""
+    statistics_data = []
+
+    for interval_block in meter_reading.interval_blocks:
+        # Calculate cumulative sum for this block
+        cumulative_sum = 0.0
+
+        for interval_reading in interval_block.interval_readings:
+            if interval_reading.value is not None:
+                # Get the native value (with power of ten multiplier applied)
+                reading_value = float(data_extractor.get_native_value(interval_reading))
+                cumulative_sum += reading_value
+
+                # Create statistics record with historical timestamp
+                stat_record = statistics.StatisticData(
+                    start=interval_reading.start,
+                    state=reading_value,
+                    sum=cumulative_sum,
+                )
+                statistics_data.append(stat_record)
+
+                _LOGGER.debug(
+                    "Generated statistic: timestamp=%s, state=%s, sum=%s",
+                    interval_reading.start,
+                    reading_value,
+                    cumulative_sum,
+                )
+
+    return statistics_data
+
+
 async def update_statistics(
     hass: HomeAssistant,
     entity: GreenButtonEntity,
@@ -854,14 +892,29 @@ async def update_statistics(
 ) -> None:
     """Update the statistics for an entry to match the MeterReading.
 
-    This method is idempotent.
+    This method imports historical statistics data properly.
     """
-    await _UpdateStatisticsTask.create(
-        hass=hass,
-        entity=entity,
-        data_extractor=data_extractor,
-        meter_reading=meter_reading,
-    )()
+    # Create metadata for the statistics
+    metadata = create_metadata(entity)
+
+    # Generate statistics data from meter reading
+    statistics_data = await _generate_statistics_data(
+        hass, entity, data_extractor, meter_reading
+    )
+
+    if statistics_data:
+        # Import historical statistics using the proper Home Assistant API
+        async_import_statistics(hass, metadata, statistics_data)
+        _LOGGER.info(
+            "Imported %d historical statistics records for entity %s",
+            len(statistics_data),
+            entity.entity_id,
+        )
+    else:
+        _LOGGER.warning(
+            "No statistics data generated for entity %s",
+            entity.entity_id,
+        )
 
 
 async def clear_statistic(hass: HomeAssistant, statistic_id: str) -> None:
