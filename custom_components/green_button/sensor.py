@@ -122,7 +122,7 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
     @property
     def long_term_statistics_id(self) -> str:
         """Return the statistic ID associated with the entity."""
-        return f"sensor.{self.unique_id}"
+        return self.entity_id
 
     @property
     def name(self) -> str:
@@ -134,6 +134,37 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
     def native_unit_of_measurement(self) -> str:
         """Return the native unit of measurement for statistics protocol."""
         return self._attr_native_unit_of_measurement or "kWh"
+
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to hass, trigger statistics generation."""
+        await super().async_added_to_hass()
+
+        _LOGGER.info(
+            "Sensor %s: Entity added to Home Assistant, triggering initial statistics generation",
+            self.entity_id,
+        )
+
+        # Trigger statistics generation for initial data
+        # This ensures statistics are created even when coordinator already has data at startup
+        if self.coordinator.data and "usage_points" in self.coordinator.data:
+            usage_points = self.coordinator.data["usage_points"]
+            for usage_point in usage_points:
+                for meter_reading in usage_point.meter_readings:
+                    if meter_reading.id == self._meter_reading_id:
+                        _LOGGER.info(
+                            "Sensor %s: Scheduling initial statistics generation for meter reading %s",
+                            self.entity_id,
+                            meter_reading.id,
+                        )
+                        self.hass.async_create_task(
+                            self.update_sensor_and_statistics(meter_reading)
+                        )
+                        break
+        else:
+            _LOGGER.warning(
+                "Sensor %s: No coordinator data available during entity initialization",
+                self.entity_id,
+            )
 
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
