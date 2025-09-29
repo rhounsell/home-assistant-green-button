@@ -48,7 +48,8 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
             else meter_reading_id
         )
         self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}"
-        self._attr_name = f"Energy Usage {clean_id}"
+        # Use the config entry title (name set when adding integration) as the sensor name
+        self._attr_name = coordinator.config_entry.title
 
     @property
     def native_value(self) -> float | None:
@@ -127,8 +128,8 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
     @property
     def name(self) -> str:
         """Return the entity name for statistics protocol."""
-        # Return the display name or a default
-        return self._attr_name or f"Energy Meter {self._meter_reading_id}"
+        # Return the config entry title (name set when adding integration)
+        return self._attr_name or self.coordinator.config_entry.title
 
     @property
     def native_unit_of_measurement(self) -> str:
