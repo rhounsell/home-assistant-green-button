@@ -128,7 +128,7 @@ class GreenButtonFeed:
 
         # Get all reading types and filter for energy consumed (flowDirection=1)
         reading_type_entries = self.find_entries("ReadingType")
-        consumed_energy_reading_types: list[tuple[EspiEntry, ReadingType]] = []
+        consumed_energy_reading_types: list[tuple[EspiEntry, model.ReadingType]] = []
 
         logger.info(
             "Found %d ReadingType entries to process", len(reading_type_entries)
@@ -140,13 +140,25 @@ class GreenButtonFeed:
                 rt_href = rt_entry.find_self_href()
                 logger.debug("Processing ReadingType: %s", rt_href)
                 flow_direction = rt_entry.parse_child_text("espi:flowDirection", int)
+                interval_length = rt_entry.parse_child_text("espi:intervalLength", int)
+
                 if flow_direction == 1:  # Energy consumed
+                    # Skip daily summaries (intervalLength >= 86400 seconds = 24 hours)
+                    if interval_length >= 86400:
+                        logger.info(
+                            "Skipping daily summary ReadingType: %s (intervalLength=%d seconds)",
+                            rt_href,
+                            interval_length,
+                        )
+                        continue
+
                     reading_type = rt_entry.to_reading_type()
                     consumed_energy_reading_types.append((rt_entry, reading_type))
                     logger.info(
-                        "Found energy consumed ReadingType: %s (flowDirection=%d)",
+                        "Found energy consumed ReadingType: %s (flowDirection=%d, intervalLength=%d)",
                         reading_type.id,
                         flow_direction,
+                        interval_length,
                     )
                 else:
                     logger.info(
@@ -400,6 +412,7 @@ class EspiEntry:
             ),
             unit_of_measurement=self.parse_child_text("espi:uom", _UOM_MAP.__getitem__),
             currency=self.parse_child_text("espi:currency", _CURRENCY_MAP.__getitem__),
+            interval_length=self.parse_child_text("espi:intervalLength", int),
         )
 
     def to_meter_reading(self) -> model.MeterReading:
