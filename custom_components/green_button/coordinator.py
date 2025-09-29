@@ -181,6 +181,8 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         new_blocks_added += 1
 
                 if new_blocks_added > 0:
+                    # Sort blocks by start time to maintain chronological order
+                    merged_blocks.sort(key=lambda block: block.start)
                     # Create new meter reading with merged blocks
                     merged_mr = dataclasses.replace(
                         existing_mr, interval_blocks=merged_blocks
