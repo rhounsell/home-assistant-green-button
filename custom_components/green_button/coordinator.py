@@ -94,6 +94,40 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.error("Error adding Green Button XML data: %s", err)
             raise UpdateFailed(f"Error adding Green Button XML data: {err}") from err
 
+    def has_existing_entities(self) -> bool:
+        """Check if entities already exist for the current data."""
+        return bool(self.usage_points)
+
+    async def async_load_stored_data(self) -> None:
+        """Load XML data from config entry (used during startup)."""
+        xml_data = self.config_entry.data.get("xml")
+        if not xml_data:
+            _LOGGER.debug("No stored XML data found in config entry")
+            return
+
+        if self.has_existing_entities():
+            _LOGGER.debug("Entities already exist, skipping XML re-parsing on restart")
+            return
+
+        try:
+            _LOGGER.info("Loading stored XML data from config entry (restart)")
+            # Parse stored XML data
+            usage_points = await self.hass.async_add_executor_job(
+                espi.parse_xml, xml_data
+            )
+            self.usage_points = usage_points or []
+
+            # Update the data and notify all entities
+            self.async_set_updated_data({"usage_points": self.usage_points})
+
+            _LOGGER.info(
+                "Successfully loaded %d usage points from stored data",
+                len(self.usage_points),
+            )
+
+        except (ValueError, OSError) as err:
+            _LOGGER.warning("Failed to load stored XML data: %s", err)
+
     def _merge_usage_points(self, new_usage_points: list[model.UsagePoint]) -> None:
         """Merge new usage points with existing ones, combining interval blocks."""
         if not self.usage_points:
