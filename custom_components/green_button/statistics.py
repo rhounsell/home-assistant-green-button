@@ -20,11 +20,11 @@ from homeassistant.components import recorder
 from homeassistant.components.recorder import db_schema as recorder_db_schema
 from homeassistant.components.recorder import statistics
 from homeassistant.components.recorder.statistics import async_import_statistics
+from homeassistant.components.recorder.models import StatisticData
 from homeassistant.components.recorder import tasks
 from homeassistant.components.recorder import util as recorder_util
 from homeassistant.core import HomeAssistant
 
-from . import const
 from . import model
 
 
@@ -841,7 +841,7 @@ def create_metadata(entity: GreenButtonEntity) -> statistics.StatisticMetaData:
         "has_mean": True,
         "has_sum": True,
         "name": entity.name,
-        "source": const.DOMAIN,
+        "source": "recorder",
         "statistic_id": entity.long_term_statistics_id,
         "unit_of_measurement": entity.native_unit_of_measurement,
     }
@@ -852,34 +852,48 @@ async def _generate_statistics_data(
     entity: GreenButtonEntity,
     data_extractor: DataExtractor,
     meter_reading: model.MeterReading,
-) -> list[statistics.StatisticData]:
+) -> list[StatisticData]:
     """Generate statistics data from meter reading with historical timestamps."""
     statistics_data = []
 
-    for interval_block in meter_reading.interval_blocks:
-        # Calculate cumulative sum for this block
-        cumulative_sum = 0.0
+    # Calculate cumulative sum across ALL interval blocks and readings
+    cumulative_sum = 0.0
 
-        for interval_reading in interval_block.interval_readings:
-            if interval_reading.value is not None:
-                # Get the native value (with power of ten multiplier applied)
-                reading_value = float(data_extractor.get_native_value(interval_reading))
-                cumulative_sum += reading_value
+    # Collect all readings first, then sort by timestamp
+    all_readings = [
+        interval_reading
+        for interval_block in meter_reading.interval_blocks
+        for interval_reading in interval_block.interval_readings
+        if interval_reading.value is not None
+    ]
 
-                # Create statistics record with historical timestamp
-                stat_record = statistics.StatisticData(
-                    start=interval_reading.start,
-                    state=reading_value,
-                    sum=cumulative_sum,
-                )
-                statistics_data.append(stat_record)
+    # Sort readings by start time to ensure chronological order
+    all_readings.sort(key=lambda r: r.start)
 
-                _LOGGER.debug(
-                    "Generated statistic: timestamp=%s, state=%s, sum=%s",
-                    interval_reading.start,
-                    reading_value,
-                    cumulative_sum,
-                )
+    for interval_reading in all_readings:
+        # Get the native value (with power of ten multiplier applied)
+        reading_value = float(data_extractor.get_native_value(interval_reading))
+
+        # Convert from Wh to kWh if needed
+        if reading_value > 1000:  # Likely in Wh, convert to kWh
+            reading_value = reading_value / 1000.0
+
+        cumulative_sum += reading_value
+
+        # Create statistics record with historical timestamp
+        stat_record: StatisticData = {
+            "start": interval_reading.start,
+            "state": reading_value,
+            "sum": cumulative_sum,
+        }
+        statistics_data.append(stat_record)
+
+        _LOGGER.debug(
+            "Generated statistic: timestamp=%s, state=%s kWh, sum=%s kWh",
+            interval_reading.start,
+            reading_value,
+            cumulative_sum,
+        )
 
     return statistics_data
 
@@ -898,18 +912,60 @@ async def update_statistics(
     metadata = create_metadata(entity)
 
     # Generate statistics data from meter reading
+    _LOGGER.info(
+        "Starting statistics generation for entity %s, meter reading %s",
+        entity.entity_id,
+        meter_reading.id,
+    )
     statistics_data = await _generate_statistics_data(
         hass, entity, data_extractor, meter_reading
     )
 
+    _LOGGER.info(
+        "Generated %d statistics records for entity %s",
+        len(statistics_data),
+        entity.entity_id,
+    )
+
     if statistics_data:
-        # Import historical statistics using the proper Home Assistant API
-        async_import_statistics(hass, metadata, statistics_data)
+        # Log first and last records for debugging
+        first_record = statistics_data[0]
+        last_record = statistics_data[-1]
         _LOGGER.info(
-            "Imported %d historical statistics records for entity %s",
-            len(statistics_data),
-            entity.entity_id,
+            "Statistics range: %s (sum=%s) to %s (sum=%s)",
+            first_record["start"],
+            first_record["sum"],
+            last_record["start"],
+            last_record["sum"],
         )
+
+        # Import historical statistics using the proper Home Assistant API
+        try:
+            async_import_statistics(hass, metadata, statistics_data)
+            _LOGGER.info(
+                "✅ Successfully called async_import_statistics with %d records for entity %s",
+                len(statistics_data),
+                entity.entity_id,
+            )
+
+            # Log some sample records for debugging
+            if statistics_data:
+                first = statistics_data[0]
+                last = statistics_data[-1]
+                _LOGGER.info(
+                    "📊 Statistics range: %s (state=%.3f, sum=%.3f) → %s (state=%.3f, sum=%.3f)",
+                    first["start"].isoformat(),
+                    first["state"],
+                    first["sum"],
+                    last["start"].isoformat(),
+                    last["state"],
+                    last["sum"],
+                )
+        except Exception:
+            _LOGGER.exception(
+                "❌ Failed to import statistics for entity %s",
+                entity.entity_id,
+            )
     else:
         _LOGGER.warning(
             "No statistics data generated for entity %s",
