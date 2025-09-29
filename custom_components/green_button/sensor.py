@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -76,6 +77,17 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         if total_energy > 0:
             return total_energy / 1000.0
         return 0
+
+    @property
+    def last_reset(self) -> datetime | None:
+        """Return the last reset time for total_increasing sensors."""
+        meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
+        if not meter_reading or not meter_reading.interval_blocks:
+            return None
+
+        # For total_increasing sensors, last_reset should be the start of the measurement period
+        # Find the earliest interval block start time (in case blocks are out of order)
+        return min(block.start for block in meter_reading.interval_blocks)
 
     @property
     def available(self) -> bool:
