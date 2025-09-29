@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import Any
 
@@ -71,8 +72,18 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 total_readings,
             )
 
-            # Replace existing data (this handles duplicates by overwriting)
-            self.usage_points = new_usage_points
+            # Merge new data with existing data (combine multiple imports)
+            self._merge_usage_points(new_usage_points)
+
+            # Debug: Log detailed data structure
+            for i, up in enumerate(self.usage_points):
+                _LOGGER.info(
+                    "UsagePoint %d: %d meter readings", i, len(up.meter_readings)
+                )
+                for j, mr in enumerate(up.meter_readings):
+                    _LOGGER.info(
+                        "  MeterReading %d: %d intervals", j, len(mr.interval_blocks)
+                    )
 
             # Update the data and notify all entities
             self.async_set_updated_data({"usage_points": self.usage_points})
@@ -82,6 +93,94 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as err:
             _LOGGER.error("Error adding Green Button XML data: %s", err)
             raise UpdateFailed(f"Error adding Green Button XML data: {err}") from err
+
+    def _merge_usage_points(self, new_usage_points: list[model.UsagePoint]) -> None:
+        """Merge new usage points with existing ones, combining interval blocks."""
+        if not self.usage_points:
+            # No existing data, just use new data
+            self.usage_points = new_usage_points
+            return
+
+        # Create a mapping of existing usage points by ID
+        existing_up_map = {up.id: up for up in self.usage_points}
+
+        for new_up in new_usage_points:
+            if new_up.id in existing_up_map:
+                # Merge meter readings for existing usage point
+                existing_up = existing_up_map[new_up.id]
+                self._merge_meter_readings(existing_up, new_up.meter_readings)
+            else:
+                # Add new usage point
+                self.usage_points.append(new_up)
+
+    def _merge_meter_readings(
+        self,
+        existing_up: model.UsagePoint,
+        new_meter_readings: list[model.MeterReading],
+    ) -> None:
+        """Merge new meter readings with existing ones in a usage point."""
+        # Since objects are immutable, we need to rebuild everything
+        existing_mr_map = {mr.id: mr for mr in existing_up.meter_readings}
+        merged_meter_readings = []
+
+        # Process existing meter readings
+        for existing_mr in existing_up.meter_readings:
+            # Check if this meter reading has new data to merge
+            matching_new_mr = None
+            for new_mr in new_meter_readings:
+                if new_mr.id == existing_mr.id:
+                    matching_new_mr = new_mr
+                    break
+
+            if matching_new_mr:
+                # Merge interval blocks, avoiding duplicates by time period
+                existing_blocks = {
+                    (ib.start, ib.duration): ib for ib in existing_mr.interval_blocks
+                }
+                merged_blocks = list(existing_mr.interval_blocks)
+                new_blocks_added = 0
+
+                for new_block in matching_new_mr.interval_blocks:
+                    block_key = (new_block.start, new_block.duration)
+                    if block_key not in existing_blocks:
+                        merged_blocks.append(new_block)
+                        new_blocks_added += 1
+
+                if new_blocks_added > 0:
+                    # Create new meter reading with merged blocks
+                    merged_mr = dataclasses.replace(
+                        existing_mr, interval_blocks=merged_blocks
+                    )
+                    merged_meter_readings.append(merged_mr)
+                    _LOGGER.info(
+                        "Merged %d new interval blocks into meter reading %s",
+                        new_blocks_added,
+                        existing_mr.id,
+                    )
+                else:
+                    # No new blocks, keep existing
+                    merged_meter_readings.append(existing_mr)
+            else:
+                # No matching new data, keep existing
+                merged_meter_readings.append(existing_mr)
+
+        # Add completely new meter readings (not in existing)
+        for new_mr in new_meter_readings:
+            if new_mr.id not in existing_mr_map:
+                merged_meter_readings.append(new_mr)
+                _LOGGER.info(
+                    "Added new meter reading: %s to usage point %s",
+                    new_mr.id,
+                    existing_up.id,
+                )
+
+        # Replace usage point with merged meter readings
+        merged_up = dataclasses.replace(
+            existing_up, meter_readings=merged_meter_readings
+        )
+        self.usage_points = [
+            merged_up if up.id == existing_up.id else up for up in self.usage_points
+        ]
 
     def get_meter_readings(self) -> list[model.MeterReading]:
         """Get all meter readings from usage points."""

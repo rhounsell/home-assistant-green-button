@@ -79,6 +79,7 @@ class ReadingType:
     currency: str
     power_of_ten_multiplier: int
     unit_of_measurement: str
+    interval_length: int
 
 
 @final

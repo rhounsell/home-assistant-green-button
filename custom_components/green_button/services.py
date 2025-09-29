@@ -12,7 +12,6 @@ from homeassistant.helpers import config_validation as cv
 from . import statistics
 from .const import DOMAIN
 from .coordinator import GreenButtonCoordinator
-from .parsers import espi
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,15 +41,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         _LOGGER.info("Importing ESPI XML data via service")
 
         try:
-            # Parse the XML to get usage points
-            usage_points = espi.parse_xml(xml_data)
-            total_meter_readings = sum(len(up.meter_readings) for up in usage_points)
-            _LOGGER.info(
-                "Parsed XML: found %d usage points with %d total meter readings",
-                len(usage_points),
-                total_meter_readings,
-            )
-
             # Get all Green Button config entries
             entries = list(hass.config_entries.async_entries(DOMAIN))
 

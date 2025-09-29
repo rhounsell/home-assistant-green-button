@@ -39,8 +39,16 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         """Initialize the sensor."""
         super().__init__(coordinator)
         self._meter_reading_id = meter_reading_id
-        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{meter_reading_id}"
-        self._attr_name = f"Energy Usage {meter_reading_id}"
+
+        # Create a cleaner unique ID from the meter reading ID
+        # Extract the last part after the final slash for a shorter identifier
+        clean_id = (
+            meter_reading_id.split("/")[-1]
+            if "/" in meter_reading_id
+            else meter_reading_id
+        )
+        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}"
+        self._attr_name = f"Energy Usage {clean_id}"
 
     @property
     def native_value(self) -> float | None:
@@ -116,26 +124,53 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         """Return the statistic ID associated with the entity."""
         return f"sensor.{self.unique_id}"
 
+    @property
+    def name(self) -> str:
+        """Return the entity name for statistics protocol."""
+        # Return the display name or a default
+        return self._attr_name or f"Energy Meter {self._meter_reading_id}"
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        """Return the native unit of measurement for statistics protocol."""
+        return self._attr_native_unit_of_measurement or "kWh"
+
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         # Update entity state (calls native_value property)
         super()._handle_coordinator_update()
 
+        _LOGGER.info(
+            "Sensor %s: Coordinator update - data available: %s",
+            self.entity_id,
+            bool(self.coordinator.data),
+        )
+
         # Update statistics for all meter readings in coordinator data
         if self.coordinator.data and "usage_points" in self.coordinator.data:
             usage_points = self.coordinator.data["usage_points"]
+            _LOGGER.info(
+                "Sensor %s: Found %d usage points for statistics update",
+                self.entity_id,
+                len(usage_points),
+            )
             for usage_point in usage_points:
                 for meter_reading in usage_point.meter_readings:
                     if meter_reading.id == self._meter_reading_id:
                         # Schedule statistics update (statistics system is idempotent)
-                        _LOGGER.debug(
-                            "Scheduling statistics update for sensor %s, meter reading %s",
+                        _LOGGER.info(
+                            "Sensor %s: Scheduling statistics update for meter reading %s",
                             self.entity_id,
                             meter_reading.id,
                         )
                         self.hass.async_create_task(
                             self.update_sensor_and_statistics(meter_reading)
                         )
+        else:
+            _LOGGER.info(
+                "Sensor %s: No coordinator data available for statistics update",
+                self.entity_id,
+            )
 
     async def update_sensor_and_statistics(
         self, meter_reading: model.MeterReading
@@ -164,11 +199,20 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
 
         # Update statistics for Energy Dashboard
         if hasattr(self, "hass") and self.hass is not None:
+            _LOGGER.info(
+                "Sensor %s: Updating statistics with total energy %s kWh",
+                self.entity_id,
+                self._attr_native_value,
+            )
             await statistics.update_statistics(
                 self.hass,
                 self,
                 statistics.DefaultDataExtractor(),
                 meter_reading,
+            )
+            _LOGGER.info(
+                "Sensor %s: Statistics update completed",
+                self.entity_id,
             )
 
 
@@ -185,29 +229,44 @@ async def async_setup_entry(
         "coordinator"
     ]
 
-    # Create sensor entities for each meter reading found in the data
-    entities = []
+    # Track created entities to avoid duplicates
+    created_entities: set[str] = set()
 
-    # If we have data, create entities for each meter reading
-    if coordinator.data and coordinator.data.get("usage_points"):
-        meter_readings = coordinator.get_meter_readings()
-        for meter_reading in meter_readings:
-            sensor = GreenButtonSensor(coordinator, meter_reading.id)
-            entities.append(sensor)
-            _LOGGER.debug(
-                "Created sensor entity %s for meter reading %s",
-                sensor.unique_id,
-                meter_reading.id,
+    def _async_create_entities() -> None:
+        """Create new entities when data becomes available."""
+        entities = []
+
+        # Debug: Check what data is available
+        _LOGGER.info("Entity creation: coordinator.data = %s", coordinator.data)
+        _LOGGER.info(
+            "Entity creation: usage_points count = %d", len(coordinator.usage_points)
+        )
+
+        # If we have data, create entities for each meter reading
+        if coordinator.data and coordinator.data.get("usage_points"):
+            meter_readings = coordinator.get_meter_readings()
+            _LOGGER.info(
+                "Found %d meter readings to create sensors for", len(meter_readings)
             )
-    else:
-        # Create a default sensor for when no data is available yet
-        sensor = GreenButtonSensor(coordinator, "default_energy_meter")
-        entities.append(sensor)
-        _LOGGER.debug("Created default sensor entity %s", sensor.unique_id)
 
-    # Add entities to Home Assistant
-    if entities:
-        async_add_entities(entities)
-        _LOGGER.info("Added %d Green Button sensor entities", len(entities))
-    else:
-        _LOGGER.warning("No sensor entities created")
+            for meter_reading in meter_readings:
+                if meter_reading.id not in created_entities:
+                    sensor = GreenButtonSensor(coordinator, meter_reading.id)
+                    entities.append(sensor)
+                    created_entities.add(meter_reading.id)
+                    _LOGGER.info(
+                        "Created sensor entity %s for meter reading %s",
+                        sensor.unique_id,
+                        meter_reading.id,
+                    )
+
+        # Add new entities to Home Assistant
+        if entities:
+            async_add_entities(entities)
+            _LOGGER.info("Added %d new Green Button sensor entities", len(entities))
+
+    # Create initial entities (if any data is already available)
+    _async_create_entities()
+
+    # Subscribe to coordinator updates to create entities when new data arrives
+    entry.async_on_unload(coordinator.async_add_listener(_async_create_entities))
