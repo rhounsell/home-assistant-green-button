@@ -52,14 +52,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "coordinator": coordinator,
     }
 
-    # If there's XML data in the config, load it
-    xml_data = entry.data.get("xml")
-    if xml_data:
-        try:
-            await coordinator.async_add_xml_data(xml_data)
-            _LOGGER.debug("Loaded initial XML data into coordinator")
-        except (ValueError, OSError) as err:
-            _LOGGER.warning("Failed to load initial XML data: %s", err)
+    # Load any stored XML data from previous sessions
+    await coordinator.async_load_stored_data()
 
     # Set up platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
