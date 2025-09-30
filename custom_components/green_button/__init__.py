@@ -1,7 +1,7 @@
 """The Green Button integration."""
-# from __future__ import annotations
 
-from typing import Final
+from __future__ import annotations
+
 import logging
 
 from homeassistant.config_entries import ConfigEntry
@@ -10,27 +10,74 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
 from .coordinator import GreenButtonCoordinator
+from .services import async_setup_services, async_unload_services
 
-_LOGGER: Final = logging.getLogger(__name__)
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
-async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
 
-    # You may want to get the XML path from entry.data or options
-    xml_path = config_entry.data.get("xml_path")
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Set up the Green Button component."""
+    _LOGGER.info("Setting up Green Button component services")
+    try:
+        # Set up services
+        await async_setup_services(hass)
+    except ImportError as err:
+        _LOGGER.error("Failed to import services module: %s", err)
+        return False
+    except AttributeError as err:
+        _LOGGER.error("Service registration error: %s", err)
+        return False
+    else:
+        _LOGGER.info("Green Button component setup completed successfully")
+        return True
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up Green Button from a config entry."""
+    _LOGGER.debug("Setting up Green Button integration")
+
+    # Set up services if not already done
+    if not hass.services.has_service(DOMAIN, "import_espi_xml"):
+        _LOGGER.info("Setting up Green Button services from config entry")
+        await async_setup_services(hass)
+
+    # Create the coordinator
+    coordinator = GreenButtonCoordinator(hass, entry)
+
+    # Store the coordinator in hass.data
     hass.data.setdefault(DOMAIN, {})
-    coordinator = GreenButtonCoordinator(hass, xml_path)
-    await coordinator.async_config_entry_first_refresh()
+    hass.data[DOMAIN][entry.entry_id] = {
+        "coordinator": coordinator,
+    }
 
-    hass.data[DOMAIN][config_entry.entry_id] = coordinator
+    # Load any stored XML data from previous sessions
+    await coordinator.async_load_stored_data()
 
-    await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
+    # Set up platforms
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    _LOGGER.info("Green Button integration setup complete")
     return True
 
-async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
-    unload_ok = await hass.config_entries.async_forward_entry_unload(config_entry, Platform.SENSOR)
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload a Green Button config entry."""
+    _LOGGER.debug("Unloading Green Button integration")
+
+    # Unload platforms
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
     if unload_ok:
-        hass.data[DOMAIN].pop(config_entry.entry_id)
-        _LOGGER.debug("Unloading of %s successful", config_entry.title)
+        # Clean up coordinator
+        hass.data[DOMAIN].pop(entry.entry_id)
+
+        # If no more entries, unload services
+        if not hass.data[DOMAIN]:
+            hass.data.pop(DOMAIN, None)
+            await async_unload_services(hass)
+
+        _LOGGER.debug("Unloading of %s successful", entry.title)
+
     return unload_ok

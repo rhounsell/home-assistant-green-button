@@ -1,19 +1,22 @@
 """Module containing config classes for the component."""
+
 from __future__ import annotations
 
-from collections.abc import Mapping
 import dataclasses
-#from homeassistant.backports import enum as backports_enum
-from enum import StrEnum
-from typing import Any, Final, final
+from collections.abc import Mapping
+from typing import Any
+from typing import Final
+from typing import final
 
-from homeassistant.components import sensor
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import selector
 import voluptuous as vol
 
-from . import model, side_channel
+# from homeassistant.backports import enum as backports_enum
+from enum import StrEnum
+from homeassistant.components import sensor
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers import selector
+
+from . import model
 from .parsers import espi
 
 
@@ -26,7 +29,7 @@ class InvalidUserInputError(ValueError):
         self.errors = errors
 
 
-#class _MeterReadingConfigField(backports_enum.StrEnum):
+# class _MeterReadingConfigField(backports_enum.StrEnum):
 class _MeterReadingConfigField(StrEnum):
     ID = "id"
     SENSOR_DEVICE_CLASS = "sensor_device_class"
@@ -108,19 +111,6 @@ class ComponentConfig:
     meter_reading_configs: list[MeterReadingConfig]
     initial_usage_point: model.UsagePoint | None
 
-    def set_side_channels(self, hass: HomeAssistant):
-        """Set the config's side channel values.
-
-        This is used to pass data from the config to the component setup code
-        without serializing it through ConfigEntry data.
-        """
-        if self.initial_usage_point is not None:
-            side_channel.get(hass).set(
-                self.unique_id,
-                side_channel.INITIAL_IMPORT_USAGE_POINT,
-                self.initial_usage_point,
-            )
-
     def to_mapping(self) -> Mapping[str, Any]:
         """Convert the config to a Mapping that can be stored in a ConfigEntry."""
         return {
@@ -150,7 +140,7 @@ class ComponentConfig:
                 vol.Required(
                     _ComponentConfigField.XML,
                     default=user_input.get(_ComponentConfigField.XML),
-                ): selector.TextSelector( # type: ignore
+                ): selector.TextSelector(  # type: ignore
                     selector.TextSelectorConfig(
                         multiline=True,
                     )
@@ -195,17 +185,26 @@ class ComponentConfig:
         )
 
     @classmethod
-    def from_entry(cls, hass: HomeAssistant, entry: ConfigEntry) -> ComponentConfig:
+    def from_entry(cls, entry: ConfigEntry) -> ComponentConfig:
         """Create a config from a ConfigEntry.
 
-        This method will re-constitute side-channel configs.
+        This method creates the config from data stored in the config entry.
         """
         unique_id = entry.unique_id
         assert unique_id is not None
 
-        initial_usage_point = side_channel.get(hass).get(
-            unique_id, side_channel.INITIAL_IMPORT_USAGE_POINT
-        )
+        # Parse XML data if available to get initial_usage_point
+        initial_usage_point = None
+        xml_data = entry.data.get("xml")
+        if xml_data:
+            try:
+                usage_points = espi.parse_xml(xml_data)
+                if usage_points:
+                    initial_usage_point = usage_points[0]
+            except (ValueError, OSError):
+                # If XML parsing fails, continue without initial_usage_point
+                pass
+
         return ComponentConfig(
             name=entry.data[_ComponentConfigField.NAME],
             unique_id=entry.data[_ComponentConfigField.UNIQUE_ID],

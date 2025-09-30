@@ -1,15 +1,14 @@
 """Config flow for Green Button integration."""
+
 from __future__ import annotations
 
 import logging
 from typing import Any
 
 from homeassistant import config_entries
-from homeassistant import data_entry_flow
 
 from . import configs
 from . import const
-from . import state
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -21,10 +20,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> data_entry_flow.FlowResult:
+    ) -> config_entries.ConfigFlowResult:
         """Handle the initial step."""
-        await state.async_ensure_setup(self.hass)
-
         step_id = "user"
         schema = configs.ComponentConfig.make_config_entry_step_schema(user_input)
         if user_input is None:
@@ -51,8 +48,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
             return self.async_abort(reason="already_configured")
 
         _LOGGER.info("Created config with unique ID %r", config.unique_id)
-        config.set_side_channels(self.hass)
+        # Store the XML data directly in config entry instead of using side channels
+        config_data = dict(config.to_mapping())
+        # Add the original XML data for the coordinator to parse
+        config_data["xml"] = user_input.get("xml", "")
+
         return self.async_create_entry(
             title=config.name,
-            data=config.to_mapping(),
+            data=config_data,
         )
