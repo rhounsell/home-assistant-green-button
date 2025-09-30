@@ -3,6 +3,7 @@
 Based on the Energy Services Provider Interface (ESPI) Atom feed defined by the
 North American Energy Standards Board.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -78,6 +79,7 @@ class ReadingType:
     currency: str
     power_of_ten_multiplier: int
     unit_of_measurement: str
+    interval_length: int
 
 
 @final
@@ -118,3 +120,31 @@ class UsagePoint:
             if meter_reading.id == id_str:
                 return meter_reading
         return None
+
+    @classmethod
+    def default_usage_point(cls) -> UsagePoint:
+        """Create a default usage point for cases where no usage points are found.
+
+        This is used when utilities like Hydro Ottawa provide only links to usage
+        data without actual usage point definitions in the XML.
+        """
+        # Create a default reading type for energy consumption
+        default_reading_type = ReadingType(
+            id="default_energy_reading",
+            currency="CAD",
+            power_of_ten_multiplier=0,
+            unit_of_measurement="kWh",
+        )
+
+        # Create a default meter reading with no interval blocks
+        default_meter_reading = MeterReading(
+            id="default_energy_meter",
+            reading_type=default_reading_type,
+            interval_blocks=[],
+        )
+
+        return cls(
+            id="default_usage_point",
+            sensor_device_class=sensor.SensorDeviceClass.ENERGY,
+            meter_readings=[default_meter_reading],
+        )

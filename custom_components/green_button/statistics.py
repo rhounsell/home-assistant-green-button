@@ -1,4 +1,5 @@
 """A module defining calculators for statistics."""
+
 from __future__ import annotations
 
 import asyncio
@@ -18,13 +19,44 @@ from homeassistant import exceptions
 from homeassistant.components import recorder
 from homeassistant.components.recorder import db_schema as recorder_db_schema
 from homeassistant.components.recorder import statistics
+from homeassistant.components.recorder.statistics import async_import_statistics
+from homeassistant.components.recorder.models import StatisticData
 from homeassistant.components.recorder import tasks
 from homeassistant.components.recorder import util as recorder_util
 from homeassistant.core import HomeAssistant
 
-from . import const
 from . import model
-from . import state
+
+
+class GreenButtonEntity(Protocol):
+    """Protocol for Green Button entities that support statistics."""
+
+    @property
+    def entity_id(self) -> str:
+        """Return the entity ID."""
+        ...
+
+    @property
+    def name(self) -> str:
+        """Return the entity name."""
+        ...
+
+    @property
+    def long_term_statistics_id(self) -> str:
+        """Return the statistic ID."""
+        ...
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        """Return the native unit of measurement."""
+        ...
+
+    async def update_sensor_and_statistics(
+        self, meter_reading: model.MeterReading
+    ) -> None:
+        """Update the entity's state and statistics."""
+        ...
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -185,7 +217,7 @@ def _merge_interval_blocks(
 
 
 def _to_table(
-    period: Literal["5minute", "hour"]
+    period: Literal["5minute", "hour"],
 ) -> type[recorder_db_schema.StatisticsShortTerm | recorder_db_schema.Statistics]:
     if period == "5minute":
         return recorder_db_schema.StatisticsShortTerm
@@ -549,7 +581,7 @@ class _ComputeUpdatedPeriodStatisticsTask(tasks.RecorderTask):
 @dataclasses.dataclass(frozen=False)
 class _ImportStatisticsTask(tasks.RecorderTask):
     hass: HomeAssistant
-    entity: state.GreenButtonEntity
+    entity: GreenButtonEntity
     samples: list[statistics.StatisticData]
     table: type[recorder_db_schema.StatisticsShortTerm | recorder_db_schema.Statistics]
     future: asyncio.Future[None]
@@ -579,7 +611,7 @@ class _ImportStatisticsTask(tasks.RecorderTask):
     def queue_task(
         cls,
         hass: HomeAssistant,
-        entity: state.GreenButtonEntity,
+        entity: GreenButtonEntity,
         samples: list[statistics.StatisticData],
         table: type[statistics.Statistics | statistics.StatisticsShortTerm],
     ) -> asyncio.Future[None]:
@@ -686,7 +718,7 @@ class _UpdateStatisticsTask:
         self,
         hass: HomeAssistant,
         stats_dao: _StatsDao,
-        entity: state.GreenButtonEntity,
+        entity: GreenButtonEntity,
         data_extractor: DataExtractor,
         meter_reading: model.MeterReading,
     ) -> None:
@@ -755,7 +787,7 @@ class _UpdateStatisticsTask:
     def create(
         cls,
         hass: HomeAssistant,
-        entity: state.GreenButtonEntity,
+        entity: GreenButtonEntity,
         data_extractor: DataExtractor,
         meter_reading: model.MeterReading,
     ) -> _UpdateStatisticsTask:
@@ -786,34 +818,159 @@ class DataExtractor(Protocol):
         """Get the native value from the IntervalReading."""
 
 
-def create_metadata(entity: state.GreenButtonEntity) -> statistics.StatisticMetaData:
+class DefaultDataExtractor:
+    """Default implementation of DataExtractor."""
+
+    def get_native_value(
+        self, interval_reading: model.IntervalReading
+    ) -> decimal.Decimal:
+        """Get the native value from the IntervalReading."""
+        if interval_reading.value is None:
+            return decimal.Decimal(0)
+
+        # Apply power of ten multiplier
+        power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
+        value = interval_reading.value * (10**power_multiplier)
+
+        return decimal.Decimal(value)
+
+
+def create_metadata(entity: GreenButtonEntity) -> statistics.StatisticMetaData:
     """Create the statistic metadata for the entity."""
     return {
         "has_mean": True,
         "has_sum": True,
         "name": entity.name,
-        "source": const.DOMAIN,
+        "source": "recorder",
         "statistic_id": entity.long_term_statistics_id,
         "unit_of_measurement": entity.native_unit_of_measurement,
     }
 
 
+async def _generate_statistics_data(
+    hass: HomeAssistant,
+    entity: GreenButtonEntity,
+    data_extractor: DataExtractor,
+    meter_reading: model.MeterReading,
+) -> list[StatisticData]:
+    """Generate statistics data from meter reading with historical timestamps."""
+    statistics_data = []
+
+    # Calculate cumulative sum across ALL interval blocks and readings
+    cumulative_sum = 0.0
+
+    # Collect all readings first, then sort by timestamp
+    all_readings = [
+        interval_reading
+        for interval_block in meter_reading.interval_blocks
+        for interval_reading in interval_block.interval_readings
+        if interval_reading.value is not None
+    ]
+
+    # Sort readings by start time to ensure chronological order
+    all_readings.sort(key=lambda r: r.start)
+
+    for interval_reading in all_readings:
+        # Get the native value (with power of ten multiplier applied)
+        reading_value = float(data_extractor.get_native_value(interval_reading))
+
+        # Convert from Wh to kWh if needed
+        if reading_value > 1000:  # Likely in Wh, convert to kWh
+            reading_value = reading_value / 1000.0
+
+        cumulative_sum += reading_value
+
+        # Create statistics record with historical timestamp
+        stat_record: StatisticData = {
+            "start": interval_reading.start,
+            "state": reading_value,
+            "sum": cumulative_sum,
+        }
+        statistics_data.append(stat_record)
+
+        _LOGGER.debug(
+            "Generated statistic: timestamp=%s, state=%s kWh, sum=%s kWh",
+            interval_reading.start,
+            reading_value,
+            cumulative_sum,
+        )
+
+    return statistics_data
+
+
 async def update_statistics(
     hass: HomeAssistant,
-    entity: state.GreenButtonEntity,
+    entity: GreenButtonEntity,
     data_extractor: DataExtractor,
     meter_reading: model.MeterReading,
 ) -> None:
     """Update the statistics for an entry to match the MeterReading.
 
-    This method is idempotent.
+    This method imports historical statistics data properly.
     """
-    await _UpdateStatisticsTask.create(
-        hass=hass,
-        entity=entity,
-        data_extractor=data_extractor,
-        meter_reading=meter_reading,
-    )()
+    # Create metadata for the statistics
+    metadata = create_metadata(entity)
+
+    # Generate statistics data from meter reading
+    _LOGGER.info(
+        "Starting statistics generation for entity %s, meter reading %s",
+        entity.entity_id,
+        meter_reading.id,
+    )
+    statistics_data = await _generate_statistics_data(
+        hass, entity, data_extractor, meter_reading
+    )
+
+    _LOGGER.info(
+        "Generated %d statistics records for entity %s",
+        len(statistics_data),
+        entity.entity_id,
+    )
+
+    if statistics_data:
+        # Log first and last records for debugging
+        first_record = statistics_data[0]
+        last_record = statistics_data[-1]
+        _LOGGER.info(
+            "Statistics range: %s (sum=%s) to %s (sum=%s)",
+            first_record["start"],
+            first_record["sum"],
+            last_record["start"],
+            last_record["sum"],
+        )
+
+        # Import historical statistics using the proper Home Assistant API
+        try:
+            async_import_statistics(hass, metadata, statistics_data)
+            _LOGGER.info(
+                "✅ Successfully called async_import_statistics with %d records for entity %s",
+                len(statistics_data),
+                entity.entity_id,
+            )
+
+            # Log some sample records for debugging
+            if statistics_data:
+                first = statistics_data[0]
+                last = statistics_data[-1]
+                _LOGGER.info(
+                    "📊 Statistics range: %s (state=%.3f, sum=%.3f) → %s (state=%.3f, sum=%.3f)",
+                    first["start"].isoformat(),
+                    first["state"],
+                    first["sum"],
+                    last["start"].isoformat(),
+                    last["state"],
+                    last["sum"],
+                )
+        except Exception:
+            _LOGGER.exception(
+                "❌ Failed to import statistics for entity %s",
+                entity.entity_id,
+            )
+    else:
+        _LOGGER.warning(
+            "No statistics data generated for entity %s",
+            entity.entity_id,
+        )
 
 
 async def clear_statistic(hass: HomeAssistant, statistic_id: str) -> None:
