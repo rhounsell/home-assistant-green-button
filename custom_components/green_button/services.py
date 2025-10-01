@@ -20,7 +20,7 @@ SERVICE_DELETE_STATISTICS = "delete_statistics"
 
 IMPORT_ESPI_XML_SCHEMA = vol.Schema(
     {
-        vol.Required("xml"): cv.string,
+        vol.Required("xml_file_path"): cv.string,
     }
 )
 
@@ -36,9 +36,19 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def import_espi_xml_service(call: ServiceCall) -> None:
         """Handle the import_espi_xml service call."""
-        xml_data = call.data["xml"]
+        import os
+        xml_path = call.data["xml_file_path"]
+        if not os.path.isfile(xml_path):
+            _LOGGER.error("Specified XML file does not exist: %s", xml_path)
+            return
+        try:
+            with open(xml_path, "r", encoding="utf-8") as f:
+                xml_data = f.read()
+        except Exception as e:
+            _LOGGER.error("Failed to read XML file: %s", e)
+            return
 
-        _LOGGER.info("Importing ESPI XML data via service")
+        _LOGGER.info("Importing ESPI XML data via service from file: %s", xml_path)
 
         try:
             # Get all Green Button config entries
