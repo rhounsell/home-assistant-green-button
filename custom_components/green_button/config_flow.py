@@ -18,16 +18,36 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
 
     VERSION = 1
 
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Handle the initial step."""
+        import voluptuous as vol
+        import os
         step_id = "user"
-        schema = configs.ComponentConfig.make_config_entry_step_schema(user_input)
-        if user_input is None:
+        # Add xml_file_path to the schema
+        schema = configs.ComponentConfig.make_config_entry_step_schema(user_input).extend({
+            vol.Required("xml_file_path"): str,
+        })
+        errors = {}
+        xml_content = ""
+        if user_input is not None:
+            xml_path = user_input.get("xml_file_path", "")
+            if not xml_path or not os.path.isfile(xml_path):
+                errors["xml_file_path"] = "file_not_found"
+            else:
+                try:
+                    with open(xml_path, "r", encoding="utf-8") as f:
+                        xml_content = f.read()
+                except Exception:
+                    errors["xml_file_path"] = "file_read_error"
+
+        if user_input is None or errors:
             return self.async_show_form(
                 step_id=step_id,
                 data_schema=schema,
+                errors=errors,
             )
 
         try:
@@ -48,10 +68,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
             return self.async_abort(reason="already_configured")
 
         _LOGGER.info("Created config with unique ID %r", config.unique_id)
-        # Store the XML data directly in config entry instead of using side channels
         config_data = dict(config.to_mapping())
-        # Add the original XML data for the coordinator to parse
-        config_data["xml"] = user_input.get("xml", "")
+        config_data["xml"] = xml_content
 
         return self.async_create_entry(
             title=config.name,

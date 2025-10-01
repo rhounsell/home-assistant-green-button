@@ -8,7 +8,7 @@
           "usage_point_href": "UsagePoint HREF",
           "energy_unit": "Energy Unit",
           "cost_currency": "Cost Currency",
-          "xml": "XML"
+          "xml_file_path": "XML File Path"
         }
       }
     },
