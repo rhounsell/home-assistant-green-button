@@ -838,7 +838,7 @@ class DefaultDataExtractor:
 def create_metadata(entity: GreenButtonEntity) -> statistics.StatisticMetaData:
     """Create the statistic metadata for the entity."""
     return {
-        "has_mean": True,
+        "has_mean": False,
         "has_sum": True,
         "name": entity.name,
         "source": "recorder",
