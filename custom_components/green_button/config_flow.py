@@ -24,12 +24,36 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
     ) -> config_entries.ConfigFlowResult:
         """Handle the initial step."""
         import voluptuous as vol
+        from homeassistant.helpers import selector
         import os
         step_id = "user"
-        # Add xml_file_path to the schema as optional (in addition to the xml field from ComponentConfig)
-        schema = configs.ComponentConfig.make_config_entry_step_schema(user_input).extend({
-            vol.Optional("xml_file_path", default=""): str,
-        })
+        
+        # Build a custom schema where XML field is optional
+        if user_input is None:
+            user_input_default = {
+                "name": "Home",
+            }
+        else:
+            user_input_default = user_input
+            
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    "name",
+                    default=user_input_default.get("name"),
+                ): str,
+                vol.Optional(
+                    "xml",
+                    default=user_input_default.get("xml", ""),
+                ): selector.TextSelector(
+                    selector.TextSelectorConfig(
+                        multiline=True,
+                    )
+                ),
+                vol.Optional("xml_file_path", default=""): str,
+            }
+        )
+        
         errors = {}
         
         if user_input is not None:
