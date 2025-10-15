@@ -23,6 +23,7 @@ from homeassistant.components.recorder.statistics import async_import_statistics
 from homeassistant.components.recorder.models import StatisticData
 from homeassistant.components.recorder import tasks
 from homeassistant.components.recorder import util as recorder_util
+from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 
 from . import model
@@ -286,6 +287,34 @@ def _queue_task(
 
 def _complete_future(future: asyncio.Future[T], value: T) -> None:
     future.get_loop().call_soon_threadsafe(future.set_result, value)
+
+
+def _convert_to_kwh(value: float, source_unit: str) -> float:
+    """Convert energy value from source unit to kWh.
+    
+    Args:
+        value: The energy value in the source unit
+        source_unit: The source unit (e.g., UnitOfEnergy.WATT_HOUR)
+    
+    Returns:
+        The energy value in kWh
+    """
+    if source_unit == UnitOfEnergy.WATT_HOUR:
+        # Convert Wh to kWh
+        return value / 1000.0
+    elif source_unit == UnitOfEnergy.KILO_WATT_HOUR:
+        # Already in kWh
+        return value
+    elif source_unit == UnitOfEnergy.MEGA_WATT_HOUR:
+        # Convert MWh to kWh
+        return value * 1000.0
+    else:
+        # Unknown unit, assume it's already in the correct unit
+        _LOGGER.warning(
+            "Unknown energy unit '%s', assuming value is already in kWh",
+            source_unit,
+        )
+        return value
 
 
 class _StatsDao:
@@ -905,20 +934,27 @@ async def _generate_statistics_data(
     # Calculate cumulative sum starting from existing data
     cumulative_sum = existing_sum
 
+    # Get the source unit from the first reading (all readings should have the same unit)
+    source_unit = all_readings[0].reading_type.unit_of_measurement if all_readings else UnitOfEnergy.WATT_HOUR
+
     for interval_reading in all_readings:
         # Get the native value (with power of ten multiplier applied)
+        # This gives us the value in the native unit from the ReadingType
         reading_value = float(data_extractor.get_native_value(interval_reading))
 
-        # Convert from Wh to kWh if needed
-        if reading_value > 1000:  # Likely in Wh, convert to kWh
-            reading_value = reading_value / 1000.0
+        # Convert from source unit to kWh (Home Assistant expects kWh for energy)
+        # The power of ten multiplier has already been applied by get_native_value()
+        # Example: raw value 5770000 with powerOfTenMultiplier=-3 and uom=72 (Wh)
+        #   → get_native_value returns 5770000 * 10^-3 = 5770 Wh
+        #   → _convert_to_kwh converts 5770 Wh to 5.77 kWh
+        reading_value_kwh = _convert_to_kwh(reading_value, source_unit)
 
-        cumulative_sum += reading_value
+        cumulative_sum += reading_value_kwh
 
         # Create statistics record with historical timestamp
         stat_record: StatisticData = {
             "start": interval_reading.start,
-            "state": reading_value,
+            "state": reading_value_kwh,
             "sum": cumulative_sum,
         }
         statistics_data.append(stat_record)
@@ -926,7 +962,7 @@ async def _generate_statistics_data(
         _LOGGER.debug(
             "Generated statistic: timestamp=%s, state=%s kWh, sum=%s kWh",
             interval_reading.start,
-            reading_value,
+            reading_value_kwh,
             cumulative_sum,
         )
 
