@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+
+import aiofiles
 import voluptuous as vol
 
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -36,14 +38,15 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def import_espi_xml_service(call: ServiceCall) -> None:
         """Handle the import_espi_xml service call."""
+
         import os
         xml_path = call.data["xml_file_path"]
         if not os.path.isfile(xml_path):
             _LOGGER.error("Specified XML file does not exist: %s", xml_path)
             return
         try:
-            with open(xml_path, "r", encoding="utf-8") as f:
-                xml_data = f.read()
+            async with aiofiles.open(xml_path, "r", encoding="utf-8") as f:
+                xml_data = await f.read()
         except Exception as e:
             _LOGGER.error("Failed to read XML file: %s", e)
             return
