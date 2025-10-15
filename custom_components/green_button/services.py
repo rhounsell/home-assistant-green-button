@@ -21,7 +21,8 @@ SERVICE_DELETE_STATISTICS = "delete_statistics"
 
 IMPORT_ESPI_XML_SCHEMA = vol.Schema(
     {
-        vol.Required("xml_file_path"): cv.string,
+        vol.Optional("xml_file_path"): cv.string,
+        vol.Optional("xml"): cv.string,
     }
 )
 
@@ -42,48 +43,65 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def import_espi_xml_service(call: ServiceCall) -> None:
         """Handle the import_espi_xml service call."""
-        xml_path = call.data["xml_file_path"]
+        xml_path = call.data.get("xml_file_path", "").strip()
+        xml_content = call.data.get("xml", "").strip()
+        
+        # Validate that at least one is provided
+        if not xml_path and not xml_content:
+            _LOGGER.error("No XML data provided. Please provide either xml_file_path or xml content.")
+            return
+        
+        # Validate that both are not provided
+        if xml_path and xml_content:
+            _LOGGER.error("Both xml_file_path and xml content provided. Please provide only one.")
+            return
+        
+        # If file path is provided, read the file
+        if xml_path:
+            # Debug logging
+            _LOGGER.debug("User provided xml_path: %s", xml_path)
+            _LOGGER.debug("Current working directory: %s", Path.cwd())
+            _LOGGER.debug("Home Assistant config directory: %s", hass.config.config_dir)
 
-        # Debug logging
-        _LOGGER.debug("User provided xml_path: %s", xml_path)
-        _LOGGER.debug("Current working directory: %s", Path.cwd())
-        _LOGGER.debug("Home Assistant config directory: %s", hass.config.config_dir)
-
-        # Try to resolve the path relative to HA config directory if it's not absolute
-        xml_path_obj = Path(xml_path)
-        if not xml_path_obj.is_absolute():
-            resolved_path = Path(hass.config.config_dir) / xml_path
-            _LOGGER.debug("Resolved relative path to: %s", resolved_path)
-        else:
-            resolved_path = xml_path_obj
-            _LOGGER.debug("Using absolute path: %s", resolved_path)
-
-        if not resolved_path.is_file():
-            _LOGGER.error("Specified XML file does not exist: %s", resolved_path)
-            _LOGGER.error(
-                "Checked paths - Original: %s, Resolved: %s", xml_path, resolved_path
-            )
-
-            # Additional debugging - list files in the expected directory
-            config_dir = Path(hass.config.config_dir)
-            green_button_dir = config_dir / "custom_components" / "green_button"
-            if green_button_dir.exists():
-                _LOGGER.debug("Files in green_button directory:")
-                for file_path in green_button_dir.iterdir():
-                    _LOGGER.debug("  %s", file_path.name)
+            # Try to resolve the path relative to HA config directory if it's not absolute
+            xml_path_obj = Path(xml_path)
+            if not xml_path_obj.is_absolute():
+                resolved_path = Path(hass.config.config_dir) / xml_path
+                _LOGGER.debug("Resolved relative path to: %s", resolved_path)
             else:
-                _LOGGER.debug(
-                    "Green button directory does not exist: %s", green_button_dir
+                resolved_path = xml_path_obj
+                _LOGGER.debug("Using absolute path: %s", resolved_path)
+
+            if not resolved_path.is_file():
+                _LOGGER.error("Specified XML file does not exist: %s", resolved_path)
+                _LOGGER.error(
+                    "Checked paths - Original: %s, Resolved: %s", xml_path, resolved_path
                 )
-            return
 
-        try:
-            xml_data = await hass.async_add_executor_job(_read_file_sync, resolved_path)
-        except OSError as e:
-            _LOGGER.error("Failed to read XML file: %s", e)
-            return
+                # Additional debugging - list files in the expected directory
+                config_dir = Path(hass.config.config_dir)
+                green_button_dir = config_dir / "custom_components" / "green_button"
+                if green_button_dir.exists():
+                    _LOGGER.debug("Files in green_button directory:")
+                    for file_path in green_button_dir.iterdir():
+                        _LOGGER.debug("  %s", file_path.name)
+                else:
+                    _LOGGER.debug(
+                        "Green button directory does not exist: %s", green_button_dir
+                    )
+                return
 
-        _LOGGER.info("Importing ESPI XML data via service from file: %s", resolved_path)
+            try:
+                xml_data = await hass.async_add_executor_job(_read_file_sync, resolved_path)
+            except OSError as e:
+                _LOGGER.error("Failed to read XML file: %s", e)
+                return
+
+            _LOGGER.info("Importing ESPI XML data via service from file: %s", resolved_path)
+        else:
+            # Use the XML content provided directly
+            xml_data = xml_content
+            _LOGGER.info("Importing ESPI XML data via service from provided XML content")
 
         try:
             # Get all Green Button config entries

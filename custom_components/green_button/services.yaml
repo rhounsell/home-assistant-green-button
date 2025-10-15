@@ -12,14 +12,21 @@ delete_statistics:
 
 import_espi_xml:
   name: Import ESPI XML
-  description: Import usage data from an XML file containing the ESPI atom format.
+  description: Import usage data from an XML file or XML content in the ESPI atom format. Provide either xml_file_path OR xml, not both.
   fields:
     xml_file_path:
       name: XML File Path
-      description: "Path to the XML file to import."
-      required: true
+      description: "Path to the XML file to import (e.g., /share/myfile.xml). Leave empty if providing XML content directly."
+      required: false
       selector:
         text:
+    xml:
+      name: XML Content
+      description: "ESPI XML content to import directly. Leave empty if providing a file path."
+      required: false
+      selector:
+        text:
+          multiline: true
 
 log_statistics:
   name: Log Statistics
