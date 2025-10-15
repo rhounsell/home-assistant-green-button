@@ -854,21 +854,56 @@ async def _generate_statistics_data(
     meter_reading: model.MeterReading,
 ) -> list[StatisticData]:
     """Generate statistics data from meter reading with historical timestamps."""
-    statistics_data = []
-
-    # Calculate cumulative sum across ALL interval blocks and readings
-    cumulative_sum = 0.0
+    statistics_data: list[StatisticData] = []
 
     # Collect all readings first, then sort by timestamp
     all_readings = [
         interval_reading
         for interval_block in meter_reading.interval_blocks
         for interval_reading in interval_block.interval_readings
-        if interval_reading.value is not None
     ]
 
     # Sort readings by start time to ensure chronological order
     all_readings.sort(key=lambda r: r.start)
+    
+    if not all_readings:
+        return statistics_data
+
+    # Get the existing sum before the first reading timestamp
+    # This ensures we continue from existing data rather than starting from 0
+    first_reading_time = all_readings[0].start
+    existing_sum = 0.0
+    
+    try:
+        # Query for the most recent statistic before our import period
+        existing_stats = await hass.async_add_executor_job(
+            statistics.statistic_during_period,
+            hass,
+            None,  # start_time (beginning of time)
+            first_reading_time,  # end_time
+            entity.long_term_statistics_id,
+            {"change"},
+            None,  # units
+        )
+        if existing_stats and "change" in existing_stats:
+            change_value = existing_stats["change"]
+            if change_value is not None:
+                existing_sum = float(change_value)
+                _LOGGER.info(
+                    "Found existing sum of %s kWh before %s for entity %s",
+                    existing_sum,
+                    first_reading_time,
+                    entity.entity_id,
+                )
+    except Exception:
+        _LOGGER.warning(
+            "Could not query existing statistics for entity %s, starting from 0",
+            entity.entity_id,
+            exc_info=True,
+        )
+
+    # Calculate cumulative sum starting from existing data
+    cumulative_sum = existing_sum
 
     for interval_reading in all_readings:
         # Get the native value (with power of ten multiplier applied)
