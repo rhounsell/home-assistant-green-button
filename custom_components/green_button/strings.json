@@ -16,6 +16,10 @@
       "invalid_espi_xml": "Invalid ESPI XML.",
       "no_usage_points_found": "No UsagePoints found in the XML. You need exactly one.",
       "multiple_usage_points_found": "Multiple UsagePoints found in the XML. You need exactly one.",
+      "no_xml_provided": "Please provide either XML content or an XML file path.",
+      "both_xml_provided": "Please provide either XML content or an XML file path, not both.",
+      "file_not_found": "The specified XML file does not exist.",
+      "file_read_error": "Failed to read the XML file.",
       "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
       "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
       "unknown": "[%key:common::config_flow::error::unknown%]"
