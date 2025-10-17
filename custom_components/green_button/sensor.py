@@ -438,6 +438,34 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
     def native_unit_of_measurement(self) -> str:
         return self._attr_native_unit_of_measurement or "m³"
 
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+
+        _LOGGER.info(
+            "Gas Sensor %s: Entity added to Home Assistant, triggering initial statistics generation",
+            self.entity_id,
+        )
+
+        if self.coordinator.data and "usage_points" in self.coordinator.data:
+            for usage_point in self.coordinator.data["usage_points"]:
+                for meter_reading in usage_point.meter_readings:
+                    if meter_reading.id == self._meter_reading_id:
+                        self.hass.async_create_task(
+                            self.update_sensor_and_statistics(meter_reading)
+                        )
+                        break
+
+    def _handle_coordinator_update(self) -> None:
+        super()._handle_coordinator_update()
+
+        if self.coordinator.data and "usage_points" in self.coordinator.data:
+            for usage_point in self.coordinator.data["usage_points"]:
+                for meter_reading in usage_point.meter_readings:
+                    if meter_reading.id == self._meter_reading_id:
+                        self.hass.async_create_task(
+                            self.update_sensor_and_statistics(meter_reading)
+                        )
+
     async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
         # Update entity state
         total = 0.0
@@ -486,6 +514,34 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
     @property
     def native_unit_of_measurement(self) -> str:
         return self._attr_native_unit_of_measurement or "CAD"
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+
+        _LOGGER.info(
+            "Gas Cost Sensor %s: Entity added to Home Assistant, triggering initial statistics generation",
+            self.entity_id,
+        )
+
+        if self.coordinator.data and "usage_points" in self.coordinator.data:
+            for usage_point in self.coordinator.data["usage_points"]:
+                for meter_reading in usage_point.meter_readings:
+                    if meter_reading.id == self._meter_reading_id:
+                        self.hass.async_create_task(
+                            self.update_sensor_and_statistics(meter_reading)
+                        )
+                        break
+
+    def _handle_coordinator_update(self) -> None:
+        super()._handle_coordinator_update()
+
+        if self.coordinator.data and "usage_points" in self.coordinator.data:
+            for usage_point in self.coordinator.data["usage_points"]:
+                for meter_reading in usage_point.meter_readings:
+                    if meter_reading.id == self._meter_reading_id:
+                        self.hass.async_create_task(
+                            self.update_sensor_and_statistics(meter_reading)
+                        )
 
     async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
         # Update state
