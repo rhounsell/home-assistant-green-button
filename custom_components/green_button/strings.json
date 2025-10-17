@@ -2,12 +2,13 @@
   "config": {
     "step": {
       "user": {
-        "description": "Configure the Green Button integration.",
+        "description": "Configure the Green Button integration. Provide either XML content or an XML file path (not both). Relative paths are resolved against the Home Assistant config directory.",
         "data": {
           "name": "[%key:common::config_flow::data::name%]",
           "usage_point_href": "UsagePoint HREF",
           "energy_unit": "Energy Unit",
           "cost_currency": "Cost Currency",
+          "xml": "XML",
           "xml_file_path": "XML File Path"
         }
       }

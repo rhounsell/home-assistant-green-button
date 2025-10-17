@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from pathlib import Path
 
 from homeassistant import config_entries
+import voluptuous as vol
+from homeassistant.helpers import selector
 
 from . import configs
 from . import const
@@ -23,9 +26,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Handle the initial step."""
-        import voluptuous as vol
-        from homeassistant.helpers import selector
-        import os
         step_id = "user"
         
         # Build a custom schema where XML field is optional
@@ -68,13 +68,22 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                 errors["base"] = "both_xml_provided"
             # If file path is provided, read it
             elif xml_path:
-                if not os.path.isfile(xml_path):
+                # Resolve relative path against HA config directory
+                xml_path_obj = Path(xml_path)
+                if not xml_path_obj.is_absolute():
+                    xml_path_obj = Path(self.hass.config.config_dir) / xml_path
+
+                if not xml_path_obj.is_file():
                     errors["xml_file_path"] = "file_not_found"
                 else:
                     try:
-                        with open(xml_path, "r", encoding="utf-8") as f:
-                            xml_content = f.read()
-                            user_input["xml"] = xml_content
+                        def _read(path: Path) -> str:
+                            return path.read_text(encoding="utf-8")
+
+                        xml_content = await self.hass.async_add_executor_job(
+                            _read, xml_path_obj
+                        )
+                        user_input["xml"] = xml_content
                     except Exception:
                         errors["xml_file_path"] = "file_read_error"
             # If XML content is provided directly, use it (already in user_input["xml"])
