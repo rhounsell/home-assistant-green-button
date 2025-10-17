@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -22,6 +23,22 @@ from .coordinator import GreenButtonCoordinator
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _schedule_hass_task_from_any_thread(hass: HomeAssistant, coro) -> None:
+    """Schedule a coroutine on HA's event loop from any thread safely.
+
+    If called on the event loop, schedule directly; otherwise, use call_soon_threadsafe.
+    """
+    loop = hass.loop
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+    if running_loop is loop:
+        hass.async_create_task(coro)
+    else:
+        loop.call_soon_threadsafe(lambda: hass.async_create_task(coro))
 
 
 class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
@@ -158,8 +175,8 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
                             self.entity_id,
                             meter_reading.id,
                         )
-                        self.hass.async_create_task(
-                            self.update_sensor_and_statistics(meter_reading)
+                        _schedule_hass_task_from_any_thread(
+                            self.hass, self.update_sensor_and_statistics(meter_reading)
                         )
                         break
         else:
@@ -196,8 +213,8 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
                             self.entity_id,
                             meter_reading.id,
                         )
-                        self.hass.async_create_task(
-                            self.update_sensor_and_statistics(meter_reading)
+                        _schedule_hass_task_from_any_thread(
+                            self.hass, self.update_sensor_and_statistics(meter_reading)
                         )
         else:
             _LOGGER.info(
@@ -356,8 +373,8 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
             for usage_point in usage_points:
                 for meter_reading in usage_point.meter_readings:
                     if meter_reading.id == self._meter_reading_id:
-                        self.hass.async_create_task(
-                            self.update_sensor_and_statistics(meter_reading)
+                        _schedule_hass_task_from_any_thread(
+                            self.hass, self.update_sensor_and_statistics(meter_reading)
                         )
                         break
 
@@ -369,8 +386,8 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
             for usage_point in usage_points:
                 for meter_reading in usage_point.meter_readings:
                     if meter_reading.id == self._meter_reading_id:
-                        self.hass.async_create_task(
-                            self.update_sensor_and_statistics(meter_reading)
+                        _schedule_hass_task_from_any_thread(
+                            self.hass, self.update_sensor_and_statistics(meter_reading)
                         )
 
     async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
@@ -453,14 +470,13 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
                     if meter_reading.id == self._meter_reading_id:
                         # Run after HA starts to avoid bootstrap timeout warnings
                         if self.hass.state != CoreState.running:
-                            def _run_on_start(_):
-                                self.hass.async_create_task(
-                                    self.update_sensor_and_statistics(meter_reading)
-                                )
+                            async def _run_on_start(_):
+                                await self.update_sensor_and_statistics(meter_reading)
                             self.hass.bus.async_listen_once(
                                 EVENT_HOMEASSISTANT_STARTED, _run_on_start
                             )
                         else:
+                            # Safe: we're in the event loop context here
                             self.hass.async_create_task(
                                 self.update_sensor_and_statistics(meter_reading)
                             )
@@ -473,8 +489,8 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
             for usage_point in self.coordinator.data["usage_points"]:
                 for meter_reading in usage_point.meter_readings:
                     if meter_reading.id == self._meter_reading_id:
-                        self.hass.async_create_task(
-                            self.update_sensor_and_statistics(meter_reading)
+                        _schedule_hass_task_from_any_thread(
+                            self.hass, self.update_sensor_and_statistics(meter_reading)
                         )
 
     async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
@@ -540,14 +556,13 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
                     if meter_reading.id == self._meter_reading_id:
                         # Run after HA starts to avoid bootstrap timeout warnings
                         if self.hass.state != CoreState.running:
-                            def _run_on_start(_):
-                                self.hass.async_create_task(
-                                    self.update_sensor_and_statistics(meter_reading)
-                                )
+                            async def _run_on_start(_):
+                                await self.update_sensor_and_statistics(meter_reading)
                             self.hass.bus.async_listen_once(
                                 EVENT_HOMEASSISTANT_STARTED, _run_on_start
                             )
                         else:
+                            # Safe: we're in the event loop context here
                             self.hass.async_create_task(
                                 self.update_sensor_and_statistics(meter_reading)
                             )
@@ -560,8 +575,8 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
             for usage_point in self.coordinator.data["usage_points"]:
                 for meter_reading in usage_point.meter_readings:
                     if meter_reading.id == self._meter_reading_id:
-                        self.hass.async_create_task(
-                            self.update_sensor_and_statistics(meter_reading)
+                        _schedule_hass_task_from_any_thread(
+                            self.hass, self.update_sensor_and_statistics(meter_reading)
                         )
 
     async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
