@@ -584,6 +584,29 @@ class EspiEntry:
                                     return val * (10 ** power)
                         return None
                     total_cost = _find_amount_due(us_entry._elem)
+                    # Extract currentBillingPeriodOverAllConsumption (m³) if available
+                    consumption_m3: float | None = None
+                    try:
+                        meas = us_entry._elem.find(
+                            "./atom:content/espi:UsageSummary/espi:currentBillingPeriodOverAllConsumption",
+                            _NAMESPACE_MAP,
+                        )
+                        if meas is not None:
+                            p10 = meas.find("espi:powerOfTenMultiplier", _NAMESPACE_MAP)
+                            uom = meas.find("espi:uom", _NAMESPACE_MAP)
+                            val_el = meas.find("espi:value", _NAMESPACE_MAP)
+                            if val_el is not None and val_el.text is not None:
+                                try:
+                                    power = int(p10.text) if p10 is not None and p10.text else -3
+                                except ValueError:
+                                    power = -3
+                                # Only accept m³ (uom 42)
+                                is_m3 = (uom is not None and (uom.text or "").strip() == "42")
+                                raw_val = float(val_el.text)
+                                val = raw_val * (10 ** power)
+                                consumption_m3 = float(val) if is_m3 else None
+                    except Exception:
+                        consumption_m3 = None
                     if total_cost is None:
                         # Fallback to billLastPeriod with implicit -3 scaling
                         try:
@@ -598,6 +621,7 @@ class EspiEntry:
                             duration=duration,
                             total_cost=float(total_cost or 0.0),
                             currency=currency,
+                            consumption_m3=consumption_m3,
                         )
                     )
                 except Exception as ex:

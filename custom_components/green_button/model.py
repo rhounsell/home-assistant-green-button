@@ -114,6 +114,8 @@ class UsageSummary:
     duration: datetime.timedelta
     total_cost: float
     currency: str
+    # Optional total consumption for the billing period in m³ (if provided)
+    consumption_m3: float | None = None
 
 
 @final

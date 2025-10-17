@@ -27,6 +27,7 @@
           "input_type": "Input Type",
           "usage_point_href": "UsagePoint HREF",
           "gas_cost_allocation": "Gas cost allocation",
+          "gas_usage_allocation": "Gas usage allocation",
           "xml": "XML",
           "xml_file_path": "XML File Path"
         },
@@ -41,6 +42,10 @@
     "gas_cost_allocation": {
       "pro_rate_daily": "Pro-rate gas costs daily",
       "monthly_increment": "Single monthly cost increment"
+    },
+    "gas_usage_allocation": {
+      "daily_readings": "Use daily readings (m³)",
+      "monthly_increment": "Single billing-period usage increment (m³)"
     }
   },
   "selector": {
@@ -66,7 +71,8 @@
           "energy_unit": "Energy Unit",
           "name": "Name",
           "usage_point_href": "UsagePoint HREF",
-          "gas_cost_allocation": "Gas cost allocation"
+          "gas_cost_allocation": "Gas cost allocation",
+          "gas_usage_allocation": "Gas usage allocation"
         },
         "description": ""
       }

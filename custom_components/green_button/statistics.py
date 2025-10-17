@@ -1519,9 +1519,119 @@ async def update_gas_statistics(
     hass: HomeAssistant,
     entity: GreenButtonEntity,
     meter_reading: model.MeterReading,
+    usage_summaries: list[model.UsageSummary] | None = None,
+    allocation_mode: str = "daily_readings",
 ) -> None:
-    """Import gas daily m³ statistics with truncation from first day."""
+    """Import gas m³ statistics.
+
+    Modes:
+    - daily_readings: one record per day at 00:00 with that day's m³ (default)
+    - monthly_increment: one record per UsageSummary at end-of-period day with total m³
+      (uses UsageSummary.consumption_m3 when available)
+    """
     metadata = create_metadata(entity)
+
+    if allocation_mode == "monthly_increment":
+        summaries = usage_summaries or []
+        if not summaries:
+            _LOGGER.info("No usage summaries available for monthly gas usage on %s", entity.entity_id)
+            return
+        # Determine tzinfo from readings if present
+        readings = [r for b in meter_reading.interval_blocks for r in b.interval_readings]
+        tzinfo = readings[0].start.tzinfo if readings else datetime.timezone.utc
+
+        # Sort by period end
+        summaries_sorted = sorted(summaries, key=lambda s: s.start + s.duration)
+        records: list[StatisticData] = []
+        first_start: datetime.datetime | None = None
+        existing_sum = 0.0
+
+        for us in summaries_sorted:
+            period_end = us.start + us.duration
+            # Place the increment at 00:00 of the end day
+            rec_start = datetime.datetime.combine((period_end - datetime.timedelta(seconds=1)).date(), datetime.time.min, tzinfo=tzinfo)
+            if first_start is None:
+                first_start = rec_start
+                # Existing cumulative before first record
+                try:
+                    rec = recorder.get_instance(hass)
+                    existing_stats = await rec.async_add_executor_job(
+                        statistics.statistic_during_period,
+                        hass,
+                        None,
+                        first_start,
+                        entity.long_term_statistics_id,
+                        {"change"},
+                        None,
+                    )
+                    if existing_stats and existing_stats.get("change") is not None:
+                        existing_sum = float(existing_stats["change"])  # type: ignore[assignment]
+                except Exception:
+                    _LOGGER.debug("Unable to query existing sum for gas usage %s", entity.entity_id, exc_info=True)
+
+            # Determine period consumption in m³
+            period_m3 = None
+            if hasattr(us, "consumption_m3") and us.consumption_m3 is not None:
+                period_m3 = float(us.consumption_m3)
+            else:
+                # Fallback: sum any daily readings within this period if present
+                period_days: list[datetime.date] = []
+                day = us.start.date()
+                end_day = (period_end - datetime.timedelta(seconds=1)).date()
+                while day <= end_day:
+                    period_days.append(day)
+                    day = day + datetime.timedelta(days=1)
+                # Build a daily map from readings
+                daily_m3: dict[datetime.date, float] = {}
+                for rd in readings:
+                    d = rd.start.date()
+                    if d < period_days[0] or d > period_days[-1]:
+                        continue
+                    val = float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
+                    daily_m3[d] = daily_m3.get(d, 0.0) + val
+                total = sum(daily_m3.values())
+                period_m3 = total if total > 0 else None
+
+            if period_m3 is None or period_m3 <= 0:
+                _LOGGER.info(
+                    "Skipping usage summary %s for %s: no consumption_m3 available",
+                    us.id,
+                    entity.entity_id,
+                )
+                continue
+
+            records.append({"start": rec_start, "state": period_m3, "sum": 0.0})
+
+        if not records:
+            _LOGGER.info("No gas usage records generated for %s (monthly_increment)", entity.entity_id)
+            return
+
+        # Apply cumulative
+        cumulative = existing_sum
+        for recd in records:
+            cumulative += recd["state"]
+            recd["sum"] = cumulative
+
+        # Truncate and import
+        try:
+            await _TruncateStatisticsAfterTask.queue_task(
+                hass=hass,
+                statistic_id=entity.long_term_statistics_id,
+                cutoff_start=records[0]["start"],
+                table=recorder_db_schema.Statistics,
+            )
+        except Exception:
+            _LOGGER.exception("Failed truncating gas stats for %s", entity.entity_id)
+
+        try:
+            async_import_statistics(hass, metadata, records)
+            _LOGGER.info("Imported %d gas usage records (monthly_increment) for %s", len(records), entity.entity_id)
+        except Exception:
+            _LOGGER.exception("Failed to import gas stats for %s", entity.entity_id)
+
+        return
+
+    # Default: daily readings
     data = await _generate_daily_m3_statistics(hass, entity, meter_reading)
     if not data:
         _LOGGER.info("No gas statistics to import for %s", entity.entity_id)

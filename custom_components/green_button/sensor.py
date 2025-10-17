@@ -502,8 +502,20 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
         self._attr_native_value = total
         self.async_write_ha_state()
 
-        # Import daily m³ statistics
-        await statistics.update_gas_statistics(self.hass, self, meter_reading)
+        # Import gas m³ statistics per selected allocation mode
+        summaries = self.coordinator.get_usage_summaries_for_meter_reading(self._meter_reading_id)
+        usage_allocation_mode = (
+            self.coordinator.config_entry.options.get("gas_usage_allocation")
+            or self.coordinator.config_entry.data.get("gas_usage_allocation")
+            or "daily_readings"
+        )
+        await statistics.update_gas_statistics(
+            self.hass,
+            self,
+            meter_reading,
+            usage_summaries=summaries,
+            allocation_mode=usage_allocation_mode,
+        )
 
 
 class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
