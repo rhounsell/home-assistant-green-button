@@ -9,6 +9,7 @@ import voluptuous as vol
 
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
+from homeassistant.exceptions import HomeAssistantError
 
 from . import statistics
 from .const import DOMAIN
@@ -48,13 +49,15 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         
         # Validate that at least one is provided
         if not xml_path and not xml_content:
-            _LOGGER.error("No XML data provided. Please provide either xml_file_path or xml content.")
-            return
+            msg = "No XML data provided. Please provide either xml_file_path or xml content."
+            _LOGGER.error(msg)
+            raise HomeAssistantError(msg)
         
         # Validate that both are not provided
         if xml_path and xml_content:
-            _LOGGER.error("Both xml_file_path and xml content provided. Please provide only one.")
-            return
+            msg = "Both xml_file_path and xml content provided. Please provide only one."
+            _LOGGER.error(msg)
+            raise HomeAssistantError(msg)
         
         # If file path is provided, read the file
         if xml_path:
@@ -89,13 +92,13 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     _LOGGER.debug(
                         "Green button directory does not exist: %s", green_button_dir
                     )
-                return
+                raise HomeAssistantError(f"Specified XML file does not exist: {resolved_path}")
 
             try:
                 xml_data = await hass.async_add_executor_job(_read_file_sync, resolved_path)
             except OSError as e:
                 _LOGGER.error("Failed to read XML file: %s", e)
-                return
+                raise HomeAssistantError(f"Failed to read XML file: {e}") from e
 
             _LOGGER.info("Importing ESPI XML data via service from file: %s", resolved_path)
         else:
@@ -134,7 +137,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
         except Exception as err:
             _LOGGER.error("Failed to import ESPI XML: %s", err)
-            raise
+            # Re-raise as HomeAssistantError if not already
+            if isinstance(err, HomeAssistantError):
+                raise
+            raise HomeAssistantError(f"Failed to import ESPI XML: {err}") from err
 
     async def delete_statistics_service(call: ServiceCall) -> None:
         """Handle the delete_statistics service call."""
