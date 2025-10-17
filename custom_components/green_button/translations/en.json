@@ -26,6 +26,7 @@
           "name": "Name",
           "input_type": "Input Type",
           "usage_point_href": "UsagePoint HREF",
+          "gas_cost_allocation": "Gas cost allocation",
           "xml": "XML",
           "xml_file_path": "XML File Path"
         },
@@ -34,6 +35,12 @@
           "xml": "Paste ESPI XML content directly. For large files, using a file path is recommended."
         }
       }
+    }
+  },
+  "green_button": {
+    "gas_cost_allocation": {
+      "pro_rate_daily": "Pro-rate gas costs daily",
+      "monthly_increment": "Single monthly cost increment"
     }
   },
   "selector": {
@@ -58,7 +65,8 @@
           "cost_currency": "Cost Currency",
           "energy_unit": "Energy Unit",
           "name": "Name",
-          "usage_point_href": "UsagePoint HREF"
+          "usage_point_href": "UsagePoint HREF",
+          "gas_cost_allocation": "Gas cost allocation"
         },
         "description": ""
       }
