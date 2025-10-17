@@ -875,6 +875,21 @@ class DefaultDataExtractor:
         return decimal.Decimal(value)
 
 
+class CostDataExtractor:
+    """DataExtractor that pulls monetary cost from IntervalReading.
+
+    Applies the ReadingType power_of_ten_multiplier to the cost value.
+    For example, with multiplier -3, a cost of 90 becomes 0.09 (in major currency units).
+    """
+
+    def get_native_value(
+        self, interval_reading: model.IntervalReading
+    ) -> decimal.Decimal:
+        cost = interval_reading.cost or 0
+        power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
+        return decimal.Decimal(cost * (10**power_multiplier))
+
+
 def create_metadata(entity: GreenButtonEntity) -> statistics.StatisticMetaData:
     """Create the statistic metadata for the entity."""
     return {
@@ -1052,6 +1067,200 @@ async def _generate_statistics_data(
             )
 
     return statistics_data
+
+
+async def _generate_statistics_data_cost(
+    hass: HomeAssistant,
+    entity: GreenButtonEntity,
+    data_extractor: DataExtractor,
+    meter_reading: model.MeterReading,
+) -> list[StatisticData]:
+    """Generate hourly cost statistics aggregated to full hours.
+
+    Mirrors the energy statistics generation but uses monetary cost per interval
+    without applying energy unit conversions.
+    """
+    statistics_data: list[StatisticData] = []
+
+    # Collect all readings first
+    all_readings = [
+        interval_reading
+        for interval_block in meter_reading.interval_blocks
+        for interval_reading in interval_block.interval_readings
+    ]
+
+    if not all_readings:
+        return statistics_data
+
+    # Sort readings by start time
+    all_readings.sort(key=lambda r: r.start)
+
+    # Determine cutoff at the end of the last FULL hour covered by the data
+    last_end: datetime.datetime = max(r.end for r in all_readings)
+    cutoff_end: datetime.datetime = last_end.replace(minute=0, second=0, microsecond=0)
+    include_trailing_hour = last_end == cutoff_end
+
+    # Build hourly buckets with coverage tracking
+    hourly_cost: dict[datetime.datetime, decimal.Decimal] = {}
+    hourly_coverage_seconds: dict[datetime.datetime, int] = {}
+
+    for reading in all_readings:
+        # Skip intervals that end after the cutoff if not including trailing hour
+        if not include_trailing_hour and reading.end > cutoff_end:
+            if reading.start < cutoff_end < reading.end:
+                # Keep portion up to cutoff
+                total_seconds = (reading.end - reading.start).total_seconds()
+                kept_seconds = (cutoff_end - reading.start).total_seconds()
+                if total_seconds > 0:
+                    proportion = decimal.Decimal(kept_seconds / total_seconds)
+                else:
+                    proportion = decimal.Decimal(0)
+                base_value = data_extractor.get_native_value(reading)
+                kept_val = (base_value * proportion)
+                hour_start = (cutoff_end - datetime.timedelta(hours=1)).replace(
+                    minute=0, second=0, microsecond=0
+                )
+                hourly_cost[hour_start] = hourly_cost.get(
+                    hour_start, decimal.Decimal(0)
+                ) + kept_val
+                hourly_coverage_seconds[hour_start] = hourly_coverage_seconds.get(
+                    hour_start, 0
+                ) + int(kept_seconds)
+            continue
+
+        # Split a reading that may span multiple hours proportionally
+        curr_start = reading.start
+        curr_end = reading.end
+        base_value_total = data_extractor.get_native_value(reading)
+        total_seconds = (curr_end - curr_start).total_seconds()
+        if total_seconds <= 0:
+            continue
+
+        while curr_start < curr_end:
+            hour_start = curr_start.replace(minute=0, second=0, microsecond=0)
+            hour_end = hour_start + datetime.timedelta(hours=1)
+            segment_end = min(curr_end, hour_end)
+            seg_seconds = (segment_end - curr_start).total_seconds()
+            proportion = decimal.Decimal(seg_seconds / total_seconds)
+            seg_val = base_value_total * proportion
+
+            hourly_cost[hour_start] = hourly_cost.get(
+                hour_start, decimal.Decimal(0)
+            ) + seg_val
+            hourly_coverage_seconds[hour_start] = hourly_coverage_seconds.get(
+                hour_start, 0
+            ) + int(seg_seconds)
+
+            curr_start = segment_end
+
+    # Compute existing sum before the first hour we will insert
+    hour_keys_sorted = sorted(hourly_cost.keys())
+    if not hour_keys_sorted:
+        return statistics_data
+
+    first_hour_start = hour_keys_sorted[0]
+    existing_sum = 0.0
+    try:
+        existing_stats = await hass.async_add_executor_job(
+            statistics.statistic_during_period,
+            hass,
+            None,  # start_time
+            first_hour_start,  # end_time
+            entity.long_term_statistics_id,
+            {"change"},
+            None,  # units
+        )
+        if existing_stats and "change" in existing_stats and existing_stats["change"] is not None:
+            existing_sum = float(existing_stats["change"])  # type: ignore[assignment]
+            _LOGGER.info(
+                "Found existing sum of %s %s before %s for entity %s",
+                existing_sum,
+                entity.native_unit_of_measurement,
+                first_hour_start,
+                entity.entity_id,
+            )
+    except Exception:
+        _LOGGER.warning(
+            "Could not query existing statistics for entity %s, starting from 0",
+            entity.entity_id,
+            exc_info=True,
+        )
+
+    # Emit hourly statistics for FULLY covered hours only (3600s)
+    cumulative_sum = existing_sum
+    for hour_start in hour_keys_sorted:
+        coverage = hourly_coverage_seconds.get(hour_start, 0)
+        if coverage < 3600:
+            _LOGGER.debug(
+                "Skipping partial hour starting %s (covered %ds)",
+                hour_start,
+                coverage,
+            )
+            continue
+        hour_val = float(hourly_cost.get(hour_start, decimal.Decimal(0)))
+        cumulative_sum += hour_val
+        stat_record: StatisticData = {
+            "start": hour_start,
+            "state": hour_val,
+            "sum": cumulative_sum,
+        }
+        statistics_data.append(stat_record)
+        _LOGGER.debug(
+            "Generated hourly cost statistic: start=%s, state=%.4f %s, sum=%.4f %s",
+            hour_start,
+            hour_val,
+            entity.native_unit_of_measurement,
+            cumulative_sum,
+            entity.native_unit_of_measurement,
+        )
+
+    if statistics_data:
+        last_emitted = statistics_data[-1]["start"]
+        if not include_trailing_hour and last_emitted >= cutoff_end - datetime.timedelta(hours=1):
+            _LOGGER.info(
+                "Skipped trailing partial hour ending at %s for cost series",
+                cutoff_end,
+            )
+
+    return statistics_data
+
+
+async def update_cost_statistics(
+    hass: HomeAssistant,
+    entity: GreenButtonEntity,
+    data_extractor: DataExtractor,
+    meter_reading: model.MeterReading,
+) -> None:
+    """Update the cost statistics for an entry to match the MeterReading."""
+    metadata = create_metadata(entity)
+    _LOGGER.info(
+        "Starting cost statistics generation for entity %s, meter reading %s",
+        entity.entity_id,
+        meter_reading.id,
+    )
+    statistics_data = await _generate_statistics_data_cost(
+        hass, entity, data_extractor, meter_reading
+    )
+
+    _LOGGER.info(
+        "Generated %d cost statistics records for entity %s",
+        len(statistics_data),
+        entity.entity_id,
+    )
+
+    if statistics_data:
+        try:
+            async_import_statistics(hass, metadata, statistics_data)
+            _LOGGER.info(
+                "✅ Imported %d cost records for entity %s",
+                len(statistics_data),
+                entity.entity_id,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "❌ Failed to import cost statistics for entity %s",
+                entity.entity_id,
+            )
 
 
 async def update_statistics(
