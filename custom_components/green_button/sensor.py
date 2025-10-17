@@ -248,6 +248,157 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
             )
 
 
+class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
+    """A sensor for Green Button monetary cost data (total increasing)."""
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: GreenButtonCoordinator,
+        meter_reading_id: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._meter_reading_id = meter_reading_id
+
+        # Build unique id with cost suffix
+        clean_id = (
+            meter_reading_id.split("/")[-1]
+            if "/" in meter_reading_id
+            else meter_reading_id
+        )
+        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}_cost"
+        # Name is entry title + " Cost"
+        base_name = coordinator.config_entry.title
+        self._attr_name = f"{base_name} Cost"
+
+        # Default currency; will be set on first update if available from reading type
+        self._attr_native_unit_of_measurement = "CAD"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the current total cost value."""
+        if not self.coordinator.data or not self.coordinator.data.get("usage_points"):
+            return None
+
+        meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
+        if not meter_reading:
+            return None
+
+        # Set currency if available
+        currency = getattr(meter_reading.reading_type, "currency", None)
+        if currency:
+            self._attr_native_unit_of_measurement = currency
+
+        total_cost = 0.0
+        for interval_block in meter_reading.interval_blocks:
+            for interval_reading in interval_block.interval_readings:
+                cost_raw = getattr(interval_reading, "cost", 0) or 0
+                power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
+                total_cost += cost_raw * (10 ** power_multiplier)
+
+        return float(total_cost)
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success and (
+            self.coordinator.data is not None
+        )
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
+        if not meter_reading:
+            return {}
+
+        attributes = {
+            "meter_reading_id": meter_reading.id,
+            "interval_blocks_count": len(meter_reading.interval_blocks),
+        }
+
+        if meter_reading.interval_blocks:
+            latest_block = meter_reading.interval_blocks[-1]
+            attributes.update(
+                {
+                    "latest_block_start": latest_block.start.isoformat(),
+                    "latest_block_duration": str(latest_block.duration),
+                    "latest_block_readings_count": len(latest_block.interval_readings),
+                }
+            )
+
+        return attributes
+
+    @property
+    def long_term_statistics_id(self) -> str:
+        return self.entity_id
+
+    @property
+    def name(self) -> str:
+        return self._attr_name or f"{self.coordinator.config_entry.title} Cost"
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        return self._attr_native_unit_of_measurement or "CAD"
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+
+        _LOGGER.info(
+            "Cost Sensor %s: Entity added to Home Assistant, triggering initial statistics generation",
+            self.entity_id,
+        )
+
+        if self.coordinator.data and "usage_points" in self.coordinator.data:
+            usage_points = self.coordinator.data["usage_points"]
+            for usage_point in usage_points:
+                for meter_reading in usage_point.meter_readings:
+                    if meter_reading.id == self._meter_reading_id:
+                        self.hass.async_create_task(
+                            self.update_sensor_and_statistics(meter_reading)
+                        )
+                        break
+
+    def _handle_coordinator_update(self) -> None:
+        super()._handle_coordinator_update()
+
+        if self.coordinator.data and "usage_points" in self.coordinator.data:
+            usage_points = self.coordinator.data["usage_points"]
+            for usage_point in usage_points:
+                for meter_reading in usage_point.meter_readings:
+                    if meter_reading.id == self._meter_reading_id:
+                        self.hass.async_create_task(
+                            self.update_sensor_and_statistics(meter_reading)
+                        )
+
+    async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
+        # Update state
+        total_cost = 0.0
+        for interval_block in meter_reading.interval_blocks:
+            for interval_reading in interval_block.interval_readings:
+                cost_raw = getattr(interval_reading, "cost", 0) or 0
+                power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
+                total_cost += cost_raw * (10 ** power_multiplier)
+
+        # Set currency
+        currency = getattr(meter_reading.reading_type, "currency", None)
+        if currency:
+            self._attr_native_unit_of_measurement = currency
+
+        self._attr_native_value = float(total_cost)
+        self.async_write_ha_state()
+
+        # Update long-term statistics
+        if hasattr(self, "hass") and self.hass is not None:
+            await statistics.update_cost_statistics(
+                self.hass,
+                self,
+                statistics.CostDataExtractor(),
+                meter_reading,
+            )
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -282,13 +433,26 @@ async def async_setup_entry(
             )
 
             for meter_reading in meter_readings:
+                # Energy sensor
                 if meter_reading.id not in created_entities:
-                    sensor = GreenButtonSensor(coordinator, meter_reading.id)
-                    entities.append(sensor)
+                    energy_sensor = GreenButtonSensor(coordinator, meter_reading.id)
+                    entities.append(energy_sensor)
                     created_entities.add(meter_reading.id)
                     _LOGGER.info(
-                        "Created sensor entity %s for meter reading %s",
-                        sensor.unique_id,
+                        "Created energy sensor %s for meter reading %s",
+                        energy_sensor.unique_id,
+                        meter_reading.id,
+                    )
+
+                # Cost sensor (use distinct key)
+                cost_key = f"{meter_reading.id}__cost"
+                if cost_key not in created_entities:
+                    cost_sensor = GreenButtonCostSensor(coordinator, meter_reading.id)
+                    entities.append(cost_sensor)
+                    created_entities.add(cost_key)
+                    _LOGGER.info(
+                        "Created cost sensor %s for meter reading %s",
+                        cost_sensor.unique_id,
                         meter_reading.id,
                     )
 
