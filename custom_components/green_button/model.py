@@ -28,7 +28,7 @@ class IntervalReading:
     duration: datetime.timedelta
     value: int
 
-    def __lt__(self, other: IntervalBlock) -> bool:
+    def __lt__(self, other: "IntervalBlock") -> bool:
         """Return whether or not this reading's start time is before the other's."""
         return self.start < other.start
 
@@ -54,7 +54,7 @@ class IntervalBlock:
         """Post-process the data."""
         object.__setattr__(self, "interval_readings", sorted(self.interval_readings))
 
-    def __lt__(self, other: IntervalBlock) -> bool:
+    def __lt__(self, other: "IntervalBlock") -> bool:
         """Return whether or not this block's start time is before the other's."""
         return self.start < other.start
 
@@ -76,6 +76,7 @@ class ReadingType:
     """A object describing metadata about the meter readings."""
 
     id: str
+    commodity: int | None
     currency: str
     power_of_ten_multiplier: int
     unit_of_measurement: str
@@ -100,9 +101,19 @@ class MeterReading:
         if not self.interval_blocks:
             return None
         newest_interval_block = self.interval_blocks[len(self.interval_blocks) - 1]
-        if newest_interval_block is not None:
-            return newest_interval_block.get_newest_interval_reading()
-        return None
+        return newest_interval_block.get_newest_interval_reading()
+
+
+@final
+@dataclasses.dataclass(frozen=True)
+class UsageSummary:
+    """A usage/billing summary (typically monthly for gas)."""
+
+    id: str
+    start: datetime.datetime
+    duration: datetime.timedelta
+    total_cost: float
+    currency: str
 
 
 @final
@@ -113,6 +124,7 @@ class UsagePoint:
     id: str
     sensor_device_class: sensor.SensorDeviceClass
     meter_readings: Collection[MeterReading]
+    usage_summaries: Collection[UsageSummary] = dataclasses.field(default_factory=list)
 
     def get_meter_reading_by_id(self, id_str: str) -> MeterReading | None:
         """Get a meter reading by its ID."""
@@ -131,9 +143,11 @@ class UsagePoint:
         # Create a default reading type for energy consumption
         default_reading_type = ReadingType(
             id="default_energy_reading",
+            commodity=1,
             currency="CAD",
             power_of_ten_multiplier=0,
             unit_of_measurement="kWh",
+            interval_length=3600,
         )
 
         # Create a default meter reading with no interval blocks
@@ -147,4 +161,5 @@ class UsagePoint:
             id="default_usage_point",
             sensor_device_class=sensor.SensorDeviceClass.ENERGY,
             meter_readings=[default_meter_reading],
+            usage_summaries=[],
         )

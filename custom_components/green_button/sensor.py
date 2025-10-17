@@ -399,6 +399,115 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
             )
 
 
+class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
+    """Gas consumption sensor (m³, total increasing)."""
+
+    _attr_device_class = SensorDeviceClass.GAS
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = "m³"
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: GreenButtonCoordinator, meter_reading_id: str) -> None:
+        super().__init__(coordinator)
+        self._meter_reading_id = meter_reading_id
+        clean_id = meter_reading_id.split("/")[-1] if "/" in meter_reading_id else meter_reading_id
+        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}_gas"
+        base_name = coordinator.config_entry.title
+        self._attr_name = f"{base_name} Gas"
+
+    @property
+    def native_value(self) -> float | None:
+        meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
+        if not meter_reading:
+            return None
+        total = 0.0
+        for block in meter_reading.interval_blocks:
+            for rd in block.interval_readings:
+                total += float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
+        return total
+
+    @property
+    def long_term_statistics_id(self) -> str:
+        return self.entity_id
+
+    @property
+    def name(self) -> str:
+        return self._attr_name or f"{self.coordinator.config_entry.title} Gas"
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        return self._attr_native_unit_of_measurement or "m³"
+
+    async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
+        # Update entity state
+        total = 0.0
+        for block in meter_reading.interval_blocks:
+            for rd in block.interval_readings:
+                total += float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
+        self._attr_native_value = total
+        self.async_write_ha_state()
+
+        # Import daily m³ statistics
+        await statistics.update_gas_statistics(self.hass, self, meter_reading)
+
+
+class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
+    """Gas cost sensor (monetary total increasing) using UsageSummary pro-rated per day."""
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: GreenButtonCoordinator, meter_reading_id: str) -> None:
+        super().__init__(coordinator)
+        self._meter_reading_id = meter_reading_id
+        clean_id = meter_reading_id.split("/")[-1] if "/" in meter_reading_id else meter_reading_id
+        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}_gas_cost"
+        base_name = coordinator.config_entry.title
+        self._attr_name = f"{base_name} Gas Cost"
+        self._attr_native_unit_of_measurement = "CAD"
+
+    @property
+    def native_value(self) -> float | None:
+        # Sensor state is cumulative total of UsageSummary total_cost
+        summaries = self.coordinator.get_usage_summaries_for_meter_reading(self._meter_reading_id)
+        if not summaries:
+            return 0.0
+        return float(sum(us.total_cost for us in summaries))
+
+    @property
+    def long_term_statistics_id(self) -> str:
+        return self.entity_id
+
+    @property
+    def name(self) -> str:
+        return self._attr_name or f"{self.coordinator.config_entry.title} Gas Cost"
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        return self._attr_native_unit_of_measurement or "CAD"
+
+    async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
+        # Update state
+        self._attr_native_value = self.native_value
+        self.async_write_ha_state()
+
+        # Update long-term statistics with pro-rated daily cost
+        summaries = self.coordinator.get_usage_summaries_for_meter_reading(self._meter_reading_id)
+        allocation_mode = (
+            self.coordinator.config_entry.options.get("gas_cost_allocation")
+            or self.coordinator.config_entry.data.get("gas_cost_allocation")
+            or "pro_rate_daily"
+        )
+        await statistics.update_gas_cost_statistics(
+            self.hass,
+            self,
+            meter_reading,
+            summaries,
+            allocation_mode=allocation_mode,
+        )
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -427,34 +536,54 @@ async def async_setup_entry(
 
         # If we have data, create entities for each meter reading
         if coordinator.data and coordinator.data.get("usage_points"):
-            meter_readings = coordinator.get_meter_readings()
-            _LOGGER.info(
-                "Found %d meter readings to create sensors for", len(meter_readings)
-            )
-
-            for meter_reading in meter_readings:
-                # Energy sensor
-                if meter_reading.id not in created_entities:
-                    energy_sensor = GreenButtonSensor(coordinator, meter_reading.id)
-                    entities.append(energy_sensor)
-                    created_entities.add(meter_reading.id)
-                    _LOGGER.info(
-                        "Created energy sensor %s for meter reading %s",
-                        energy_sensor.unique_id,
-                        meter_reading.id,
-                    )
-
-                # Cost sensor (use distinct key)
-                cost_key = f"{meter_reading.id}__cost"
-                if cost_key not in created_entities:
-                    cost_sensor = GreenButtonCostSensor(coordinator, meter_reading.id)
-                    entities.append(cost_sensor)
-                    created_entities.add(cost_key)
-                    _LOGGER.info(
-                        "Created cost sensor %s for meter reading %s",
-                        cost_sensor.unique_id,
-                        meter_reading.id,
-                    )
+            for usage_point in coordinator.usage_points:
+                is_gas = usage_point.sensor_device_class == SensorDeviceClass.GAS
+                for meter_reading in usage_point.meter_readings:
+                    if is_gas:
+                        # Gas consumption
+                        gas_key = f"{meter_reading.id}__gas"
+                        if gas_key not in created_entities:
+                            gas_sensor = GreenButtonGasSensor(coordinator, meter_reading.id)
+                            entities.append(gas_sensor)
+                            created_entities.add(gas_key)
+                            _LOGGER.info(
+                                "Created gas sensor %s for meter reading %s",
+                                gas_sensor.unique_id,
+                                meter_reading.id,
+                            )
+                        # Gas cost
+                        gas_cost_key = f"{meter_reading.id}__gas_cost"
+                        if gas_cost_key not in created_entities:
+                            gas_cost_sensor = GreenButtonGasCostSensor(coordinator, meter_reading.id)
+                            entities.append(gas_cost_sensor)
+                            created_entities.add(gas_cost_key)
+                            _LOGGER.info(
+                                "Created gas cost sensor %s for meter reading %s",
+                                gas_cost_sensor.unique_id,
+                                meter_reading.id,
+                            )
+                    else:
+                        # Electricity energy
+                        if meter_reading.id not in created_entities:
+                            energy_sensor = GreenButtonSensor(coordinator, meter_reading.id)
+                            entities.append(energy_sensor)
+                            created_entities.add(meter_reading.id)
+                            _LOGGER.info(
+                                "Created energy sensor %s for meter reading %s",
+                                energy_sensor.unique_id,
+                                meter_reading.id,
+                            )
+                        # Electricity cost
+                        cost_key = f"{meter_reading.id}__cost"
+                        if cost_key not in created_entities:
+                            cost_sensor = GreenButtonCostSensor(coordinator, meter_reading.id)
+                            entities.append(cost_sensor)
+                            created_entities.add(cost_key)
+                            _LOGGER.info(
+                                "Created cost sensor %s for meter reading %s",
+                                cost_sensor.unique_id,
+                                meter_reading.id,
+                            )
 
         # Add new entities to Home Assistant
         if entities:

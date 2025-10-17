@@ -22,7 +22,10 @@ _NAMESPACE_MAP: Final = {
 
 
 _UOM_MAP: Final = {
-    "72": UnitOfEnergy.WATT_HOUR,
+    # Use strings to keep model generic across energy and gas
+    "72": "Wh",   # Watt-hours (electricity)
+    "42": "m³",   # Cubic meters (gas)
+    "80": "currency",
 }
 
 
@@ -35,6 +38,8 @@ _CURRENCY_MAP: Final = {
 _SERVICE_KIND: Final = {
     # 0 - Electricity.
     "0": sensor.SensorDeviceClass.ENERGY,
+    # 1 - Gas.
+    "1": sensor.SensorDeviceClass.GAS,
 }
 
 
@@ -440,6 +445,9 @@ class EspiEntry:
         """Parse this entry as a ReadingType."""
         return model.ReadingType(
             id=self.find_self_href(),
+            commodity=_parse_optional_child_text(
+                self._elem, "./atom:content/espi:ReadingType/espi:commodity", int, None
+            ),
             power_of_ten_multiplier=self.parse_child_text(
                 "espi:powerOfTenMultiplier", int
             ),
@@ -477,6 +485,7 @@ class EspiEntry:
         logger.debug("UsagePoint %s has related hrefs: %s", self_href, related_hrefs)
         
         meter_readings = []
+        usage_summaries: list[model.UsageSummary] = []
         for mr_entry in self._root.find_entries("MeterReading"):
             mr_href = mr_entry.find_self_href()
             # Check if meter reading matches any related href (exact or prefix match for feeds)
@@ -502,8 +511,17 @@ class EspiEntry:
                                 flow_direction = rt_entry.parse_child_text("espi:flowDirection", int)
                                 interval_length = rt_entry.parse_child_text("espi:intervalLength", int)
                                 
-                                # Only include consumed energy (flowDirection=1) and skip daily summaries
-                                if flow_direction == 1 and interval_length < 86400:
+                                # For electricity: include sub-daily consumption (< 86400)
+                                # For gas: include daily consumption (== 86400)
+                                if (
+                                    sensor_device_class == sensor.SensorDeviceClass.ENERGY
+                                    and flow_direction == 1
+                                    and interval_length < 86400
+                                ) or (
+                                    sensor_device_class == sensor.SensorDeviceClass.GAS
+                                    and flow_direction == 1
+                                    and interval_length == 86400
+                                ):
                                     logger.info(
                                         "Including MeterReading %s (flowDirection=%d, intervalLength=%d)",
                                         mr_href, flow_direction, interval_length
@@ -528,12 +546,73 @@ class EspiEntry:
                     
                     break
         
-        logger.info("UsagePoint %s found %d meter readings (after filtering)", self_href, len(meter_readings))
+        # Attach UsageSummary entries related to this UsagePoint
+        for us_entry in self._root.find_entries("UsageSummary"):
+            # Match by related links
+            us_related = us_entry.find_related_hrefs()
+            if any(self_href == href or self_href.startswith(href + "/") for href in us_related):
+                try:
+                    # billingPeriod
+                    start = us_entry.parse_child_text("espi:billingPeriod/espi:start", _to_utc_datetime)
+                    duration = us_entry.parse_child_text("espi:billingPeriod/espi:duration", _to_timedelta)
+                    currency = _parse_optional_child_text(
+                        us_entry._elem,
+                        "./atom:content/espi:UsageSummary/espi:currency",
+                        _CURRENCY_MAP.__getitem__,
+                        "CAD",
+                    )
+                    # Prefer an explicit Amount Due in costAdditionalDetailLastPeriod
+                    def _find_amount_due(e: ET.Element) -> float | None:
+                        for cad in e.findall(
+                            "./atom:content/espi:UsageSummary/espi:costAdditionalDetailLastPeriod",
+                            _NAMESPACE_MAP,
+                        ):
+                            note = cad.find("espi:note", _NAMESPACE_MAP)
+                            if note is not None and (note.text or "").strip().lower() in {
+                                "amount due",
+                                "total gas charges ($)",
+                            }:
+                                amt = cad.find("espi:amount", _NAMESPACE_MAP)
+                                meas = cad.find("espi:measurement", _NAMESPACE_MAP)
+                                if amt is not None and meas is not None:
+                                    p10 = meas.find("espi:powerOfTenMultiplier", _NAMESPACE_MAP)
+                                    try:
+                                        power = int(p10.text) if p10 is not None and p10.text else -3
+                                    except ValueError:
+                                        power = -3
+                                    val = float(amt.text or 0)
+                                    return val * (10 ** power)
+                        return None
+                    total_cost = _find_amount_due(us_entry._elem)
+                    if total_cost is None:
+                        # Fallback to billLastPeriod with implicit -3 scaling
+                        try:
+                            raw = us_entry.parse_child_text("espi:billLastPeriod", float)
+                            total_cost = raw * (10 ** -3)
+                        except Exception:
+                            total_cost = 0.0
+                    usage_summaries.append(
+                        model.UsageSummary(
+                            id=us_entry.find_self_href(),
+                            start=start,
+                            duration=duration,
+                            total_cost=float(total_cost or 0.0),
+                            currency=currency,
+                        )
+                    )
+                except Exception as ex:
+                    logger.warning("Failed to parse UsageSummary for %s: %s", self_href, ex)
+
+        logger.info(
+            "UsagePoint %s found %d meter readings and %d usage summaries (after filtering)",
+            self_href, len(meter_readings), len(usage_summaries)
+        )
         
         return model.UsagePoint(
             id=self_href,
             sensor_device_class=sensor_device_class,
             meter_readings=meter_readings,
+            usage_summaries=usage_summaries,
         )
 
 

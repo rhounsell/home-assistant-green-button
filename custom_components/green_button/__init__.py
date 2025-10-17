@@ -52,6 +52,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "coordinator": coordinator,
     }
 
+    # Listen for options updates so allocation changes take effect
+    entry.async_on_unload(entry.add_update_listener(_options_update_listener))
+
     # Load any stored XML data from previous sessions
     await coordinator.async_load_stored_data()
 
@@ -60,6 +63,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _LOGGER.info("Green Button integration setup complete")
     return True
+
+
+async def _options_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle options update by reloading the entry."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
