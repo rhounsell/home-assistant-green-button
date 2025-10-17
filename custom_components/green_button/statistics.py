@@ -1536,6 +1536,11 @@ async def update_gas_statistics(
         if not summaries:
             _LOGGER.info("No usage summaries available for monthly gas usage on %s", entity.entity_id)
             return
+        # Clear existing statistics to avoid residual daily bars or negative corrections
+        try:
+            await clear_statistic(hass, entity.long_term_statistics_id)
+        except Exception:
+            _LOGGER.exception("Failed to clear existing gas usage stats for %s", entity.entity_id)
         # Determine tzinfo from readings if present
         readings = [r for b in meter_reading.interval_blocks for r in b.interval_readings]
         tzinfo = readings[0].start.tzinfo if readings else datetime.timezone.utc
@@ -1612,12 +1617,20 @@ async def update_gas_statistics(
             cumulative += recd["state"]
             recd["sum"] = cumulative
 
-        # Truncate and import
+        # Truncate and import: choose earliest cutoff between our first record and
+        # the earliest reading day (to ensure any previously-imported daily m³ are removed)
+        cutoff = records[0]["start"]
         try:
+            if readings:
+                earliest_day = min(r.start.date() for r in readings)
+                tzinfo_cut = readings[0].start.tzinfo
+                earliest_midnight = datetime.datetime.combine(earliest_day, datetime.time.min, tzinfo=tzinfo_cut)
+                if earliest_midnight < cutoff:
+                    cutoff = earliest_midnight
             await _TruncateStatisticsAfterTask.queue_task(
                 hass=hass,
                 statistic_id=entity.long_term_statistics_id,
-                cutoff_start=records[0]["start"],
+                cutoff_start=cutoff,
                 table=recorder_db_schema.Statistics,
             )
         except Exception:
