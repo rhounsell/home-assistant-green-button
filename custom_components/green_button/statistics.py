@@ -23,6 +23,7 @@ from homeassistant.components.recorder.statistics import async_import_statistics
 from homeassistant.components.recorder.models import StatisticData
 from homeassistant.components.recorder import tasks
 from homeassistant.components.recorder import util as recorder_util
+from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 
 from . import model
@@ -286,6 +287,45 @@ def _queue_task(
 
 def _complete_future(future: asyncio.Future[T], value: T) -> None:
     future.get_loop().call_soon_threadsafe(future.set_result, value)
+
+
+def _convert_to_kwh(value: float, source_unit: Any) -> float:
+    """Convert energy value from source unit to kWh.
+    
+    Args:
+        value: The energy value in the source unit
+        source_unit: The source unit (e.g., UnitOfEnergy.WATT_HOUR or string like "Wh")
+    
+    Returns:
+        The energy value in kWh
+    """
+    # Normalize to string code when possible
+    unit_str = None
+    try:
+        if isinstance(source_unit, str):
+            unit_str = source_unit.lower()
+        else:
+            # Enum value from UnitOfEnergy
+            unit_str = str(source_unit).lower()
+    except Exception:  # pragma: no cover - defensive
+        unit_str = None
+
+    if source_unit == UnitOfEnergy.WATT_HOUR or unit_str in {"watt-hour", "wh"}:
+        # Convert Wh to kWh
+        return value / 1000.0
+    elif source_unit == UnitOfEnergy.KILO_WATT_HOUR or unit_str in {"kilowatt-hour", "kwh"}:
+        # Already in kWh
+        return value
+    elif source_unit == UnitOfEnergy.MEGA_WATT_HOUR or unit_str in {"megawatt-hour", "mwh"}:
+        # Convert MWh to kWh
+        return value * 1000.0
+    else:
+        # Unknown unit, assume it's already in the correct unit
+        _LOGGER.warning(
+            "Unknown energy unit '%s', assuming value is already in kWh",
+            source_unit,
+        )
+        return value
 
 
 class _StatsDao:
@@ -838,7 +878,7 @@ class DefaultDataExtractor:
 def create_metadata(entity: GreenButtonEntity) -> statistics.StatisticMetaData:
     """Create the statistic metadata for the entity."""
     return {
-        "has_mean": True,
+        "has_mean": False,
         "has_sum": True,
         "name": entity.name,
         "source": "recorder",
@@ -853,47 +893,163 @@ async def _generate_statistics_data(
     data_extractor: DataExtractor,
     meter_reading: model.MeterReading,
 ) -> list[StatisticData]:
-    """Generate statistics data from meter reading with historical timestamps."""
-    statistics_data = []
+    """Generate statistics data aggregated to full hours, skipping trailing partial hour.
 
-    # Calculate cumulative sum across ALL interval blocks and readings
-    cumulative_sum = 0.0
+    We import hourly statistics aligned to hour boundaries and exclude the last
+    partial hour to avoid an oversized last bar on the Energy dashboard.
+    """
+    statistics_data: list[StatisticData] = []
 
-    # Collect all readings first, then sort by timestamp
+    # Collect all readings first
     all_readings = [
         interval_reading
         for interval_block in meter_reading.interval_blocks
         for interval_reading in interval_block.interval_readings
-        if interval_reading.value is not None
     ]
+
+    if not all_readings:
+        return statistics_data
 
     # Sort readings by start time to ensure chronological order
     all_readings.sort(key=lambda r: r.start)
 
-    for interval_reading in all_readings:
-        # Get the native value (with power of ten multiplier applied)
-        reading_value = float(data_extractor.get_native_value(interval_reading))
+    # Determine cutoff at the end of the last FULL hour covered by the data
+    # Any intervals ending after this cutoff are considered part of a partial hour and skipped
+    last_end: datetime.datetime = max(r.end for r in all_readings)
+    cutoff_end: datetime.datetime = last_end.replace(minute=0, second=0, microsecond=0)
 
-        # Convert from Wh to kWh if needed
-        if reading_value > 1000:  # Likely in Wh, convert to kWh
-            reading_value = reading_value / 1000.0
+    # If the last interval ends exactly on an hour boundary, we can include it
+    # Otherwise, we skip the trailing partial hour
+    include_trailing_hour = last_end == cutoff_end
 
-        cumulative_sum += reading_value
+    # Build hourly buckets with coverage tracking (seconds covered in the hour)
+    hourly_kwh: dict[datetime.datetime, decimal.Decimal] = {}
+    hourly_coverage_seconds: dict[datetime.datetime, int] = {}
 
-        # Create statistics record with historical timestamp
+    # Determine source unit from ReadingType (default to Wh if missing)
+    source_unit = (
+        all_readings[0].reading_type.unit_of_measurement
+        if all_readings and getattr(all_readings[0].reading_type, "unit_of_measurement", None)
+        else UnitOfEnergy.WATT_HOUR
+    )
+
+    for reading in all_readings:
+        # Skip intervals that end after the cutoff if we don't include trailing hour
+        if not include_trailing_hour and reading.end > cutoff_end:
+            # If the reading overlaps the cutoff boundary, trim to cutoff
+            if reading.start < cutoff_end < reading.end:
+                # Split proportionally: keep portion up to cutoff
+                total_seconds = (reading.end - reading.start).total_seconds()
+                kept_seconds = (cutoff_end - reading.start).total_seconds()
+                if total_seconds > 0:
+                    proportion = decimal.Decimal(kept_seconds / total_seconds)
+                else:
+                    proportion = decimal.Decimal(0)
+                base_value = data_extractor.get_native_value(reading)
+                value_kwh = decimal.Decimal(
+                    _convert_to_kwh(float(base_value), source_unit)
+                )
+                kept_kwh = (value_kwh * proportion)
+                # Bucket kept portion into hour of cutoff_end - 1 hour
+                hour_start = (cutoff_end - datetime.timedelta(hours=1)).replace(
+                    minute=0, second=0, microsecond=0
+                )
+                hourly_kwh[hour_start] = hourly_kwh.get(hour_start, decimal.Decimal(0)) + kept_kwh
+                hourly_coverage_seconds[hour_start] = hourly_coverage_seconds.get(hour_start, 0) + int(kept_seconds)
+            # Skip the remainder
+            continue
+
+        # Potentially split a reading that spans multiple hours
+        curr_start = reading.start
+        curr_end = reading.end
+        base_value = data_extractor.get_native_value(reading)
+        value_kwh_total = decimal.Decimal(
+            _convert_to_kwh(float(base_value), source_unit)
+        )
+        total_seconds = (curr_end - curr_start).total_seconds()
+        if total_seconds <= 0:
+            continue
+
+        # Iterate across hours, splitting proportionally
+        while curr_start < curr_end:
+            hour_start = curr_start.replace(minute=0, second=0, microsecond=0)
+            hour_end = hour_start + datetime.timedelta(hours=1)
+            segment_end = min(curr_end, hour_end)
+            seg_seconds = (segment_end - curr_start).total_seconds()
+            proportion = decimal.Decimal(seg_seconds / total_seconds)
+            seg_kwh = value_kwh_total * proportion
+
+            hourly_kwh[hour_start] = hourly_kwh.get(hour_start, decimal.Decimal(0)) + seg_kwh
+            hourly_coverage_seconds[hour_start] = hourly_coverage_seconds.get(hour_start, 0) + int(seg_seconds)
+
+            curr_start = segment_end
+
+    # Compute existing sum before the first hour we will insert
+    hour_keys_sorted = sorted(hourly_kwh.keys())
+    if not hour_keys_sorted:
+        return statistics_data
+
+    first_hour_start = hour_keys_sorted[0]
+    existing_sum = 0.0
+    try:
+        existing_stats = await hass.async_add_executor_job(
+            statistics.statistic_during_period,
+            hass,
+            None,  # start_time (beginning of time)
+            first_hour_start,  # end_time
+            entity.long_term_statistics_id,
+            {"change"},
+            None,  # units
+        )
+        if existing_stats and "change" in existing_stats and existing_stats["change"] is not None:
+            existing_sum = float(existing_stats["change"])  # type: ignore[assignment]
+            _LOGGER.info(
+                "Found existing sum of %s kWh before %s for entity %s",
+                existing_sum,
+                first_hour_start,
+                entity.entity_id,
+            )
+    except Exception:
+        _LOGGER.warning(
+            "Could not query existing statistics for entity %s, starting from 0",
+            entity.entity_id,
+            exc_info=True,
+        )
+
+    # Emit hourly statistics for FULLY covered hours only (3600s)
+    cumulative_sum = existing_sum
+    for hour_start in hour_keys_sorted:
+        coverage = hourly_coverage_seconds.get(hour_start, 0)
+        if coverage < 3600:
+            _LOGGER.debug(
+                "Skipping partial hour starting %s (covered %ds)",
+                hour_start,
+                coverage,
+            )
+            continue
+        hour_kwh = float(hourly_kwh.get(hour_start, decimal.Decimal(0)))
+        cumulative_sum += hour_kwh
         stat_record: StatisticData = {
-            "start": interval_reading.start,
-            "state": reading_value,
+            "start": hour_start,
+            "state": hour_kwh,
             "sum": cumulative_sum,
         }
         statistics_data.append(stat_record)
-
         _LOGGER.debug(
-            "Generated statistic: timestamp=%s, state=%s kWh, sum=%s kWh",
-            interval_reading.start,
-            reading_value,
+            "Generated hourly statistic: start=%s, state=%.3f kWh, sum=%.3f kWh",
+            hour_start,
+            hour_kwh,
             cumulative_sum,
         )
+
+    # Log if we purposely skipped the trailing partial hour
+    if statistics_data:
+        last_emitted = statistics_data[-1]["start"]
+        if not include_trailing_hour and last_emitted >= cutoff_end - datetime.timedelta(hours=1):
+            _LOGGER.info(
+                "Skipped trailing partial hour ending at %s to avoid oversized last bar",
+                cutoff_end,
+            )
 
     return statistics_data
 

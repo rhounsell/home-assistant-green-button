@@ -2,20 +2,29 @@
   "config": {
     "step": {
       "user": {
-        "description": "Configure the Green Button integration.",
+        "description": "Configure the Green Button integration. Provide either XML content or an XML file path (not both). Relative paths are resolved against the Home Assistant config directory.",
         "data": {
           "name": "[%key:common::config_flow::data::name%]",
+          "input_type": "Input Type",
           "usage_point_href": "UsagePoint HREF",
           "energy_unit": "Energy Unit",
           "cost_currency": "Cost Currency",
-          "xml": "XML"
+          "xml": "XML",
+          "xml_file_path": "XML File Path"
         }
       }
     },
     "error": {
       "invalid_espi_xml": "Invalid ESPI XML.",
+      "input_type_required": "Select how you want to provide the data.",
+      "file_required": "Provide a path to an XML file.",
+      "xml_required": "Paste the XML content.",
       "no_usage_points_found": "No UsagePoints found in the XML. You need exactly one.",
       "multiple_usage_points_found": "Multiple UsagePoints found in the XML. You need exactly one.",
+      "no_xml_provided": "Please provide either XML content or an XML file path.",
+      "both_xml_provided": "Please provide either XML content or an XML file path, not both.",
+      "file_not_found": "The specified XML file does not exist.",
+      "file_read_error": "Failed to read the XML file.",
       "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
       "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
       "unknown": "[%key:common::config_flow::error::unknown%]"

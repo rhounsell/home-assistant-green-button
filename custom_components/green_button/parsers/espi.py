@@ -71,6 +71,35 @@ def _parse_child_text(elem: ET.Element, xpath: str, parser: Callable[[str], T]) 
         ) from ex
 
 
+def _parse_optional_child_text(
+    elem: ET.Element, xpath: str, parser: Callable[[str], T], default: T
+) -> T:
+    """Parse optional child text at xpath; return default if missing.
+
+    Raises if more than one match is found or if the value cannot be parsed.
+    """
+    matches = elem.findall(xpath, _NAMESPACE_MAP)
+    if len(matches) == 0:
+        return default
+    if len(matches) > 1:
+        raise EspiXmlParseError(
+            f"Multiple values at path '{xpath}' of entry:\n{_pretty_print(elem)}"
+        )
+    text = matches[0].text
+    if text is None:
+        return default
+    try:
+        return parser(text)
+    except ValueError as ex:
+        raise EspiXmlParseError(
+            f"Invalid value {text!r} at path '{xpath}' of entry:\n{_pretty_print(elem)}"
+        ) from ex
+    except KeyError as ex:
+        raise EspiXmlParseError(
+            f"Invalid value {text!r} at path '{xpath}' of entry:\n{_pretty_print(elem)}"
+        ) from ex
+
+
 def _parse_child_elems(
     elem: ET.Element, xpath: str, parser: Callable[[ET.Element], T]
 ) -> list[T]:
@@ -345,8 +374,11 @@ class EspiEntry:
         matches = []
         for related_entry in self._root.find_entries(related_entry_type_tag):
             related_entry_href = related_entry.find_self_href()
-            if related_entry_href in related_hrefs:
-                matches.append(parser(related_entry))
+            # Check for exact match or prefix match (for feed vs entry hrefs)
+            for related_href in related_hrefs:
+                if related_entry_href == related_href or related_entry_href.startswith(related_href + "/"):
+                    matches.append(parser(related_entry))
+                    break
         return matches
 
     def find_first_related_entries(
@@ -368,7 +400,8 @@ class EspiEntry:
         def parser(elem: ET.Element) -> model.IntervalReading:
             return model.IntervalReading(
                 reading_type=reading_type,
-                cost=_parse_child_text(elem, "./espi:cost", int),
+                # 'cost' is optional in some feeds; default to 0 if missing
+                cost=_parse_optional_child_text(elem, "./espi:cost", int, 0),
                 start=_parse_child_text(
                     elem, "./espi:timePeriod/espi:start", _to_utc_datetime
                 ),
@@ -432,18 +465,75 @@ class EspiEntry:
 
     def to_usage_point(self) -> model.UsagePoint:
         """Parse this entry as a UsagePoint."""
+        logger = logging.getLogger(__name__)
         self_href = self.find_self_href()
         sensor_device_class = self.parse_child_text(
             "espi:ServiceCategory/espi:kind",
             _SERVICE_KIND.__getitem__,
         )
+        
+        # Find meter readings - handle both direct links and feed links
+        related_hrefs = self.find_related_hrefs()
+        logger.debug("UsagePoint %s has related hrefs: %s", self_href, related_hrefs)
+        
+        meter_readings = []
+        for mr_entry in self._root.find_entries("MeterReading"):
+            mr_href = mr_entry.find_self_href()
+            # Check if meter reading matches any related href (exact or prefix match for feeds)
+            for related_href in related_hrefs:
+                if mr_href == related_href or mr_href.startswith(related_href + "/"):
+                    logger.debug("Matched MeterReading %s to UsagePoint %s", mr_href, self_href)
+                    
+                    # Get the related ReadingType to check flowDirection
+                    try:
+                        reading_type_entries = mr_entry.find_related_entries(
+                            "ReadingType", EspiEntry.to_reading_type
+                        )
+                        if reading_type_entries:
+                            reading_type = reading_type_entries[0]
+                            # Get flowDirection from the ReadingType entry
+                            rt_entry = None
+                            for rt in self._root.find_entries("ReadingType"):
+                                if rt.find_self_href() == reading_type.id:
+                                    rt_entry = rt
+                                    break
+                            
+                            if rt_entry:
+                                flow_direction = rt_entry.parse_child_text("espi:flowDirection", int)
+                                interval_length = rt_entry.parse_child_text("espi:intervalLength", int)
+                                
+                                # Only include consumed energy (flowDirection=1) and skip daily summaries
+                                if flow_direction == 1 and interval_length < 86400:
+                                    logger.info(
+                                        "Including MeterReading %s (flowDirection=%d, intervalLength=%d)",
+                                        mr_href, flow_direction, interval_length
+                                    )
+                                    meter_readings.append(mr_entry.to_meter_reading())
+                                else:
+                                    logger.info(
+                                        "Skipping MeterReading %s (flowDirection=%d, intervalLength=%d)",
+                                        mr_href, flow_direction, interval_length
+                                    )
+                            else:
+                                # If we can't determine flow direction, include it
+                                logger.warning("Could not determine flowDirection for %s, including by default", mr_href)
+                                meter_readings.append(mr_entry.to_meter_reading())
+                        else:
+                            # If no reading type found, include it
+                            logger.warning("No ReadingType found for %s, including by default", mr_href)
+                            meter_readings.append(mr_entry.to_meter_reading())
+                    except (ValueError, EspiXmlParseError) as ex:
+                        logger.warning("Failed to check flowDirection for %s: %s, including by default", mr_href, ex)
+                        meter_readings.append(mr_entry.to_meter_reading())
+                    
+                    break
+        
+        logger.info("UsagePoint %s found %d meter readings (after filtering)", self_href, len(meter_readings))
+        
         return model.UsagePoint(
             id=self_href,
             sensor_device_class=sensor_device_class,
-            meter_readings=self.find_related_entries(
-                "MeterReading",
-                EspiEntry.to_meter_reading,
-            ),
+            meter_readings=meter_readings,
         )
 
 

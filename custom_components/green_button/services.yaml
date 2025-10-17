@@ -1,5 +1,5 @@
 delete_statistics:
-  name: Delete Statistics
+  name: Delete Green Button Statistics
   description: Delete statistics
   fields:
     statistic_id:
@@ -11,13 +11,19 @@ delete_statistics:
         text:
 
 import_espi_xml:
-  name: Import ESPI XML
-  description: Import usage data from an XML string containing the ESPI atom format.
+  name: Import Green Button ESPI XML
+  description: Import usage data from an XML file or XML content in the ESPI atom format. Provide either xml_file_path OR xml, not both.
   fields:
+    xml_file_path:
+      name: XML File Path
+      description: "Path to the XML file to import (e.g., /share/myfile.xml). Leave empty if providing XML content directly."
+      required: false
+      selector:
+        text:
     xml:
-      name: XML
-      description: "The XML document to import."
-      required: true
+      name: XML Content
+      description: "ESPI XML content to import directly. Leave empty if providing a file path."
+      required: false
       selector:
         text:
           multiline: true
