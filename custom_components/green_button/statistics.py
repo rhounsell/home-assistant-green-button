@@ -1553,8 +1553,8 @@ async def update_gas_statistics(
 
         for us in summaries_sorted:
             period_end = us.start + us.duration
-            # Place the increment at 00:00 of the end day
-            rec_start = datetime.datetime.combine((period_end - datetime.timedelta(seconds=1)).date(), datetime.time.min, tzinfo=tzinfo)
+            # Place the increment at 00:00 of the period end date (the day the period ends)
+            rec_start = datetime.datetime.combine(period_end.date(), datetime.time.min, tzinfo=tzinfo)
             if first_start is None:
                 first_start = rec_start
                 # Existing cumulative before first record
@@ -1697,7 +1697,8 @@ async def update_gas_cost_statistics(
         existing_sum = 0.0
         for us in summaries_sorted:
             period_end = us.start + us.duration
-            rec_start = datetime.datetime.combine((period_end - datetime.timedelta(seconds=1)).date(), datetime.time.min, tzinfo=tzinfo)
+            # Place the increment at 00:00 of the period end date (the day the period ends)
+            rec_start = datetime.datetime.combine(period_end.date(), datetime.time.min, tzinfo=tzinfo)
             if first_start is None:
                 first_start = rec_start
                 try:
