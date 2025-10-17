@@ -11,6 +11,10 @@
           "cost_currency": "Cost Currency",
           "xml": "XML",
           "xml_file_path": "XML File Path"
+        },
+        "data_description": {
+          "xml_file_path": "Relative paths resolve against the Home Assistant config directory (e.g., /config).",
+          "xml": "Paste ESPI XML content directly. For large files, using a file path is recommended."
         }
       }
     },
