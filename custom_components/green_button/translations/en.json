@@ -7,8 +7,15 @@
       "cannot_connect": "Failed to connect",
       "invalid_auth": "Invalid authentication",
       "invalid_espi_xml": "Invalid ESPI XML.",
-      "multiple_usage_points_found": "Multiple UsagePoints found in the XML. You need exactly one.",
+      "input_type_required": "Select how you want to provide the data.",
+      "file_required": "Provide a path to an XML file.",
+      "xml_required": "Paste the XML content.",
       "no_usage_points_found": "No UsagePoints found in the XML. You need exactly one.",
+      "multiple_usage_points_found": "Multiple UsagePoints found in the XML. You need exactly one.",
+      "no_xml_provided": "Please provide either XML content or an XML file path.",
+      "both_xml_provided": "Please provide either XML content or an XML file path, not both.",
+      "file_not_found": "The specified XML file does not exist.",
+      "file_read_error": "Failed to read the XML file.",
       "unknown": "Unexpected error"
     },
     "step": {
@@ -17,9 +24,26 @@
           "cost_currency": "Cost Currency",
           "energy_unit": "Energy Unit",
           "name": "Name",
+          "input_type": "Input Type",
           "usage_point_href": "UsagePoint HREF",
-          "xml": "XML"
+          "xml": "XML",
+          "xml_file_path": "XML File Path"
         }
+      }
+    }
+  },
+  "selector": {
+    "input_type": {
+      "file": "XML File",
+      "xml": "XML Content"
+    }
+  },
+  "errors": {
+    "component": {
+      "green_button": {
+        "input_type_required": "Select how you want to provide the data.",
+        "file_required": "Provide a path to an XML file.",
+        "xml_required": "Paste the XML content."
       }
     }
   },
