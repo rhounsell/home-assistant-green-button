@@ -21,6 +21,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
 
     VERSION = 1
 
+    @staticmethod
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Get the options flow for this handler."""
+        return OptionsFlowHandler(config_entry)
+
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -236,9 +243,3 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             })
 
         return self.async_show_form(step_id="init", data_schema=schema)
-
-
-async def async_get_options_flow(
-    config_entry: config_entries.ConfigEntry,
-):
-    return OptionsFlowHandler(config_entry)
