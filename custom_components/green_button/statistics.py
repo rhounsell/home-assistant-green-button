@@ -753,6 +753,80 @@ class _ClearStatisticsTask(tasks.RecorderTask):
         return _queue_task(hass, ctor)
 
 
+@final
+@dataclasses.dataclass(frozen=False)
+class _TruncateStatisticsAfterTask(tasks.RecorderTask):
+    """Recorder task to delete statistics at and after a cutoff time.
+
+    This removes trailing statistics rows for a statistic_id to prevent
+    leftover future bars from previous imports from appearing in charts.
+    """
+
+    hass: HomeAssistant
+    statistic_id: str
+    cutoff_start: datetime.datetime
+    table: type[recorder_db_schema.StatisticsShortTerm | recorder_db_schema.Statistics]
+    future: asyncio.Future[None]
+
+    def run(self, instance: recorder.Recorder) -> None:
+        _LOGGER.info(
+            "[%s] Truncating statistics in table '%s' at and after %s",
+            self.statistic_id,
+            self.table.__tablename__,
+            self.cutoff_start,
+        )
+        try:
+            # Use recorder session to delete rows at and after the cutoff
+            with recorder_util.session_scope(session=instance.get_session()) as session:
+                # Find metadata_id for the statistic_id
+                meta = (
+                    session.query(recorder_db_schema.StatisticsMeta)
+                    .filter(
+                        recorder_db_schema.StatisticsMeta.statistic_id
+                        == self.statistic_id
+                    )
+                    .one_or_none()
+                )
+                if meta is not None:
+                    (
+                        session.query(self.table)
+                        .filter(self.table.metadata_id == meta.id)
+                        .filter(self.table.start >= self.cutoff_start)
+                        .delete(synchronize_session=False)
+                    )
+                else:
+                    _LOGGER.debug(
+                        "[%s] No metadata found when truncating; nothing to delete",
+                        self.statistic_id,
+                    )
+        except Exception:
+            # Re-queue if recorder is not ready
+            recorder_util.get_instance(self.hass).queue_task(self)
+            return
+        _complete_future(self.future, None)
+
+    @classmethod
+    def queue_task(
+        cls,
+        hass: HomeAssistant,
+        statistic_id: str,
+        cutoff_start: datetime.datetime,
+        table: type[recorder_db_schema.StatisticsShortTerm | recorder_db_schema.Statistics],
+    ) -> asyncio.Future[None]:
+        """Queue the task and return a Future that completes when the truncation is done."""
+
+        def ctor(future: asyncio.Future[None]) -> _TruncateStatisticsAfterTask:
+            return cls(
+                hass=hass,
+                statistic_id=statistic_id,
+                cutoff_start=cutoff_start,
+                table=table,
+                future=future,
+            )
+
+        return _queue_task(hass, ctor)
+
+
 class _UpdateStatisticsTask:
     def __init__(
         self,
@@ -1249,6 +1323,21 @@ async def update_cost_statistics(
     )
 
     if statistics_data:
+        # Before importing, truncate any existing hourly stats at and after the first new hour
+        first_start = statistics_data[0]["start"]
+        try:
+            await _TruncateStatisticsAfterTask.queue_task(
+                hass=hass,
+                statistic_id=entity.long_term_statistics_id,
+                cutoff_start=first_start,
+                table=recorder_db_schema.Statistics,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "Failed to truncate existing cost statistics at %s for %s",
+                first_start,
+                entity.entity_id,
+            )
         try:
             async_import_statistics(hass, metadata, statistics_data)
             _LOGGER.info(
@@ -1293,6 +1382,21 @@ async def update_statistics(
     )
 
     if statistics_data:
+        # Truncate existing hourly statistics at and after the first generated hour
+        first_start = statistics_data[0]["start"]
+        try:
+            await _TruncateStatisticsAfterTask.queue_task(
+                hass=hass,
+                statistic_id=entity.long_term_statistics_id,
+                cutoff_start=first_start,
+                table=recorder_db_schema.Statistics,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "Failed to truncate existing energy statistics at %s for %s",
+                first_start,
+                entity.entity_id,
+            )
         # Log first and last records for debugging
         first_record = statistics_data[0]
         last_record = statistics_data[-1]
