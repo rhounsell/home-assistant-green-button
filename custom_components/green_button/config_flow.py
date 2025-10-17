@@ -32,6 +32,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
         if user_input is None:
             user_input_default = {
                 "name": "Home",
+                "input_type": "file",
             }
         else:
             user_input_default = user_input
@@ -42,6 +43,15 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                     "name",
                     default=user_input_default.get("name"),
                 ): str,
+                vol.Required(
+                    "input_type",
+                    default=user_input_default.get("input_type", "file"),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=["file", "xml"],
+                        mode="list",
+                    )
+                ),
                 vol.Optional(
                     "xml",
                     default=user_input_default.get("xml", ""),
@@ -57,35 +67,40 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
         errors = {}
         
         if user_input is not None:
+            input_type = user_input.get("input_type")
             xml_path = user_input.get("xml_file_path", "").strip()
             xml_content = user_input.get("xml", "").strip()
             
-            # Check that at least one is provided
-            if not xml_path and not xml_content:
-                errors["base"] = "no_xml_provided"
-            # If both are provided, use the file path
-            elif xml_path and xml_content:
-                errors["base"] = "both_xml_provided"
-            # If file path is provided, read it
-            elif xml_path:
-                # Resolve relative path against HA config directory
-                xml_path_obj = Path(xml_path)
-                if not xml_path_obj.is_absolute():
-                    xml_path_obj = Path(self.hass.config.config_dir) / xml_path
-
-                if not xml_path_obj.is_file():
-                    errors["xml_file_path"] = "file_not_found"
+            # Validate selection
+            if input_type not in ("file", "xml"):
+                errors["input_type"] = "input_type_required"
+            elif input_type == "file":
+                # Require a file path; ignore xml content if provided
+                if not xml_path:
+                    errors["xml_file_path"] = "file_required"
                 else:
-                    try:
-                        def _read(path: Path) -> str:
-                            return path.read_text(encoding="utf-8")
+                    # Resolve relative path against HA config directory
+                    xml_path_obj = Path(xml_path)
+                    if not xml_path_obj.is_absolute():
+                        xml_path_obj = Path(self.hass.config.config_dir) / xml_path
 
-                        xml_content = await self.hass.async_add_executor_job(
-                            _read, xml_path_obj
-                        )
-                        user_input["xml"] = xml_content
-                    except Exception:
-                        errors["xml_file_path"] = "file_read_error"
+                    if not xml_path_obj.is_file():
+                        errors["xml_file_path"] = "file_not_found"
+                    else:
+                        try:
+                            def _read(path: Path) -> str:
+                                return path.read_text(encoding="utf-8")
+
+                            xml_content = await self.hass.async_add_executor_job(
+                                _read, xml_path_obj
+                            )
+                            user_input["xml"] = xml_content
+                        except (OSError, IOError, UnicodeDecodeError):
+                            errors["xml_file_path"] = "file_read_error"
+            elif input_type == "xml":
+                # Require inline XML content; ignore file path
+                if not xml_content:
+                    errors["xml"] = "xml_required"
             # If XML content is provided directly, use it (already in user_input["xml"])
 
         if user_input is None or errors:

@@ -5,6 +5,7 @@
         "description": "Configure the Green Button integration. Provide either XML content or an XML file path (not both). Relative paths are resolved against the Home Assistant config directory.",
         "data": {
           "name": "[%key:common::config_flow::data::name%]",
+          "input_type": "Input Type",
           "usage_point_href": "UsagePoint HREF",
           "energy_unit": "Energy Unit",
           "cost_currency": "Cost Currency",
@@ -15,6 +16,9 @@
     },
     "error": {
       "invalid_espi_xml": "Invalid ESPI XML.",
+      "input_type_required": "Select how you want to provide the data.",
+      "file_required": "Provide a path to an XML file.",
+      "xml_required": "Paste the XML content.",
       "no_usage_points_found": "No UsagePoints found in the XML. You need exactly one.",
       "multiple_usage_points_found": "Multiple UsagePoints found in the XML. You need exactly one.",
       "no_xml_provided": "Please provide either XML content or an XML file path.",
