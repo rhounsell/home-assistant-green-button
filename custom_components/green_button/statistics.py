@@ -1081,7 +1081,8 @@ async def _generate_statistics_data(
     first_hour_start = hour_keys_sorted[0]
     existing_sum = 0.0
     try:
-        existing_stats = await hass.async_add_executor_job(
+        rec = recorder.get_instance(hass)
+        existing_stats = await rec.async_add_executor_job(
             statistics.statistic_during_period,
             hass,
             None,  # start_time (beginning of time)
@@ -1235,7 +1236,8 @@ async def _generate_statistics_data_cost(
     first_hour_start = hour_keys_sorted[0]
     existing_sum = 0.0
     try:
-        existing_stats = await hass.async_add_executor_job(
+        rec = recorder.get_instance(hass)
+        existing_stats = await rec.async_add_executor_job(
             statistics.statistic_during_period,
             hass,
             None,  # start_time
@@ -1471,7 +1473,6 @@ async def _generate_daily_m3_statistics(
 
     # Sort readings by start
     readings.sort(key=lambda r: r.start)
-
     # Expect daily intervals; compute daily totals in native m³
     daily_totals: dict[datetime.date, float] = {}
     for rd in readings:
@@ -1488,7 +1489,8 @@ async def _generate_daily_m3_statistics(
     first_start = datetime.datetime.combine(first_day, datetime.time.min, tzinfo=readings[0].start.tzinfo)
     existing_sum = 0.0
     try:
-        existing_stats = await hass.async_add_executor_job(
+        rec = recorder.get_instance(hass)
+        existing_stats = await rec.async_add_executor_job(
             statistics.statistic_during_period,
             hass,
             None,
@@ -1576,7 +1578,8 @@ async def update_gas_cost_statistics(
             if first_start is None:
                 first_start = rec_start
                 try:
-                    existing_stats = await hass.async_add_executor_job(
+                    rec = recorder.get_instance(hass)
+                    existing_stats = await rec.async_add_executor_job(
                         statistics.statistic_during_period,
                         hass,
                         None,
@@ -1659,7 +1662,8 @@ async def update_gas_cost_statistics(
         # Existing cumulative cost before first day
         existing_sum = 0.0
         try:
-            existing_stats = await hass.async_add_executor_job(
+            rec = recorder.get_instance(hass)
+            existing_stats = await rec.async_add_executor_job(
                 statistics.statistic_during_period,
                 hass,
                 None,
