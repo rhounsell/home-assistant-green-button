@@ -34,6 +34,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                 "name": "Home",
                 "input_type": "file",
                 "gas_cost_allocation": "pro_rate_daily",
+                "gas_usage_allocation": "daily_readings",
             }
         else:
             user_input_default = user_input
@@ -70,6 +71,18 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                         options=[
                             {"value": "pro_rate_daily", "label": "Pro-rate gas costs daily"},
                             {"value": "monthly_increment", "label": "Single monthly cost increment"},
+                        ],
+                        mode="list",
+                    )
+                ),
+                vol.Optional(
+                    "gas_usage_allocation",
+                    default=user_input_default.get("gas_usage_allocation", "daily_readings"),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": "daily_readings", "label": "Use daily readings (m³)"},
+                            {"value": "monthly_increment", "label": "Single billing-period usage increment (m³)"},
                         ],
                         mode="list",
                     )
@@ -153,6 +166,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
         config_data["gas_cost_allocation"] = user_input.get(
             "gas_cost_allocation", "pro_rate_daily"
         )
+        # Store gas usage allocation toggle
+        config_data["gas_usage_allocation"] = user_input.get(
+            "gas_usage_allocation", "daily_readings"
+        )
 
         return self.async_create_entry(
             title=config.name,
@@ -176,6 +193,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             or self.config_entry.data.get("gas_cost_allocation")
             or "pro_rate_daily"
         )
+        current_usage_mode = (
+            self.config_entry.options.get("gas_usage_allocation")
+            or self.config_entry.data.get("gas_usage_allocation")
+            or "daily_readings"
+        )
 
         schema = vol.Schema(
             {
@@ -191,13 +213,26 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         mode="list",
                     )
                 ),
+                vol.Optional(
+                    "gas_usage_allocation",
+                    default=current_usage_mode,
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": "daily_readings", "label": "Use daily readings (m³)"},
+                            {"value": "monthly_increment", "label": "Single billing-period usage increment (m³)"},
+                        ],
+                        mode="list",
+                    )
+                ),
             }
         )
 
         if user_input is not None:
             # Only store provided options
             return self.async_create_entry(title="", data={
-                "gas_cost_allocation": user_input.get("gas_cost_allocation", current_mode)
+                "gas_cost_allocation": user_input.get("gas_cost_allocation", current_mode),
+                "gas_usage_allocation": user_input.get("gas_usage_allocation", current_usage_mode),
             })
 
         return self.async_show_form(step_id="init", data_schema=schema)
