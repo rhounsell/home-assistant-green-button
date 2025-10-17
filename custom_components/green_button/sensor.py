@@ -249,10 +249,10 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
 
 
 class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
-    """A sensor for Green Button monetary cost data (total increasing)."""
+    """A sensor for Green Button monetary cost data (total)."""
 
     _attr_device_class = SensorDeviceClass.MONETARY
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_has_entity_name = True
 
     def __init__(
@@ -480,10 +480,10 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
 
 
 class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
-    """Gas cost sensor (monetary total increasing) using UsageSummary pro-rated per day."""
+    """Gas cost sensor (monetary total) using UsageSummary pro-rated per day."""
 
     _attr_device_class = SensorDeviceClass.MONETARY
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_has_entity_name = True
 
     def __init__(self, coordinator: GreenButtonCoordinator, meter_reading_id: str) -> None:
