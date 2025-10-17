@@ -71,6 +71,35 @@ def _parse_child_text(elem: ET.Element, xpath: str, parser: Callable[[str], T]) 
         ) from ex
 
 
+def _parse_optional_child_text(
+    elem: ET.Element, xpath: str, parser: Callable[[str], T], default: T
+) -> T:
+    """Parse optional child text at xpath; return default if missing.
+
+    Raises if more than one match is found or if the value cannot be parsed.
+    """
+    matches = elem.findall(xpath, _NAMESPACE_MAP)
+    if len(matches) == 0:
+        return default
+    if len(matches) > 1:
+        raise EspiXmlParseError(
+            f"Multiple values at path '{xpath}' of entry:\n{_pretty_print(elem)}"
+        )
+    text = matches[0].text
+    if text is None:
+        return default
+    try:
+        return parser(text)
+    except ValueError as ex:
+        raise EspiXmlParseError(
+            f"Invalid value {text!r} at path '{xpath}' of entry:\n{_pretty_print(elem)}"
+        ) from ex
+    except KeyError as ex:
+        raise EspiXmlParseError(
+            f"Invalid value {text!r} at path '{xpath}' of entry:\n{_pretty_print(elem)}"
+        ) from ex
+
+
 def _parse_child_elems(
     elem: ET.Element, xpath: str, parser: Callable[[ET.Element], T]
 ) -> list[T]:
@@ -371,7 +400,8 @@ class EspiEntry:
         def parser(elem: ET.Element) -> model.IntervalReading:
             return model.IntervalReading(
                 reading_type=reading_type,
-                cost=_parse_child_text(elem, "./espi:cost", int),
+                # 'cost' is optional in some feeds; default to 0 if missing
+                cost=_parse_optional_child_text(elem, "./espi:cost", int, 0),
                 start=_parse_child_text(
                     elem, "./espi:timePeriod/espi:start", _to_utc_datetime
                 ),
