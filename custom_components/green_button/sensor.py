@@ -11,7 +11,8 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, CoreState
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -450,9 +451,19 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
             for usage_point in self.coordinator.data["usage_points"]:
                 for meter_reading in usage_point.meter_readings:
                     if meter_reading.id == self._meter_reading_id:
-                        self.hass.async_create_task(
-                            self.update_sensor_and_statistics(meter_reading)
-                        )
+                        # Run after HA starts to avoid bootstrap timeout warnings
+                        if self.hass.state != CoreState.running:
+                            def _run_on_start(_):
+                                self.hass.async_create_task(
+                                    self.update_sensor_and_statistics(meter_reading)
+                                )
+                            self.hass.bus.async_listen_once(
+                                EVENT_HOMEASSISTANT_STARTED, _run_on_start
+                            )
+                        else:
+                            self.hass.async_create_task(
+                                self.update_sensor_and_statistics(meter_reading)
+                            )
                         break
 
     def _handle_coordinator_update(self) -> None:
@@ -527,9 +538,19 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
             for usage_point in self.coordinator.data["usage_points"]:
                 for meter_reading in usage_point.meter_readings:
                     if meter_reading.id == self._meter_reading_id:
-                        self.hass.async_create_task(
-                            self.update_sensor_and_statistics(meter_reading)
-                        )
+                        # Run after HA starts to avoid bootstrap timeout warnings
+                        if self.hass.state != CoreState.running:
+                            def _run_on_start(_):
+                                self.hass.async_create_task(
+                                    self.update_sensor_and_statistics(meter_reading)
+                                )
+                            self.hass.bus.async_listen_once(
+                                EVENT_HOMEASSISTANT_STARTED, _run_on_start
+                            )
+                        else:
+                            self.hass.async_create_task(
+                                self.update_sensor_and_statistics(meter_reading)
+                            )
                         break
 
     def _handle_coordinator_update(self) -> None:
