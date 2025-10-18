@@ -48,15 +48,23 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.usage_points = usage_points or []
             return {"usage_points": usage_points or []}
 
-    async def async_add_xml_data(self, xml_data: str) -> None:
-        """Add new Green Button XML data and update entities."""
+    async def async_add_xml_data(self, xml_data: str, store_in_config: bool = True) -> None:
+        """Add new Green Button XML data and update entities.
+        
+        Args:
+            xml_data: The XML data to parse and add
+            store_in_config: If True, store the XML in config entry (for initial setup).
+                           If False, just merge the data without persisting (for service imports).
+        """
         try:
-            # Store the XML data in config entry for future refreshes
-            data_updates = dict(self.config_entry.data)
-            data_updates["xml"] = xml_data
-            self.hass.config_entries.async_update_entry(
-                self.config_entry, data=data_updates
-            )
+            # Only store XML in config entry if requested (e.g., during initial setup)
+            # For service imports, we don't store to avoid triggering a reload
+            if store_in_config:
+                data_updates = dict(self.config_entry.data)
+                data_updates["xml"] = xml_data
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=data_updates
+                )
 
             # Parse and update immediately
             usage_points = await self.hass.async_add_executor_job(
