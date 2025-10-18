@@ -703,8 +703,8 @@ async def async_setup_entry(
         entities = []
 
         # Debug: Check what data is available
-        _LOGGER.info("Entity creation: coordinator.data = %s", coordinator.data)
-        _LOGGER.info(
+        _LOGGER.debug("Entity creation: coordinator.data = %s", coordinator.data)
+        _LOGGER.debug(
             "Entity creation: usage_points count = %d", len(coordinator.usage_points)
         )
 
