@@ -1743,7 +1743,7 @@ async def update_gas_statistics(
 async def update_gas_cost_statistics(
     hass: HomeAssistant,
     entity: GreenButtonEntity,
-    meter_reading: model.MeterReading,
+    meter_reading: model.MeterReading | None,
     usage_summaries: list[model.UsageSummary],
     allocation_mode: str = "pro_rate_daily",
 ) -> None:
@@ -1758,7 +1758,9 @@ async def update_gas_cost_statistics(
             _LOGGER.info("No usage summaries for monthly gas cost on %s", entity.entity_id)
             return
         # Determine tzinfo from readings if available; otherwise UTC
-        readings = [r for b in meter_reading.interval_blocks for r in b.interval_readings]
+        readings = []
+        if meter_reading:
+            readings = [r for b in meter_reading.interval_blocks for r in b.interval_readings]
         tzinfo = readings[0].start.tzinfo if readings else datetime.timezone.utc
 
         # Build records sorted by period end
@@ -1803,6 +1805,13 @@ async def update_gas_cost_statistics(
     else:
         # Pro-rate daily across billing period days proportional to m³
         # Build daily m³ map (same as in gas stats)
+        if not meter_reading:
+            _LOGGER.warning(
+                "Gas Cost Sensor %s: Cannot use pro_rate_daily mode without MeterReading (daily readings). "
+                "Use monthly_increment mode for UsageSummary-only data.",
+                entity.entity_id,
+            )
+            return
         readings = [
             r
             for block in meter_reading.interval_blocks
