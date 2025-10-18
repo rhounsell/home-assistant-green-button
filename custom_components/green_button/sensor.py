@@ -159,31 +159,13 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         await super().async_added_to_hass()
 
         _LOGGER.info(
-            "Sensor %s: Entity added to Home Assistant, triggering initial statistics generation",
+            "Sensor %s: Entity added to Home Assistant",
             self.entity_id,
         )
 
-        # Trigger statistics generation for initial data
-        # This ensures statistics are created even when coordinator already has data at startup
-        if self.coordinator.data and "usage_points" in self.coordinator.data:
-            usage_points = self.coordinator.data["usage_points"]
-            for usage_point in usage_points:
-                for meter_reading in usage_point.meter_readings:
-                    if meter_reading.id == self._meter_reading_id:
-                        _LOGGER.info(
-                            "Sensor %s: Scheduling initial statistics generation for meter reading %s",
-                            self.entity_id,
-                            meter_reading.id,
-                        )
-                        _schedule_hass_task_from_any_thread(
-                            self.hass, self.update_sensor_and_statistics(meter_reading)
-                        )
-                        break
-        else:
-            _LOGGER.warning(
-                "Sensor %s: No coordinator data available during entity initialization",
-                self.entity_id,
-            )
+        # Don't generate statistics during bootstrap - rely on _handle_coordinator_update
+        # which will be called after bootstrap completes
+        # This prevents "Setup timed out for bootstrap" warnings
 
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
@@ -364,19 +346,13 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
         await super().async_added_to_hass()
 
         _LOGGER.info(
-            "Cost Sensor %s: Entity added to Home Assistant, triggering initial statistics generation",
+            "Cost Sensor %s: Entity added to Home Assistant",
             self.entity_id,
         )
 
-        if self.coordinator.data and "usage_points" in self.coordinator.data:
-            usage_points = self.coordinator.data["usage_points"]
-            for usage_point in usage_points:
-                for meter_reading in usage_point.meter_readings:
-                    if meter_reading.id == self._meter_reading_id:
-                        _schedule_hass_task_from_any_thread(
-                            self.hass, self.update_sensor_and_statistics(meter_reading)
-                        )
-                        break
+        # Don't generate statistics during bootstrap - rely on _handle_coordinator_update
+        # which will be called after bootstrap completes
+        # This prevents "Setup timed out for bootstrap" warnings
 
     def _handle_coordinator_update(self) -> None:
         super()._handle_coordinator_update()
@@ -469,53 +445,13 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
         await super().async_added_to_hass()
 
         _LOGGER.info(
-            "Gas Sensor %s: Entity added to Home Assistant, triggering initial statistics generation",
+            "Gas Sensor %s: Entity added to Home Assistant",
             self.entity_id,
         )
 
-        if self.coordinator.data and "usage_points" in self.coordinator.data:
-            # Try to find as meter reading first
-            found_meter_reading = False
-            for usage_point in self.coordinator.data["usage_points"]:
-                for meter_reading in usage_point.meter_readings:
-                    if meter_reading.id == self._meter_reading_id:
-                        found_meter_reading = True
-                        # Run after HA starts to avoid bootstrap timeout warnings
-                        if self.hass.state != CoreState.running:
-                            async def _run_on_start(_):
-                                await self.update_sensor_and_statistics(meter_reading)
-                            self.hass.bus.async_listen_once(
-                                EVENT_HOMEASSISTANT_STARTED, _run_on_start
-                            )
-                        else:
-                            # Safe: we're in the event loop context here
-                            self.hass.async_create_task(
-                                self.update_sensor_and_statistics(meter_reading)
-                            )
-                        break
-                if found_meter_reading:
-                    break
-            
-            # If not found as meter reading, check if it's a UsagePoint ID (UsageSummary-only case)
-            if not found_meter_reading:
-                for usage_point in self.coordinator.data["usage_points"]:
-                    if usage_point.id == self._meter_reading_id and usage_point.usage_summaries:
-                        _LOGGER.info(
-                            "Gas Sensor %s: UsageSummary-only data detected, triggering statistics generation",
-                            self.entity_id,
-                        )
-                        # Run after HA starts
-                        if self.hass.state != CoreState.running:
-                            async def _run_on_start_summary(_):
-                                await self.update_sensor_and_statistics_from_summaries(usage_point)
-                            self.hass.bus.async_listen_once(
-                                EVENT_HOMEASSISTANT_STARTED, _run_on_start_summary
-                            )
-                        else:
-                            self.hass.async_create_task(
-                                self.update_sensor_and_statistics_from_summaries(usage_point)
-                            )
-                        break
+        # Don't generate statistics during bootstrap - rely on _handle_coordinator_update
+        # which will be called after bootstrap completes
+        # This prevents "Setup timed out for bootstrap" warnings
 
     def _handle_coordinator_update(self) -> None:
         super()._handle_coordinator_update()
@@ -640,27 +576,13 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
         await super().async_added_to_hass()
 
         _LOGGER.info(
-            "Gas Cost Sensor %s: Entity added to Home Assistant, triggering initial statistics generation",
+            "Gas Cost Sensor %s: Entity added to Home Assistant",
             self.entity_id,
         )
 
-        if self.coordinator.data and "usage_points" in self.coordinator.data:
-            for usage_point in self.coordinator.data["usage_points"]:
-                for meter_reading in usage_point.meter_readings:
-                    if meter_reading.id == self._meter_reading_id:
-                        # Run after HA starts to avoid bootstrap timeout warnings
-                        if self.hass.state != CoreState.running:
-                            async def _run_on_start(_):
-                                await self.update_sensor_and_statistics(meter_reading)
-                            self.hass.bus.async_listen_once(
-                                EVENT_HOMEASSISTANT_STARTED, _run_on_start
-                            )
-                        else:
-                            # Safe: we're in the event loop context here
-                            self.hass.async_create_task(
-                                self.update_sensor_and_statistics(meter_reading)
-                            )
-                        break
+        # Don't generate statistics during bootstrap - rely on _handle_coordinator_update
+        # which will be called after bootstrap completes
+        # This prevents "Setup timed out for bootstrap" warnings
 
     def _handle_coordinator_update(self) -> None:
         super()._handle_coordinator_update()
