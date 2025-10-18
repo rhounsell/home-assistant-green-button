@@ -588,12 +588,27 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
         super()._handle_coordinator_update()
 
         if self.coordinator.data and "usage_points" in self.coordinator.data:
+            # Try to find as meter reading first
+            found_meter_reading = False
             for usage_point in self.coordinator.data["usage_points"]:
                 for meter_reading in usage_point.meter_readings:
                     if meter_reading.id == self._meter_reading_id:
+                        found_meter_reading = True
                         _schedule_hass_task_from_any_thread(
                             self.hass, self.update_sensor_and_statistics(meter_reading)
                         )
+                        break
+                if found_meter_reading:
+                    break
+            
+            # If not found as meter reading, check if it's a UsagePoint ID (UsageSummary-only case)
+            if not found_meter_reading:
+                for usage_point in self.coordinator.data["usage_points"]:
+                    if usage_point.id == self._meter_reading_id and usage_point.usage_summaries:
+                        _schedule_hass_task_from_any_thread(
+                            self.hass, self.update_sensor_and_statistics_from_summaries(usage_point)
+                        )
+                        break
 
     async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
         # Update state
@@ -612,6 +627,35 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
             self,
             meter_reading,
             summaries,
+            allocation_mode=allocation_mode,
+        )
+
+    async def update_sensor_and_statistics_from_summaries(self, usage_point: model.UsagePoint) -> None:
+        """Update sensor and statistics when only UsageSummaries are available (no MeterReadings)."""
+        # Update entity state (sum of all UsageSummary total_cost values)
+        total = sum(us.total_cost for us in usage_point.usage_summaries)
+        self._attr_native_value = total if total > 0 else 0.0
+        self.async_write_ha_state()
+
+        # Import gas cost statistics
+        allocation_mode = (
+            self.coordinator.config_entry.options.get("gas_cost_allocation")
+            or self.coordinator.config_entry.data.get("gas_cost_allocation")
+            or "pro_rate_daily"
+        )
+        
+        _LOGGER.info(
+            "Gas Cost Sensor %s: Generating statistics from UsageSummaries (no daily readings), mode=%s",
+            self.entity_id,
+            allocation_mode,
+        )
+        
+        # Call update_gas_cost_statistics with no meter_reading (will use only UsageSummaries)
+        await statistics.update_gas_cost_statistics(
+            self.hass,
+            self,
+            None,  # No meter reading available
+            usage_point.usage_summaries,
             allocation_mode=allocation_mode,
         )
 
