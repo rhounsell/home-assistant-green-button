@@ -1533,9 +1533,6 @@ async def update_gas_statistics(
 
     if allocation_mode == "monthly_increment":
         summaries = usage_summaries or []
-        if not summaries:
-            _LOGGER.info("No usage summaries available for monthly gas usage on %s", entity.entity_id)
-            return
         # Clear existing statistics to avoid residual daily bars or negative corrections
         try:
             await clear_statistic(hass, entity.long_term_statistics_id)
@@ -1545,14 +1542,63 @@ async def update_gas_statistics(
         readings = [r for b in meter_reading.interval_blocks for r in b.interval_readings]
         tzinfo = readings[0].start.tzinfo if readings else datetime.timezone.utc
 
+        # Build a list of billing periods from both UsageSummaries and long IntervalReadings
+        # This handles the case where Enbridge provides:
+        # - UsageSummary for previous finalized billing period
+        # - IntervalReading for current billing period (not yet finalized)
+        periods_to_process: list[tuple[datetime.datetime, datetime.datetime, float | None, str]] = []
+        
+        # Add all UsageSummaries
+        for us in summaries:
+            period_start = us.start
+            period_end = us.start + us.duration
+            consumption_m3 = float(us.consumption_m3) if (hasattr(us, "consumption_m3") and us.consumption_m3 is not None) else None
+            source = f"UsageSummary:{us.id}"
+            periods_to_process.append((period_start, period_end, consumption_m3, source))
+        
+        # Check for long IntervalReadings (>7 days) that might represent billing periods
+        # not yet in UsageSummary
+        MIN_BILLING_PERIOD_DAYS = 7
+        for rd in readings:
+            duration_days = rd.duration.total_seconds() / 86400
+            if duration_days >= MIN_BILLING_PERIOD_DAYS:
+                rd_start = rd.start
+                rd_end = rd.start + rd.duration
+                # Check if this period overlaps significantly with any UsageSummary
+                overlaps = False
+                for us in summaries:
+                    us_start = us.start
+                    us_end = us.start + us.duration
+                    # Check for significant overlap (>50% of either period)
+                    overlap_start = max(rd_start, us_start)
+                    overlap_end = min(rd_end, us_end)
+                    if overlap_start < overlap_end:
+                        overlap_days = (overlap_end - overlap_start).total_seconds() / 86400
+                        if overlap_days > min(duration_days, (us_end - us_start).total_seconds() / 86400) * 0.5:
+                            overlaps = True
+                            break
+                
+                if not overlaps:
+                    # This is a billing-period-length reading not covered by UsageSummary
+                    consumption_m3 = float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
+                    source = f"IntervalReading:{rd_start.isoformat()}"
+                    periods_to_process.append((rd_start, rd_end, consumption_m3, source))
+                    _LOGGER.info(
+                        "Found billing period from IntervalReading not in UsageSummary: %s to %s (%.1f m³)",
+                        rd_start.date(), rd_end.date(), consumption_m3
+                    )
+        
+        if not periods_to_process:
+            _LOGGER.info("No billing periods available for monthly gas usage on %s", entity.entity_id)
+            return
+
         # Sort by period end
-        summaries_sorted = sorted(summaries, key=lambda s: s.start + s.duration)
+        periods_to_process.sort(key=lambda p: p[1])
         records: list[StatisticData] = []
         first_start: datetime.datetime | None = None
         existing_sum = 0.0
 
-        for us in summaries_sorted:
-            period_end = us.start + us.duration
+        for period_start, period_end, consumption_m3, source in periods_to_process:
             # Place the increment at 00:00 of the period end date (the day the period ends)
             rec_start = datetime.datetime.combine(period_end.date(), datetime.time.min, tzinfo=tzinfo)
             if first_start is None:
@@ -1574,14 +1620,12 @@ async def update_gas_statistics(
                 except Exception:
                     _LOGGER.debug("Unable to query existing sum for gas usage %s", entity.entity_id, exc_info=True)
 
-            # Determine period consumption in m³
-            period_m3 = None
-            if hasattr(us, "consumption_m3") and us.consumption_m3 is not None:
-                period_m3 = float(us.consumption_m3)
-            else:
+            # Use the consumption_m3 if available, otherwise fallback to summing daily readings
+            period_m3 = consumption_m3
+            if period_m3 is None:
                 # Fallback: sum any daily readings within this period if present
                 period_days: list[datetime.date] = []
-                day = us.start.date()
+                day = period_start.date()
                 end_day = (period_end - datetime.timedelta(seconds=1)).date()
                 while day <= end_day:
                     period_days.append(day)
@@ -1599,12 +1643,19 @@ async def update_gas_statistics(
 
             if period_m3 is None or period_m3 <= 0:
                 _LOGGER.info(
-                    "Skipping usage summary %s for %s: no consumption_m3 available",
-                    us.id,
+                    "Skipping billing period %s for %s: no consumption available",
+                    source,
                     entity.entity_id,
                 )
                 continue
 
+            _LOGGER.info(
+                "Adding billing period from %s: %s to %s = %.1f m³",
+                source,
+                period_start.date(),
+                period_end.date(),
+                period_m3,
+            )
             records.append({"start": rec_start, "state": period_m3, "sum": 0.0})
 
         if not records:
