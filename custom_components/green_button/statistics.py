@@ -1518,7 +1518,7 @@ async def _generate_daily_m3_statistics(
 async def update_gas_statistics(
     hass: HomeAssistant,
     entity: GreenButtonEntity,
-    meter_reading: model.MeterReading,
+    meter_reading: model.MeterReading | None,
     usage_summaries: list[model.UsageSummary] | None = None,
     allocation_mode: str = "daily_readings",
 ) -> None:
@@ -1528,6 +1528,13 @@ async def update_gas_statistics(
     - daily_readings: one record per day at 00:00 with that day's m³ (default)
     - monthly_increment: one record per UsageSummary at end-of-period day with total m³
       (uses UsageSummary.consumption_m3 when available)
+    
+    Args:
+        hass: Home Assistant instance
+        entity: Gas sensor entity
+        meter_reading: MeterReading with daily interval data (optional for monthly_increment mode)
+        usage_summaries: List of UsageSummary objects for billing periods
+        allocation_mode: "daily_readings" or "monthly_increment"
     """
     metadata = create_metadata(entity)
 
@@ -1538,9 +1545,15 @@ async def update_gas_statistics(
             await clear_statistic(hass, entity.long_term_statistics_id)
         except Exception:
             _LOGGER.exception("Failed to clear existing gas usage stats for %s", entity.entity_id)
+        
         # Determine tzinfo from readings if present
-        readings = [r for b in meter_reading.interval_blocks for r in b.interval_readings]
-        tzinfo = readings[0].start.tzinfo if readings else datetime.timezone.utc
+        if meter_reading and meter_reading.interval_blocks:
+            readings = [r for b in meter_reading.interval_blocks for r in b.interval_readings]
+            tzinfo = readings[0].start.tzinfo if readings else datetime.timezone.utc
+        else:
+            # No meter reading available - use UTC as default
+            tzinfo = datetime.timezone.utc
+            readings = []
 
         # Build a list of billing periods from both UsageSummaries and long IntervalReadings
         # This handles the case where Enbridge provides:
@@ -1695,7 +1708,15 @@ async def update_gas_statistics(
 
         return
 
-    # Default: daily readings
+    # Default: daily readings mode requires a MeterReading
+    if not meter_reading:
+        _LOGGER.warning(
+            "Cannot generate daily gas statistics for %s - no meter reading data available. "
+            "Consider using monthly_increment mode if only UsageSummaries are available.",
+            entity.entity_id,
+        )
+        return
+    
     data = await _generate_daily_m3_statistics(hass, entity, meter_reading)
     if not data:
         _LOGGER.info("No gas statistics to import for %s", entity.entity_id)

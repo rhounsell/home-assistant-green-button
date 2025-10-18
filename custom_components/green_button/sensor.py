@@ -435,14 +435,23 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
 
     @property
     def native_value(self) -> float | None:
+        # Try to get meter reading first (normal case)
         meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
-        if not meter_reading:
-            return None
-        total = 0.0
-        for block in meter_reading.interval_blocks:
-            for rd in block.interval_readings:
-                total += float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
-        return total
+        if meter_reading:
+            total = 0.0
+            for block in meter_reading.interval_blocks:
+                for rd in block.interval_readings:
+                    total += float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
+            return total
+        
+        # If no meter reading, this might be a UsagePoint ID (UsageSummary-only case)
+        # In this case, return the sum of all UsageSummary consumption values
+        for usage_point in self.coordinator.usage_points:
+            if usage_point.id == self._meter_reading_id and usage_point.usage_summaries:
+                total = sum(us.consumption_m3 or 0.0 for us in usage_point.usage_summaries)
+                return total if total > 0 else None
+        
+        return None
 
     @property
     def long_term_statistics_id(self) -> str:
@@ -465,9 +474,12 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
         )
 
         if self.coordinator.data and "usage_points" in self.coordinator.data:
+            # Try to find as meter reading first
+            found_meter_reading = False
             for usage_point in self.coordinator.data["usage_points"]:
                 for meter_reading in usage_point.meter_readings:
                     if meter_reading.id == self._meter_reading_id:
+                        found_meter_reading = True
                         # Run after HA starts to avoid bootstrap timeout warnings
                         if self.hass.state != CoreState.running:
                             async def _run_on_start(_):
@@ -481,18 +493,55 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
                                 self.update_sensor_and_statistics(meter_reading)
                             )
                         break
+                if found_meter_reading:
+                    break
+            
+            # If not found as meter reading, check if it's a UsagePoint ID (UsageSummary-only case)
+            if not found_meter_reading:
+                for usage_point in self.coordinator.data["usage_points"]:
+                    if usage_point.id == self._meter_reading_id and usage_point.usage_summaries:
+                        _LOGGER.info(
+                            "Gas Sensor %s: UsageSummary-only data detected, triggering statistics generation",
+                            self.entity_id,
+                        )
+                        # Run after HA starts
+                        if self.hass.state != CoreState.running:
+                            async def _run_on_start_summary(_):
+                                await self.update_sensor_and_statistics_from_summaries(usage_point)
+                            self.hass.bus.async_listen_once(
+                                EVENT_HOMEASSISTANT_STARTED, _run_on_start_summary
+                            )
+                        else:
+                            self.hass.async_create_task(
+                                self.update_sensor_and_statistics_from_summaries(usage_point)
+                            )
+                        break
 
     def _handle_coordinator_update(self) -> None:
         super()._handle_coordinator_update()
 
         if self.coordinator.data and "usage_points" in self.coordinator.data:
+            # Try to find as meter reading first
+            found_meter_reading = False
             for usage_point in self.coordinator.data["usage_points"]:
                 for meter_reading in usage_point.meter_readings:
                     if meter_reading.id == self._meter_reading_id:
+                        found_meter_reading = True
                         _schedule_hass_task_from_any_thread(
                             self.hass, self.update_sensor_and_statistics(meter_reading)
                         )
-
+                        break
+                if found_meter_reading:
+                    break
+            
+            # If not found as meter reading, check if it's a UsagePoint ID (UsageSummary-only case)
+            if not found_meter_reading:
+                for usage_point in self.coordinator.data["usage_points"]:
+                    if usage_point.id == self._meter_reading_id and usage_point.usage_summaries:
+                        _schedule_hass_task_from_any_thread(
+                            self.hass, self.update_sensor_and_statistics_from_summaries(usage_point)
+                        )
+                        break
     async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
         # Update entity state
         total = 0.0
@@ -516,6 +565,39 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
             usage_summaries=summaries,
             allocation_mode=usage_allocation_mode,
         )
+
+    async def update_sensor_and_statistics_from_summaries(self, usage_point: model.UsagePoint) -> None:
+        """Update sensor and statistics when only UsageSummaries are available (no daily MeterReadings)."""
+        # Update entity state (sum of all UsageSummary consumption values)
+        total = sum(us.consumption_m3 or 0.0 for us in usage_point.usage_summaries)
+        self._attr_native_value = total if total > 0 else 0.0
+        self.async_write_ha_state()
+
+        # Import gas statistics in monthly_increment mode (UsageSummaries only)
+        usage_allocation_mode = (
+            self.coordinator.config_entry.options.get("gas_usage_allocation")
+            or self.coordinator.config_entry.data.get("gas_usage_allocation")
+            or "daily_readings"
+        )
+        
+        if usage_allocation_mode == "monthly_increment" and usage_point.usage_summaries:
+            _LOGGER.info(
+                "Gas Sensor %s: Generating statistics from UsageSummaries (no daily readings)",
+                self.entity_id,
+            )
+            # Call update_gas_statistics with no meter_reading (will use only UsageSummaries)
+            await statistics.update_gas_statistics(
+                self.hass,
+                self,
+                None,  # No meter reading available
+                usage_summaries=usage_point.usage_summaries,
+                allocation_mode=usage_allocation_mode,
+            )
+        else:
+            _LOGGER.warning(
+                "Gas Sensor %s: Cannot generate statistics - monthly_increment mode required for UsageSummary-only data",
+                self.entity_id,
+            )
 
 
 class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
@@ -642,6 +724,49 @@ async def async_setup_entry(
         if coordinator.data and coordinator.data.get("usage_points"):
             for usage_point in coordinator.usage_points:
                 is_gas = usage_point.sensor_device_class == SensorDeviceClass.GAS
+                
+                # Check if this is a gas usage point with only UsageSummaries (no daily meter readings)
+                # This happens with some Enbridge gas data that only provides monthly billing summaries
+                if is_gas and not usage_point.meter_readings and usage_point.usage_summaries:
+                    # Check if monthly_increment mode is enabled
+                    allocation_mode = (
+                        entry.options.get("gas_usage_allocation")
+                        or entry.data.get("gas_usage_allocation")
+                        or "daily_readings"
+                    )
+                    
+                    if allocation_mode == "monthly_increment":
+                        # Create a virtual sensor using the UsagePoint ID since there's no MeterReading
+                        virtual_key = f"{usage_point.id}__gas_summary"
+                        if virtual_key not in created_entities:
+                            # Use UsagePoint ID as the "meter_reading_id" - the sensor will handle this
+                            gas_sensor = GreenButtonGasSensor(coordinator, usage_point.id)
+                            entities.append(gas_sensor)
+                            created_entities.add(virtual_key)
+                            _LOGGER.info(
+                                "Created gas sensor %s for UsagePoint %s (UsageSummary only, no daily readings)",
+                                gas_sensor.unique_id,
+                                usage_point.id,
+                            )
+                        
+                        virtual_cost_key = f"{usage_point.id}__gas_cost_summary"
+                        if virtual_cost_key not in created_entities:
+                            gas_cost_sensor = GreenButtonGasCostSensor(coordinator, usage_point.id)
+                            entities.append(gas_cost_sensor)
+                            created_entities.add(virtual_cost_key)
+                            _LOGGER.info(
+                                "Created gas cost sensor %s for UsagePoint %s (UsageSummary only, no daily readings)",
+                                gas_cost_sensor.unique_id,
+                                usage_point.id,
+                            )
+                    else:
+                        _LOGGER.warning(
+                            "Gas UsagePoint %s has only UsageSummaries (no daily readings). "
+                            "Enable 'monthly_increment' mode in integration settings to use this data.",
+                            usage_point.id,
+                        )
+                
+                # Create sensors for meter readings (normal case)
                 for meter_reading in usage_point.meter_readings:
                     if is_gas:
                         # Gas consumption
