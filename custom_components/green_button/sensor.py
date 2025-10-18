@@ -644,8 +644,16 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
             or "pro_rate_daily"
         )
         
+        # Force monthly_increment mode for UsageSummary-only data since pro_rate_daily requires daily readings
+        if allocation_mode == "pro_rate_daily":
+            _LOGGER.info(
+                "Gas Cost Sensor %s: Forcing monthly_increment mode (UsageSummary-only data, no daily readings for pro-rating)",
+                self.entity_id,
+            )
+            allocation_mode = "monthly_increment"
+        
         _LOGGER.info(
-            "Gas Cost Sensor %s: Generating statistics from UsageSummaries (no daily readings), mode=%s",
+            "Gas Cost Sensor %s: Generating statistics from UsageSummaries, mode=%s",
             self.entity_id,
             allocation_mode,
         )
