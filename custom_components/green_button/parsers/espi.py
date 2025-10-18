@@ -164,7 +164,7 @@ class GreenButtonFeed:
         reading_type_entries = self.find_entries("ReadingType")
         consumed_energy_reading_types: list[tuple[EspiEntry, model.ReadingType]] = []
 
-        logger.info(
+        logger.debug(
             "Found %d ReadingType entries to process", len(reading_type_entries)
         )
 
@@ -179,7 +179,7 @@ class GreenButtonFeed:
                 if flow_direction == 1:  # Energy consumed
                     # Skip daily summaries (intervalLength >= 86400 seconds = 24 hours)
                     if interval_length >= 86400:
-                        logger.info(
+                        logger.debug(
                             "Skipping daily summary ReadingType: %s (intervalLength=%d seconds)",
                             rt_href,
                             interval_length,
@@ -188,14 +188,14 @@ class GreenButtonFeed:
 
                     reading_type = rt_entry.to_reading_type()
                     consumed_energy_reading_types.append((rt_entry, reading_type))
-                    logger.info(
+                    logger.debug(
                         "Found energy consumed ReadingType: %s (flowDirection=%d, intervalLength=%d)",
                         reading_type.id,
                         flow_direction,
                         interval_length,
                     )
                 else:
-                    logger.info(
+                    logger.debug(
                         "Skipping ReadingType with flowDirection=%d (not consumed energy)",
                         flow_direction,
                     )
@@ -221,7 +221,7 @@ class GreenButtonFeed:
                             mr_entry, reading_type
                         )
                         consumed_meter_readings.append(meter_reading)
-                        logger.info(
+                        logger.debug(
                             "Associated MeterReading %s with consumed energy ReadingType %s",
                             meter_reading.id,
                             reading_type.id,
@@ -231,7 +231,7 @@ class GreenButtonFeed:
                 logger.warning("Failed to process MeterReading entry: %s", ex)
                 continue
 
-        logger.info(
+        logger.debug(
             "Created default usage point with %d consumed energy meter readings",
             len(consumed_meter_readings),
         )
@@ -259,7 +259,7 @@ class GreenButtonFeed:
             mr_entry.create_interval_block_parser(reading_type),
         )
 
-        logger.info(
+        logger.debug(
             "MeterReading %s found %d related IntervalBlocks",
             mr_href,
             len(interval_blocks),
@@ -273,7 +273,7 @@ class GreenButtonFeed:
             interval_blocks = self._find_interval_blocks_for_meter_reading(
                 mr_entry, reading_type
             )
-            logger.info(
+            logger.debug(
                 "Alternative matching found %d IntervalBlocks for MeterReading %s",
                 len(interval_blocks),
                 mr_href,
@@ -522,13 +522,13 @@ class EspiEntry:
                                     and flow_direction == 1
                                     and interval_length == 86400
                                 ):
-                                    logger.info(
+                                    logger.debug(
                                         "Including MeterReading %s (flowDirection=%d, intervalLength=%d)",
                                         mr_href, flow_direction, interval_length
                                     )
                                     meter_readings.append(mr_entry.to_meter_reading())
                                 else:
-                                    logger.info(
+                                    logger.debug(
                                         "Skipping MeterReading %s (flowDirection=%d, intervalLength=%d)",
                                         mr_href, flow_direction, interval_length
                                     )
@@ -652,14 +652,14 @@ def parse_xml(value: str) -> list[model.UsagePoint]:
         feed = GreenButtonFeed(root)
 
         # Debug: Log what entries we found
-        logger.info("Found %d UsagePoint entries", len(feed.find_entries("UsagePoint")))
-        logger.info(
+        logger.debug("Found %d UsagePoint entries", len(feed.find_entries("UsagePoint")))
+        logger.debug(
             "Found %d MeterReading entries", len(feed.find_entries("MeterReading"))
         )
-        logger.info(
+        logger.debug(
             "Found %d IntervalBlock entries", len(feed.find_entries("IntervalBlock"))
         )
-        logger.info(
+        logger.debug(
             "Found %d ReadingType entries", len(feed.find_entries("ReadingType"))
         )
 
@@ -667,22 +667,22 @@ def parse_xml(value: str) -> list[model.UsagePoint]:
 
         # Debug: Log the parsed structure
         for i, up in enumerate(usage_points):
-            logger.info(
+            logger.debug(
                 "UsagePoint %d: id=%s, device_class=%s",
                 i,
                 up.id,
                 up.sensor_device_class,
             )
-            logger.info("UsagePoint %d: %d meter readings", i, len(up.meter_readings))
+            logger.debug("UsagePoint %d: %d meter readings", i, len(up.meter_readings))
             for j, mr in enumerate(up.meter_readings):
-                logger.info(
+                logger.debug(
                     "  MeterReading %d: id=%s, %d interval blocks",
                     j,
                     mr.id,
                     len(mr.interval_blocks),
                 )
                 for k, ib in enumerate(mr.interval_blocks):
-                    logger.info(
+                    logger.debug(
                         "    IntervalBlock %d: id=%s, %d interval readings",
                         k,
                         ib.id,
@@ -690,7 +690,7 @@ def parse_xml(value: str) -> list[model.UsagePoint]:
                     )
                     if ib.interval_readings:
                         first_reading = ib.interval_readings[0]
-                        logger.info(
+                        logger.debug(
                             "      First reading: start=%s, value=%d",
                             first_reading.start,
                             first_reading.value,
