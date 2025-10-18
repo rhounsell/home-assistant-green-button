@@ -21,6 +21,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
 
     VERSION = 1
 
+    @staticmethod
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Get the options flow for this handler."""
+        return OptionsFlowHandler(config_entry)
+
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -33,6 +40,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
             user_input_default = {
                 "name": "Home",
                 "input_type": "file",
+                "gas_cost_allocation": "pro_rate_daily",
+                "gas_usage_allocation": "daily_readings",
             }
         else:
             user_input_default = user_input
@@ -61,6 +70,30 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                     )
                 ),
                 vol.Optional("xml_file_path", default=""): str,
+                vol.Optional(
+                    "gas_cost_allocation",
+                    default=user_input_default.get("gas_cost_allocation", "pro_rate_daily"),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": "pro_rate_daily", "label": "Pro-rate gas costs daily"},
+                            {"value": "monthly_increment", "label": "Single monthly cost increment"},
+                        ],
+                        mode="list",
+                    )
+                ),
+                vol.Optional(
+                    "gas_usage_allocation",
+                    default=user_input_default.get("gas_usage_allocation", "daily_readings"),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": "daily_readings", "label": "Use daily readings (m³)"},
+                            {"value": "monthly_increment", "label": "Single billing-period usage increment (m³)"},
+                        ],
+                        mode="list",
+                    )
+                ),
             }
         )
         
@@ -136,8 +169,77 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
         config_data = dict(config.to_mapping())
         # Store the XML content from user_input (which now has the file content if path was provided)
         config_data["xml"] = user_input.get("xml", "")
+        # Store gas cost allocation toggle
+        config_data["gas_cost_allocation"] = user_input.get(
+            "gas_cost_allocation", "pro_rate_daily"
+        )
+        # Store gas usage allocation toggle
+        config_data["gas_usage_allocation"] = user_input.get(
+            "gas_usage_allocation", "daily_readings"
+        )
 
         return self.async_create_entry(
             title=config.name,
             data=config_data,
         )
+
+
+class OptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle Green Button options flow."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        self.config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Manage the options."""
+        # Defaults from options first, then data, then fallback
+        current_mode = (
+            self.config_entry.options.get("gas_cost_allocation")
+            or self.config_entry.data.get("gas_cost_allocation")
+            or "pro_rate_daily"
+        )
+        current_usage_mode = (
+            self.config_entry.options.get("gas_usage_allocation")
+            or self.config_entry.data.get("gas_usage_allocation")
+            or "daily_readings"
+        )
+
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    "gas_cost_allocation",
+                    default=current_mode,
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": "pro_rate_daily", "label": "Pro-rate gas costs daily"},
+                            {"value": "monthly_increment", "label": "Single monthly cost increment"},
+                        ],
+                        mode="list",
+                    )
+                ),
+                vol.Optional(
+                    "gas_usage_allocation",
+                    default=current_usage_mode,
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": "daily_readings", "label": "Use daily readings (m³)"},
+                            {"value": "monthly_increment", "label": "Single billing-period usage increment (m³)"},
+                        ],
+                        mode="list",
+                    )
+                ),
+            }
+        )
+
+        if user_input is not None:
+            # Only store provided options
+            return self.async_create_entry(title="", data={
+                "gas_cost_allocation": user_input.get("gas_cost_allocation", current_mode),
+                "gas_usage_allocation": user_input.get("gas_usage_allocation", current_usage_mode),
+            })
+
+        return self.async_show_form(step_id="init", data_schema=schema)

@@ -44,9 +44,9 @@ Code template was mainly taken from [@Ludeeus](https://github.com/ludeeus)'s [in
 [hacs]: https://hacs.xyz
 [hacsbadge]: https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge
 [license-shield]: https://img.shields.io/github/license/vqvu/home-assistant-green-button.svg?style=for-the-badge
-[maintenance-shield]: https://img.shields.io/badge/maintainer-%40vqvu-blue.svg?style=for-the-badge
+[maintenance-shield]: https://img.shields.io/badge/maintainer-%40rhounsell-blue.svg?style=for-the-badge
 [pre-commit]: https://github.com/pre-commit/pre-commit
 [pre-commit-shield]: https://img.shields.io/badge/pre--commit-enabled-brightgreen?style=for-the-badge
 [releases-shield]: https://img.shields.io/github/release/vqvu/home-assistant-green-button.svg?style=for-the-badge
 [releases]: https://github.com/vqvu/home-assistant-green-button/releases
-[user_profile]: https://github.com/vqvu
+[user_profile]: https://github.com/rhounsell

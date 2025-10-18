@@ -9,6 +9,8 @@
           "usage_point_href": "UsagePoint HREF",
           "energy_unit": "Energy Unit",
           "cost_currency": "Cost Currency",
+          "gas_cost_allocation": "Gas cost allocation",
+          "gas_usage_allocation": "Gas usage allocation",
           "xml": "XML",
           "xml_file_path": "XML File Path"
         },
@@ -45,7 +47,9 @@
           "name": "[%key:component::green_button::config::step::user::data::name%]",
           "usage_point_href": "[%key:component::green_button::config::step::user::data::usage_point_href%]",
           "energy_unit": "[%key:component::green_button::config::step::user::data::energy_unit%]",
-          "cost_currency": "[%key:component::green_button::config::step::user::data::cost_currency%]"
+          "cost_currency": "[%key:component::green_button::config::step::user::data::cost_currency%]",
+          "gas_cost_allocation": "Gas cost allocation",
+          "gas_usage_allocation": "Gas usage allocation"
         }
       }
     }
