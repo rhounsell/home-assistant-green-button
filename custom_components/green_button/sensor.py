@@ -407,7 +407,11 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
         clean_id = meter_reading_id.split("/")[-1] if "/" in meter_reading_id else meter_reading_id
         self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}_gas"
         base_name = coordinator.config_entry.title
-        self._attr_name = f"{base_name} Gas"
+        # Replace "Electricity" with "Natural Gas" if present, otherwise just append "Gas"
+        if "Electricity" in base_name:
+            self._attr_name = base_name.replace("Electricity", "Natural Gas")
+        else:
+            self._attr_name = f"{base_name} Gas"
 
     @property
     def native_value(self) -> float | None:
@@ -549,7 +553,11 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
         clean_id = meter_reading_id.split("/")[-1] if "/" in meter_reading_id else meter_reading_id
         self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}_gas_cost"
         base_name = coordinator.config_entry.title
-        self._attr_name = f"{base_name} Gas Cost"
+        # Replace "Electricity" with "Natural Gas" if present, otherwise just append "Gas Cost"
+        if "Electricity" in base_name:
+            self._attr_name = base_name.replace("Electricity", "Natural Gas") + " Cost"
+        else:
+            self._attr_name = f"{base_name} Gas Cost"
         self._attr_native_unit_of_measurement = "CAD"
 
     @property
@@ -566,7 +574,13 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
 
     @property
     def name(self) -> str:
-        return self._attr_name or f"{self.coordinator.config_entry.title} Gas Cost"
+        if self._attr_name:
+            return self._attr_name
+        # Fallback: replace "Electricity" with "Natural Gas" if present
+        base_name = self.coordinator.config_entry.title
+        if "Electricity" in base_name:
+            return base_name.replace("Electricity", "Natural Gas") + " Cost"
+        return f"{base_name} Gas Cost"
 
     @property
     def native_unit_of_measurement(self) -> str:
