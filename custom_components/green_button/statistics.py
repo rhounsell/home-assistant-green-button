@@ -1325,21 +1325,20 @@ async def update_cost_statistics(
     )
 
     if statistics_data:
-        # Before importing, truncate any existing hourly stats at and after the first new hour
-        first_start = statistics_data[0]["start"]
-        try:
-            await _TruncateStatisticsAfterTask.queue_task(
-                hass=hass,
-                statistic_id=entity.long_term_statistics_id,
-                cutoff_start=first_start,
-                table=recorder_db_schema.Statistics,
-            )
-        except Exception:
-            _LOGGER.exception(
-                "Failed to truncate existing cost statistics at %s for %s",
-                first_start,
-                entity.entity_id,
-            )
+        # Log first and last records for debugging
+        first_record = statistics_data[0]
+        last_record = statistics_data[-1]
+        _LOGGER.info(
+            "Cost statistics range: %s (sum=%s) to %s (sum=%s)",
+            first_record["start"],
+            first_record["sum"],
+            last_record["start"],
+            last_record["sum"],
+        )
+        
+        # Import cost statistics using the proper Home Assistant API
+        # Note: async_import_statistics handles overlapping/duplicate data correctly,
+        # so we don't need to truncate existing statistics first
         try:
             async_import_statistics(hass, metadata, statistics_data)
             _LOGGER.info(
@@ -1384,21 +1383,6 @@ async def update_statistics(
     )
 
     if statistics_data:
-        # Truncate existing hourly statistics at and after the first generated hour
-        first_start = statistics_data[0]["start"]
-        try:
-            await _TruncateStatisticsAfterTask.queue_task(
-                hass=hass,
-                statistic_id=entity.long_term_statistics_id,
-                cutoff_start=first_start,
-                table=recorder_db_schema.Statistics,
-            )
-        except Exception:
-            _LOGGER.exception(
-                "Failed to truncate existing energy statistics at %s for %s",
-                first_start,
-                entity.entity_id,
-            )
         # Log first and last records for debugging
         first_record = statistics_data[0]
         last_record = statistics_data[-1]
@@ -1411,6 +1395,8 @@ async def update_statistics(
         )
 
         # Import historical statistics using the proper Home Assistant API
+        # Note: async_import_statistics handles overlapping/duplicate data correctly,
+        # so we don't need to truncate existing statistics first
         try:
             async_import_statistics(hass, metadata, statistics_data)
             _LOGGER.info(
