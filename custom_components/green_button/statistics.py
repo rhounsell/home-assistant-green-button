@@ -1108,6 +1108,7 @@ async def _generate_statistics_data(
 
     # Emit hourly statistics for FULLY covered hours only (3600s)
     cumulative_sum = existing_sum
+    skipped_count = 0
     for hour_start in hour_keys_sorted:
         coverage = hourly_coverage_seconds.get(hour_start, 0)
         if coverage < 3600:
@@ -1116,6 +1117,7 @@ async def _generate_statistics_data(
                 hour_start,
                 coverage,
             )
+            skipped_count += 1
             continue
         hour_kwh = float(hourly_kwh.get(hour_start, decimal.Decimal(0)))
         cumulative_sum += hour_kwh
@@ -1125,15 +1127,16 @@ async def _generate_statistics_data(
             "sum": cumulative_sum,
         }
         statistics_data.append(stat_record)
-        _LOGGER.debug(
-            "Generated hourly statistic: start=%s, state=%.3f kWh, sum=%.3f kWh",
-            hour_start,
-            hour_kwh,
-            cumulative_sum,
-        )
 
-    # Log if we purposely skipped the trailing partial hour
+    # Log summary of what was processed
     if statistics_data:
+        _LOGGER.info(
+            "Generated %d hourly statistics for entity %s (existing sum: %.3f kWh, skipped %d partial hours)",
+            len(statistics_data),
+            entity.entity_id,
+            existing_sum,
+            skipped_count,
+        )
         last_emitted = statistics_data[-1]["start"]
         if not include_trailing_hour and last_emitted >= cutoff_end - datetime.timedelta(hours=1):
             _LOGGER.info(
@@ -1264,6 +1267,7 @@ async def _generate_statistics_data_cost(
 
     # Emit hourly statistics for FULLY covered hours only (3600s)
     cumulative_sum = existing_sum
+    skipped_count = 0
     for hour_start in hour_keys_sorted:
         coverage = hourly_coverage_seconds.get(hour_start, 0)
         if coverage < 3600:
@@ -1272,6 +1276,7 @@ async def _generate_statistics_data_cost(
                 hour_start,
                 coverage,
             )
+            skipped_count += 1
             continue
         hour_val = float(hourly_cost.get(hour_start, decimal.Decimal(0)))
         cumulative_sum += hour_val
@@ -1281,16 +1286,17 @@ async def _generate_statistics_data_cost(
             "sum": cumulative_sum,
         }
         statistics_data.append(stat_record)
-        _LOGGER.debug(
-            "Generated hourly cost statistic: start=%s, state=%.4f %s, sum=%.4f %s",
-            hour_start,
-            hour_val,
-            entity.native_unit_of_measurement,
-            cumulative_sum,
-            entity.native_unit_of_measurement,
-        )
 
+    # Log summary of what was processed
     if statistics_data:
+        _LOGGER.info(
+            "Generated %d hourly cost statistics for entity %s (existing sum: %.2f %s, skipped %d partial hours)",
+            len(statistics_data),
+            entity.entity_id,
+            existing_sum,
+            entity.native_unit_of_measurement,
+            skipped_count,
+        )
         last_emitted = statistics_data[-1]["start"]
         if not include_trailing_hour and last_emitted >= cutoff_end - datetime.timedelta(hours=1):
             _LOGGER.info(
