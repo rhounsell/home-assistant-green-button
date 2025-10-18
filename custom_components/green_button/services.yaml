@@ -4,9 +4,9 @@ delete_statistics:
   fields:
     statistic_id:
       name: Statistic ID
-      description: The ID of the statistics to clear. Must start with `green_button_import:`.
+      description: The ID of the statistics to clear.
       required: true
-      example: "green_button_import:home_energy_consumption"
+      example: "sensor.home_gas_consumption"
       selector:
         text:
 
