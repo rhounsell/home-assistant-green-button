@@ -29,7 +29,7 @@ IMPORT_ESPI_XML_SCHEMA = vol.Schema(
 
 DELETE_STATISTICS_SCHEMA = vol.Schema(
     {
-        vol.Required("statistic_id"): cv.string,
+        vol.Required("statistic_id"): cv.entity_id,
     }
 )
 
@@ -149,12 +149,26 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
         _LOGGER.info("Deleting statistics for ID: %s", statistic_id)
 
+        # Validate that the entity exists and is a Green Button entity
+        entity_registry = hass.helpers.entity_registry.async_get(hass)
+        entity_entry = entity_registry.async_get(statistic_id)
+        
+        if entity_entry is None:
+            msg = f"Entity {statistic_id} not found"
+            _LOGGER.error(msg)
+            raise HomeAssistantError(msg)
+        
+        if entity_entry.platform != DOMAIN:
+            msg = f"Entity {statistic_id} is not a Green Button entity (platform: {entity_entry.platform})"
+            _LOGGER.warning(msg)
+            # Allow it anyway, but warn the user
+
         try:
             await statistics.clear_statistic(hass, statistic_id)
-            _LOGGER.info("Successfully deleted statistics for %s", statistic_id)
+            _LOGGER.info("✅ Successfully deleted statistics for %s", statistic_id)
         except Exception as err:
-            _LOGGER.error("Failed to delete statistics for %s: %s", statistic_id, err)
-            raise
+            _LOGGER.error("❌ Failed to delete statistics for %s: %s", statistic_id, err)
+            raise HomeAssistantError(f"Failed to delete statistics: {err}") from err
 
     # Register services
     try:
