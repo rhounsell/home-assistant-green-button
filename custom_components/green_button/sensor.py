@@ -226,8 +226,11 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         else:
             self._attr_native_value = 0
 
-        # Update the entity state
-        self.async_write_ha_state()
+        # NOTE: Do NOT call async_write_ha_state() here! 
+        # Calling it before statistics update causes HA's Recorder to automatically
+        # create a statistics record using the sensor's cumulative state value,
+        # which creates corrupted records (state/sum swap, massive consumption values).
+        # The coordinator will handle state updates, and we manually manage statistics below.
 
         # Update statistics for Energy Dashboard
         if hasattr(self, "hass") and self.hass is not None:
@@ -381,8 +384,10 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
             self._attr_native_unit_of_measurement = currency
 
         self._attr_native_value = float(total_cost)
-        self.async_write_ha_state()
-
+        
+        # NOTE: Do NOT call async_write_ha_state() here!
+        # See explanation in GreenButtonSensor class above.
+        
         # Update long-term statistics
         if hasattr(self, "hass") and self.hass is not None:
             await statistics.update_cost_statistics(
@@ -489,7 +494,9 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
             for rd in block.interval_readings:
                 total += float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
         self._attr_native_value = total
-        self.async_write_ha_state()
+        
+        # NOTE: Do NOT call async_write_ha_state() here!
+        # See explanation in GreenButtonSensor class above.
 
         # Import gas m³ statistics per selected allocation mode
         summaries = self.coordinator.get_usage_summaries_for_meter_reading(self._meter_reading_id)
@@ -511,7 +518,9 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
         # Update entity state (sum of all UsageSummary consumption values)
         total = sum(us.consumption_m3 or 0.0 for us in usage_point.usage_summaries)
         self._attr_native_value = total if total > 0 else 0.0
-        self.async_write_ha_state()
+        
+        # NOTE: Do NOT call async_write_ha_state() here!
+        # See explanation in GreenButtonSensor class above.
 
         # Import gas statistics in monthly_increment mode (UsageSummaries only)
         usage_allocation_mode = (
@@ -627,7 +636,9 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
     async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
         # Update state
         self._attr_native_value = self.native_value
-        self.async_write_ha_state()
+        
+        # NOTE: Do NOT call async_write_ha_state() here!
+        # See explanation in GreenButtonSensor class above.
 
         # Update long-term statistics with pro-rated daily cost
         summaries = self.coordinator.get_usage_summaries_for_meter_reading(self._meter_reading_id)
@@ -649,7 +660,9 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
         # Update entity state (sum of all UsageSummary total_cost values)
         total = sum(us.total_cost for us in usage_point.usage_summaries)
         self._attr_native_value = total if total > 0 else 0.0
-        self.async_write_ha_state()
+        
+        # NOTE: Do NOT call async_write_ha_state() here!
+        # See explanation in GreenButtonSensor class above.
 
         # Import gas cost statistics
         allocation_mode = (

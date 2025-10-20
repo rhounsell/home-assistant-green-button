@@ -76,23 +76,13 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 resolved_path = xml_path_obj
                 _LOGGER.debug("Using absolute path: %s", resolved_path)
 
-            if not resolved_path.is_file():
+            # Check if file exists using async executor to avoid blocking I/O
+            file_exists = await hass.async_add_executor_job(resolved_path.is_file)
+            if not file_exists:
                 _LOGGER.error("Specified XML file does not exist: %s", resolved_path)
                 _LOGGER.error(
                     "Checked paths - Original: %s, Resolved: %s", xml_path, resolved_path
                 )
-
-                # Additional debugging - list files in the expected directory
-                config_dir = Path(hass.config.config_dir)
-                green_button_dir = config_dir / "custom_components" / "green_button"
-                if green_button_dir.exists():
-                    _LOGGER.debug("Files in green_button directory:")
-                    for file_path in green_button_dir.iterdir():
-                        _LOGGER.debug("  %s", file_path.name)
-                else:
-                    _LOGGER.debug(
-                        "Green button directory does not exist: %s", green_button_dir
-                    )
                 raise HomeAssistantError(f"Specified XML file does not exist: {resolved_path}")
 
             try:
