@@ -9,6 +9,7 @@ import voluptuous as vol
 
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from homeassistant.exceptions import HomeAssistantError
 
 from . import statistics
@@ -150,7 +151,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         _LOGGER.info("Deleting statistics for ID: %s", statistic_id)
 
         # Validate that the entity exists and is a Green Button entity
-        entity_registry = hass.helpers.entity_registry.async_get(hass)
+        entity_registry = async_get_entity_registry(hass)
         entity_entry = entity_registry.async_get(statistic_id)
         
         if entity_entry is None:
