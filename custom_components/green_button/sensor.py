@@ -191,13 +191,17 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
 
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        # Update entity state (calls native_value property)
-        super()._handle_coordinator_update()
-
-        _LOGGER.info(
-            "Sensor %s: Coordinator update - data available: %s",
-            self.entity_id,
-            bool(self.coordinator.data),
+        # DO NOT call super()._handle_coordinator_update()!
+        # That would call async_write_ha_state(), which triggers HA's Recorder
+        # to auto-generate statistics using the cumulative sensor value,
+        # creating corrupted records (state/sum swap, negative sums).
+        # We manually manage statistics in update_sensor_and_statistics(),
+        # so we only need to mark the entity as available for updates.
+        
+        _LOGGER.warning(
+            "🔍 [DIAGNOSTIC] %s: Coordinator update received. "
+            "NOT calling async_write_ha_state() to prevent corruption.",
+            self.entity_id if hasattr(self, 'entity_id') else 'unknown',
         )
 
         # Update statistics for all meter readings in coordinator data
@@ -389,7 +393,7 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
         # This prevents "Setup timed out for bootstrap" warnings
 
     def _handle_coordinator_update(self) -> None:
-        super()._handle_coordinator_update()
+        # DO NOT call super()._handle_coordinator_update()! (See GreenButtonSensor for explanation)
 
         if self.coordinator.data and "usage_points" in self.coordinator.data:
             usage_points = self.coordinator.data["usage_points"]
