@@ -965,7 +965,7 @@ def create_metadata(entity: GreenButtonEntity) -> statistics.StatisticMetaData:
         "has_mean": False,
         "has_sum": True,
         "name": entity.name,
-        "source": "green_button",  # Use integration domain, NOT "recorder"!
+        "source": "recorder",  # Must be "recorder" - HA validates this
         "statistic_id": entity.long_term_statistics_id,
         "unit_of_measurement": entity.native_unit_of_measurement,
     }
