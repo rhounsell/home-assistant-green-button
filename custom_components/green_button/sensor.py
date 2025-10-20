@@ -46,7 +46,9 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
     """A sensor for Green Button energy data."""
 
     _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    # DO NOT set state_class! We manually manage statistics via async_import_statistics.
+    # Setting state_class would cause HA Recorder to auto-generate duplicate/corrupted statistics.
+    _attr_state_class = None
     _attr_native_unit_of_measurement = "kWh"
     _attr_has_entity_name = True
 
@@ -290,7 +292,9 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
     """A sensor for Green Button monetary cost data (total)."""
 
     _attr_device_class = SensorDeviceClass.MONETARY
-    _attr_state_class = SensorStateClass.TOTAL
+    # DO NOT set state_class! We manually manage statistics via async_import_statistics.
+    # Setting state_class would cause HA Recorder to auto-generate duplicate/corrupted statistics.
+    _attr_state_class = None
     _attr_has_entity_name = True
 
     def __init__(
@@ -437,7 +441,9 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
     """Gas consumption sensor (m³, total increasing)."""
 
     _attr_device_class = SensorDeviceClass.GAS
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    # DO NOT set state_class! We manually manage statistics via async_import_statistics.
+    # Setting state_class would cause HA Recorder to auto-generate duplicate/corrupted statistics.
+    _attr_state_class = None
     _attr_native_unit_of_measurement = "m³"
     _attr_has_entity_name = True
 
@@ -588,7 +594,9 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
     """Gas cost sensor (monetary total) using UsageSummary pro-rated per day."""
 
     _attr_device_class = SensorDeviceClass.MONETARY
-    _attr_state_class = SensorStateClass.TOTAL
+    # DO NOT set state_class! We manually manage statistics via async_import_statistics.
+    # Setting state_class would cause HA Recorder to auto-generate duplicate/corrupted statistics.
+    _attr_state_class = None
     _attr_has_entity_name = True
 
     def __init__(self, coordinator: GreenButtonCoordinator, meter_reading_id: str) -> None:
