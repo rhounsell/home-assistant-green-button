@@ -862,14 +862,9 @@ class _UpdateStatisticsTask:
             samples=[sample.to_statistics_data(period) for sample in samples.samples],
             table=_to_table(period),
         )
-        if samples.samples and samples.get_total_change() != 0:
-            await _AdjustStatisticsTask.queue_task(
-                hass=self._hass,
-                statistic_id=self._statistic_id,
-                start_time=samples.samples[-1].timestamp,
-                unit_of_measurement=self._entity.native_unit_of_measurement,
-                sum_adjustment=samples.get_total_change(),
-            )
+        # NOTE: Removed _AdjustStatisticsTask call - it was causing corruption by applying
+        # adjustments to ALL future statistics, including non-existent dates.
+        # The async_import_statistics API handles proper merging without needing manual adjustments.
         return samples
 
     async def _update_for_interval_block(
