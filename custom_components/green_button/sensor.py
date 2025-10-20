@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import traceback
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -95,6 +96,27 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         if total_energy > 0:
             return total_energy / 1000.0
         return 0
+
+    @property
+    def native_value(self):
+        """Return the native value of the sensor."""
+        value = self._attr_native_value
+        if value is not None and value > 10000:  # Log if suspiciously high
+            # Get the call stack to see WHO is accessing this value
+            stack = traceback.extract_stack()
+            caller_info = []
+            for frame in stack[-5:-1]:  # Last 4 frames before this one
+                if 'green_button' not in frame.filename:  # Only non-Green Button frames
+                    caller_info.append(f"{frame.filename}:{frame.lineno} in {frame.name}")
+            
+            _LOGGER.warning(
+                "🔍 [DIAGNOSTIC] %s: native_value property accessed, returning %.2f kWh (cumulative). "
+                "Called from: %s",
+                self.entity_id if hasattr(self, 'entity_id') else 'unknown',
+                value,
+                ' -> '.join(caller_info) if caller_info else 'internal',
+            )
+        return value
 
     @property
     def available(self) -> bool:
@@ -226,6 +248,13 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         else:
             self._attr_native_value = 0
 
+        _LOGGER.warning(
+            "🔍 [DIAGNOSTIC] %s: Setting sensor state to %.2f kWh (cumulative). "
+            "Stack trace will show if this is called from unexpected location.",
+            self.entity_id,
+            self._attr_native_value,
+        )
+
         # NOTE: Do NOT call async_write_ha_state() here! 
         # Calling it before statistics update causes HA's Recorder to automatically
         # create a statistics record using the sensor's cumulative state value,
@@ -234,8 +263,9 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
 
         # Update statistics for Energy Dashboard
         if hasattr(self, "hass") and self.hass is not None:
-            _LOGGER.info(
-                "Sensor %s: Updating statistics with total energy %s kWh",
+            _LOGGER.warning(
+                "🔍 [DIAGNOSTIC] %s: Starting statistics update with total energy %.2f kWh. "
+                "This should write hourly intervals, NOT cumulative totals.",
                 self.entity_id,
                 self._attr_native_value,
             )
@@ -245,8 +275,9 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
                 statistics.DefaultDataExtractor(),
                 meter_reading,
             )
-            _LOGGER.info(
-                "Sensor %s: Statistics update completed",
+            _LOGGER.warning(
+                "🔍 [DIAGNOSTIC] %s: Statistics update completed. "
+                "Check database to verify no corruption was introduced.",
                 self.entity_id,
             )
 
