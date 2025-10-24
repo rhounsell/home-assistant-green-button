@@ -42,13 +42,32 @@ recorder:
 4. Reload the Green Button integration
 5. Configure sensors in Energy Dashboard
 
+## Expected Warning (Can Be Ignored)
+
+You will see this warning on the Energy Dashboard configuration page:
+
+```
+Entity not tracked
+Home Assistant Recorder has been configured to exclude these configured entities:
+sensor.home_electricity_consumption
+sensor.home_electricity_consumption_cost
+```
+
+**This is expected and harmless!** Your data WILL still appear in the Energy Dashboard because:
+- The exclusion only prevents Recorder from auto-generating statistics from state changes
+- Your manual statistics (via `async_import_statistics()`) are still imported
+- Energy Dashboard reads from the statistics tables, not from entity states
+
+If the graphs are showing data, everything is working correctly. You can safely ignore this warning.
+
 ## Verifying It's Working
 
 After setup, check that:
 1. ✅ Sensors show in Energy Dashboard configuration (not "unexpected state class")
 2. ✅ Sensors are not "unknown" (have a numeric value)
-3. ✅ Statistics appear in Energy Dashboard after data import
-4. ✅ No duplicate statistics in Developer Tools → Statistics
+3. ✅ **Warning about "Entity not tracked" appears** (this is correct!)
+4. ✅ **Data appears in Energy Dashboard graphs** (the important part!)
+5. ✅ No duplicate statistics in Developer Tools → Statistics
 
 ## Troubleshooting
 
