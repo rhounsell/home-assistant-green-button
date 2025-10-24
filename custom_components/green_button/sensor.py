@@ -46,9 +46,10 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
     """A sensor for Green Button energy data."""
 
     _attr_device_class = SensorDeviceClass.ENERGY
-    # DO NOT set state_class! We manually manage statistics via async_import_statistics.
-    # Setting state_class would cause HA Recorder to auto-generate duplicate/corrupted statistics.
-    _attr_state_class = None
+    # Set state_class to satisfy Energy Dashboard requirements
+    # BUT we disable recorder statistics for this entity (see _attr_should_poll)
+    # and manually manage statistics via async_import_statistics
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = "kWh"
     _attr_has_entity_name = True
 
@@ -187,6 +188,16 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
             self.entity_id,
         )
 
+        # Initialize entity with value of 0 to make it "available" for Energy Dashboard
+        # This does NOT trigger statistics generation because we have state_class=None
+        if self._attr_native_value is None:
+            self._attr_native_value = 0.0
+            self.async_write_ha_state()
+            _LOGGER.info(
+                "Sensor %s: Initialized with value 0.0 to make entity available",
+                self.entity_id,
+            )
+
         # Don't generate statistics during bootstrap - rely on _handle_coordinator_update
         # which will be called after bootstrap completes
         # This prevents "Setup timed out for bootstrap" warnings
@@ -292,9 +303,10 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
     """A sensor for Green Button monetary cost data (total)."""
 
     _attr_device_class = SensorDeviceClass.MONETARY
-    # DO NOT set state_class! We manually manage statistics via async_import_statistics.
-    # Setting state_class would cause HA Recorder to auto-generate duplicate/corrupted statistics.
-    _attr_state_class = None
+    # Set state_class to satisfy Energy Dashboard requirements
+    # BUT we disable recorder statistics for this entity
+    # and manually manage statistics via async_import_statistics
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_has_entity_name = True
 
     def __init__(
@@ -304,6 +316,7 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
     ) -> None:
         super().__init__(coordinator)
         self._meter_reading_id = meter_reading_id
+        self._cached_native_value: float = 0.0  # Initialize to 0 for Energy Dashboard
 
         # Build unique id with cost suffix
         clean_id = (
@@ -323,11 +336,11 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
     def native_value(self) -> float | None:
         """Return the current total cost value."""
         if not self.coordinator.data or not self.coordinator.data.get("usage_points"):
-            return None
+            return self._cached_native_value  # Return cached value instead of None
 
         meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
         if not meter_reading:
-            return None
+            return self._cached_native_value  # Return cached value instead of None
 
         # Set currency if available
         currency = getattr(meter_reading.reading_type, "currency", None)
@@ -341,7 +354,8 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
                 power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
                 total_cost += cost_raw * (10 ** power_multiplier)
 
-        return float(total_cost)
+        self._cached_native_value = float(total_cost)  # Cache the value
+        return self._cached_native_value
 
     @property
     def available(self) -> bool:
@@ -389,6 +403,14 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
 
         _LOGGER.info(
             "Cost Sensor %s: Entity added to Home Assistant",
+            self.entity_id,
+        )
+
+        # Initialize entity state to make it "available" for Energy Dashboard
+        # native_value property will return _cached_native_value (initialized to 0.0)
+        self.async_write_ha_state()
+        _LOGGER.info(
+            "Cost Sensor %s: Initialized state to make entity available",
             self.entity_id,
         )
 
@@ -441,15 +463,17 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
     """Gas consumption sensor (m³, total increasing)."""
 
     _attr_device_class = SensorDeviceClass.GAS
-    # DO NOT set state_class! We manually manage statistics via async_import_statistics.
-    # Setting state_class would cause HA Recorder to auto-generate duplicate/corrupted statistics.
-    _attr_state_class = None
+    # Set state_class to satisfy Energy Dashboard requirements
+    # BUT we disable recorder statistics for this entity
+    # and manually manage statistics via async_import_statistics
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = "m³"
     _attr_has_entity_name = True
 
     def __init__(self, coordinator: GreenButtonCoordinator, meter_reading_id: str) -> None:
         super().__init__(coordinator)
         self._meter_reading_id = meter_reading_id
+        self._cached_native_value: float = 0.0  # Initialize to 0 for Energy Dashboard
         clean_id = meter_reading_id.split("/")[-1] if "/" in meter_reading_id else meter_reading_id
         self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}_gas"
         base_name = coordinator.config_entry.title
@@ -468,16 +492,19 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
             for block in meter_reading.interval_blocks:
                 for rd in block.interval_readings:
                     total += float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
-            return total
+            self._cached_native_value = total  # Cache the value
+            return self._cached_native_value
         
         # If no meter reading, this might be a UsagePoint ID (UsageSummary-only case)
         # In this case, return the sum of all UsageSummary consumption values
         for usage_point in self.coordinator.usage_points:
             if usage_point.id == self._meter_reading_id and usage_point.usage_summaries:
                 total = sum(us.consumption_m3 or 0.0 for us in usage_point.usage_summaries)
-                return total if total > 0 else None
+                if total > 0:
+                    self._cached_native_value = total
+                    return self._cached_native_value
         
-        return None
+        return self._cached_native_value  # Return cached value instead of None
 
     @property
     def long_term_statistics_id(self) -> str:
@@ -496,6 +523,14 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
 
         _LOGGER.info(
             "Gas Sensor %s: Entity added to Home Assistant",
+            self.entity_id,
+        )
+
+        # Initialize entity state to make it "available" for Energy Dashboard
+        # native_value property will return _cached_native_value (initialized to 0.0)
+        self.async_write_ha_state()
+        _LOGGER.info(
+            "Gas Sensor %s: Initialized state to make entity available",
             self.entity_id,
         )
 
@@ -594,9 +629,10 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
     """Gas cost sensor (monetary total) using UsageSummary pro-rated per day."""
 
     _attr_device_class = SensorDeviceClass.MONETARY
-    # DO NOT set state_class! We manually manage statistics via async_import_statistics.
-    # Setting state_class would cause HA Recorder to auto-generate duplicate/corrupted statistics.
-    _attr_state_class = None
+    # Set state_class to satisfy Energy Dashboard requirements
+    # BUT we disable recorder statistics for this entity
+    # and manually manage statistics via async_import_statistics
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_has_entity_name = True
 
     def __init__(self, coordinator: GreenButtonCoordinator, meter_reading_id: str) -> None:
@@ -643,6 +679,14 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
 
         _LOGGER.info(
             "Gas Cost Sensor %s: Entity added to Home Assistant",
+            self.entity_id,
+        )
+
+        # Initialize entity state to make it "available" for Energy Dashboard
+        # native_value property will return a value (defaults to 0.0 when no summaries)
+        self.async_write_ha_state()
+        _LOGGER.info(
+            "Gas Cost Sensor %s: Initialized state to make entity available",
             self.entity_id,
         )
 
