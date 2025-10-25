@@ -96,7 +96,8 @@ After setup, check that:
 ## Technical Details
 
 The Green Button integration:
-- Sets `state_class = TOTAL_INCREASING` (required by Energy Dashboard)
+- Sets `state_class = TOTAL_INCREASING` for energy sensors (consumption, gas)
+- Sets `state_class = TOTAL` for monetary sensors (costs can decrease with refunds)
 - Writes state ONCE at startup (makes entity available)
 - Does NOT update state during normal operation (prevents auto-generation)
 - Manually imports statistics via `async_import_statistics()` (for historical data)
