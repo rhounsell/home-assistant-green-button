@@ -303,10 +303,10 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
     """A sensor for Green Button monetary cost data (total)."""
 
     _attr_device_class = SensorDeviceClass.MONETARY
-    # Set state_class to satisfy Energy Dashboard requirements
-    # BUT we disable recorder statistics for this entity
-    # and manually manage statistics via async_import_statistics
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    # Set state_class to TOTAL (not TOTAL_INCREASING) for monetary sensors
+    # Monetary values can decrease (refunds, adjustments), so use TOTAL
+    # We disable recorder statistics for this entity and manually manage via async_import_statistics
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_has_entity_name = True
 
     def __init__(
@@ -629,10 +629,10 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
     """Gas cost sensor (monetary total) using UsageSummary pro-rated per day."""
 
     _attr_device_class = SensorDeviceClass.MONETARY
-    # Set state_class to satisfy Energy Dashboard requirements
-    # BUT we disable recorder statistics for this entity
-    # and manually manage statistics via async_import_statistics
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    # Set state_class to TOTAL (not TOTAL_INCREASING) for monetary sensors
+    # Monetary values can decrease (refunds, adjustments), so use TOTAL
+    # We disable recorder statistics for this entity and manually manage via async_import_statistics
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_has_entity_name = True
 
     def __init__(self, coordinator: GreenButtonCoordinator, meter_reading_id: str) -> None:
