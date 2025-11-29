@@ -23,9 +23,9 @@ _NAMESPACE_MAP: Final = {
 
 _UOM_MAP: Final = {
     # Use strings to keep model generic across energy and gas
+    "38": "W",    # Watts (power)
     "72": "Wh",   # Watt-hours (electricity)
     "42": "m³",   # Cubic meters (gas)
-    "80": "currency",
 }
 
 

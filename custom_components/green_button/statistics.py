@@ -941,6 +941,11 @@ class DefaultDataExtractor:
         power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
         value = interval_reading.value * (10**power_multiplier)
 
+        # If unit is power (W), convert to energy (Wh) using duration
+        if interval_reading.reading_type.unit_of_measurement == "W":
+            duration_hours = interval_reading.duration.total_seconds() / 3600
+            value = value * duration_hours  # W × hours = Wh
+
         return decimal.Decimal(value)
 
 
