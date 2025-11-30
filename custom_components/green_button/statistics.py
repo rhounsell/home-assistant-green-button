@@ -20,7 +20,7 @@ from homeassistant.components import recorder
 from homeassistant.components.recorder import db_schema as recorder_db_schema
 from homeassistant.components.recorder import statistics
 from homeassistant.components.recorder.statistics import async_import_statistics
-from homeassistant.components.recorder.models import StatisticData
+from homeassistant.components.recorder.models import StatisticData, StatisticMeanType
 from homeassistant.components.recorder import tasks
 from homeassistant.components.recorder import util as recorder_util
 from homeassistant.const import UnitOfEnergy
@@ -962,12 +962,13 @@ class CostDataExtractor:
 def create_metadata(entity: GreenButtonEntity) -> statistics.StatisticMetaData:
     """Create the statistic metadata for the entity."""
     return {
-        "has_mean": False,
+        "mean_type": StatisticMeanType.NONE,
         "has_sum": True,
         "name": entity.name,
         "source": "recorder",  # Must be "recorder" - HA validates this
         "statistic_id": entity.long_term_statistics_id,
         "unit_of_measurement": entity.native_unit_of_measurement,
+        "unit_class": None,
     }
 
 
