@@ -210,12 +210,6 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         # creating corrupted records (state/sum swap, negative sums).
         # We manually manage statistics in update_sensor_and_statistics(),
         # so we only need to mark the entity as available for updates.
-        
-        _LOGGER.warning(
-            "🔍 [DIAGNOSTIC] %s: Coordinator update received. "
-            "NOT calling async_write_ha_state() to prevent corruption.",
-            self.entity_id if hasattr(self, 'entity_id') else 'unknown',
-        )
 
         # Update statistics for all meter readings in coordinator data
         if self.coordinator.data and "usage_points" in self.coordinator.data:
@@ -265,9 +259,8 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         else:
             self._attr_native_value = 0
 
-        _LOGGER.warning(
-            "🔍 [DIAGNOSTIC] %s: Setting sensor state to %.2f kWh (cumulative). "
-            "Stack trace will show if this is called from unexpected location.",
+        _LOGGER.info(
+            "🔍 [DIAGNOSTIC] %s: Setting sensor state to %.2f kWh (cumulative).",
             self.entity_id,
             self._attr_native_value,
         )
@@ -280,21 +273,14 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
 
         # Update statistics for Energy Dashboard
         if hasattr(self, "hass") and self.hass is not None:
-            _LOGGER.warning(
-                "🔍 [DIAGNOSTIC] %s: Starting statistics update with total energy %.2f kWh. "
-                "This should write hourly intervals, NOT cumulative totals.",
-                self.entity_id,
-                self._attr_native_value,
-            )
             await statistics.update_statistics(
                 self.hass,
                 self,
                 statistics.DefaultDataExtractor(),
                 meter_reading,
             )
-            _LOGGER.warning(
-                "🔍 [DIAGNOSTIC] %s: Statistics update completed. "
-                "Check database to verify no corruption was introduced.",
+            _LOGGER.info(
+                "%s: Statistics update completed.",
                 self.entity_id,
             )
 
