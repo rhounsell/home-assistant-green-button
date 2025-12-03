@@ -10,6 +10,7 @@ import logging
 from collections.abc import Callable
 from collections.abc import Sequence
 from typing import Any
+from typing import cast
 from typing import final
 from typing import Literal
 from typing import Protocol
@@ -351,13 +352,15 @@ class _StatsDao:
             hass=self._hass,
             start_time=_adjust_for_end_time(start, period),
             end_time=_adjust_for_end_time(end, period),
-            statistic_ids=[self._statistic_id],
+            statistic_ids={self._statistic_id},
             period=period,
+            types={"sum", "state"},
+            units=None,
         ).get(self._statistic_id, [])
         if not raw_data:
             return []
 
-        data = [_SensorStatRecord.from_dict(record) for record in raw_data]
+        data = [_SensorStatRecord.from_dict(cast(dict[str, Any], record)) for record in raw_data]
         # Remove the head if the stat is before the requested range. This can
         # happen because `statistics_during_period` will attempt always attempt
         # to append the most recent stat record that starts before the requested
@@ -408,7 +411,7 @@ class _ComputeUpdatedPeriodStatisticsTask(tasks.RecorderTask):
         self._statistic_id = statistic_id
         self._data_extractor = data_extractor
         self._interval_block = interval_block
-        self._period = period
+        self._period: Literal["5minute", "hour"] = period
         self._future = future
 
     def _statistics_during_period_from_end_time(
@@ -424,13 +427,15 @@ class _ComputeUpdatedPeriodStatisticsTask(tasks.RecorderTask):
             hass=self._hass,
             start_time=_adjust_for_end_time(start, self._period),
             end_time=_adjust_for_end_time(end, self._period),
-            statistic_ids=[self._statistic_id],
+            statistic_ids={self._statistic_id},
             period=self._period,
+            types={"sum", "state"},
+            units=None,
         ).get(self._statistic_id, [])
         if not raw_data:
             return []
 
-        data = [_SensorStatRecord.from_dict(record) for record in raw_data]
+        data = [_SensorStatRecord.from_dict(cast(dict[str, Any], record)) for record in raw_data]
         # Remove the head if the stat is before the requested range. This can
         # happen because `statistics_during_period` will attempt always attempt
         # to append the most recent stat record that starts before the requested
@@ -481,7 +486,7 @@ class _ComputeUpdatedPeriodStatisticsTask(tasks.RecorderTask):
             units=None,
         ).get("change")
         if sum_before is None:
-            sum_before = 0
+            sum_before = 0.0
         return sum_before
 
     def _read_stats_and_generate_samples(
@@ -501,6 +506,8 @@ class _ComputeUpdatedPeriodStatisticsTask(tasks.RecorderTask):
         if self._period == "5minute":
             data = self._statistics_during_period_from_end_time(start, end)
             return (sample_period, [sample.timestamp for sample in data])
+        # Fallback for unexpected period values
+        return (sample_period, [])
 
     def _compute_samples(
         self,
@@ -634,7 +641,7 @@ class _ImportStatisticsTask(tasks.RecorderTask):
             len(self.samples),
             self.table.__tablename__,
         )
-        metadata = statistics.get_metadata(self.hass, statistic_ids=[statistic_id]).get(
+        metadata = statistics.get_metadata(self.hass, statistic_ids={statistic_id}).get(
             statistic_id, (0, None)
         )[1]
         if metadata is None:
@@ -940,7 +947,6 @@ class DefaultDataExtractor:
         # Apply power of ten multiplier
         power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
         value = interval_reading.value * (10**power_multiplier)
-
         return decimal.Decimal(value)
 
 
@@ -954,7 +960,16 @@ class CostDataExtractor:
     def get_native_value(
         self, interval_reading: model.IntervalReading
     ) -> decimal.Decimal:
-        cost = interval_reading.cost or 0
+        """
+        Calculates the native value for a given interval reading by applying the power of ten multiplier to the cost.
+
+        Args:
+            interval_reading (model.IntervalReading): The interval reading object containing cost and reading type information.
+
+        Returns:
+            decimal.Decimal: The calculated native value as a decimal, representing the cost adjusted by the power of ten multiplier.
+        """
+        cost = interval_reading.cost if interval_reading.cost is not None else 0
         power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
         return decimal.Decimal(cost * (10**power_multiplier))
 
@@ -1034,7 +1049,7 @@ async def _generate_statistics_data(
                 value_kwh = decimal.Decimal(
                     _convert_to_kwh(float(base_value), source_unit)
                 )
-                kept_kwh = (value_kwh * proportion)
+                kept_kwh = value_kwh * proportion
                 # Bucket kept portion into hour of cutoff_end - 1 hour
                 hour_start = (cutoff_end - datetime.timedelta(hours=1)).replace(
                     minute=0, second=0, microsecond=0
@@ -1190,7 +1205,7 @@ async def _generate_statistics_data_cost(
                 else:
                     proportion = decimal.Decimal(0)
                 base_value = data_extractor.get_native_value(reading)
-                kept_val = (base_value * proportion)
+                kept_val = base_value * proportion
                 hour_start = (cutoff_end - datetime.timedelta(hours=1)).replace(
                     minute=0, second=0, microsecond=0
                 )
@@ -1333,11 +1348,11 @@ async def update_cost_statistics(
         _LOGGER.info(
             "Cost statistics range: %s (sum=%s) to %s (sum=%s)",
             first_record["start"],
-            first_record["sum"],
+            first_record.get("sum"),
             last_record["start"],
-            last_record["sum"],
+            last_record.get("sum"),
         )
-        
+
         # Import cost statistics using the proper Home Assistant API
         # Note: async_import_statistics handles overlapping/duplicate data correctly,
         # so we don't need to truncate existing statistics first
@@ -1391,9 +1406,9 @@ async def update_statistics(
         _LOGGER.info(
             "Statistics range: %s (sum=%s) to %s (sum=%s)",
             first_record["start"],
-            first_record["sum"],
+            first_record.get("sum"),
             last_record["start"],
-            last_record["sum"],
+            last_record.get("sum"),
         )
 
         # Import historical statistics using the proper Home Assistant API
@@ -1414,11 +1429,11 @@ async def update_statistics(
                 _LOGGER.info(
                     "📊 Statistics range: %s (state=%.3f, sum=%.3f) → %s (state=%.3f, sum=%.3f)",
                     first["start"].isoformat(),
-                    first["state"],
-                    first["sum"],
-                    last["start"].isoformat(),
-                    last["state"],
-                    last["sum"],
+                    first.get("state"),
+                    first.get("sum"),
+                    last.get("start").isoformat(),
+                    last.get("state"),
+                    last.get("sum"),
                 )
         except Exception:
             _LOGGER.exception(
@@ -1533,7 +1548,7 @@ async def update_gas_statistics(
             await clear_statistic(hass, entity.long_term_statistics_id)
         except Exception:
             _LOGGER.exception("Failed to clear existing gas usage stats for %s", entity.entity_id)
-        
+
         # Determine tzinfo from readings if present
         if meter_reading and meter_reading.interval_blocks:
             readings = [r for b in meter_reading.interval_blocks for r in b.interval_readings]
@@ -1548,7 +1563,7 @@ async def update_gas_statistics(
         # - UsageSummary for previous finalized billing period
         # - IntervalReading for current billing period (not yet finalized)
         periods_to_process: list[tuple[datetime.datetime, datetime.datetime, float | None, str]] = []
-        
+
         # Add all UsageSummaries
         for us in summaries:
             period_start = us.start
@@ -1556,7 +1571,7 @@ async def update_gas_statistics(
             consumption_m3 = float(us.consumption_m3) if (hasattr(us, "consumption_m3") and us.consumption_m3 is not None) else None
             source = f"UsageSummary:{us.id}"
             periods_to_process.append((period_start, period_end, consumption_m3, source))
-        
+
         # Check for long IntervalReadings (>7 days) that might represent billing periods
         # not yet in UsageSummary
         MIN_BILLING_PERIOD_DAYS = 7
@@ -1578,7 +1593,7 @@ async def update_gas_statistics(
                         if overlap_days > min(duration_days, (us_end - us_start).total_seconds() / 86400) * 0.5:
                             overlaps = True
                             break
-                
+
                 if not overlaps:
                     # This is a billing-period-length reading not covered by UsageSummary
                     consumption_m3 = float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
@@ -1588,7 +1603,7 @@ async def update_gas_statistics(
                         "Found billing period from IntervalReading not in UsageSummary: %s to %s (%.1f m³)",
                         rd_start.date(), rd_end.date(), consumption_m3
                     )
-        
+
         if not periods_to_process:
             _LOGGER.info("No billing periods available for monthly gas usage on %s", entity.entity_id)
             return
@@ -1666,7 +1681,7 @@ async def update_gas_statistics(
         # Apply cumulative
         cumulative = existing_sum
         for recd in records:
-            cumulative += recd["state"]
+            cumulative += recd.get("state", 0.0)
             recd["sum"] = cumulative
 
         # Truncate and import: choose earliest cutoff between our first record and
@@ -1704,7 +1719,7 @@ async def update_gas_statistics(
             entity.entity_id,
         )
         return
-    
+
     data = await _generate_daily_m3_statistics(hass, entity, meter_reading)
     if not data:
         _LOGGER.info("No gas statistics to import for %s", entity.entity_id)
@@ -1787,7 +1802,7 @@ async def update_gas_cost_statistics(
         # Apply cumulative sums
         cumulative = existing_sum
         for rec in records:
-            cumulative += rec["state"]
+            cumulative += rec.get("state", 0.0)
             rec["sum"] = cumulative
 
     else:
