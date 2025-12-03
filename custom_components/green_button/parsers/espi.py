@@ -9,7 +9,6 @@ from xml.etree import ElementTree as ET
 
 from defusedxml import ElementTree as defusedET
 from homeassistant.components import sensor
-from homeassistant.const import UnitOfEnergy
 
 from .. import model
 
@@ -337,6 +336,11 @@ class EspiEntry:
         self._elem = elem
         self._type_tag = type_tag
 
+    @property
+    def elem(self) -> ET.Element:
+        """Public accessor for the XML element."""
+        return self._elem
+
     def _pretty_print(self) -> str:
         return _pretty_print(self._elem)
 
@@ -479,11 +483,11 @@ class EspiEntry:
             "espi:ServiceCategory/espi:kind",
             _SERVICE_KIND.__getitem__,
         )
-        
+
         # Find meter readings - handle both direct links and feed links
         related_hrefs = self.find_related_hrefs()
         logger.debug("UsagePoint %s has related hrefs: %s", self_href, related_hrefs)
-        
+
         meter_readings = []
         usage_summaries: list[model.UsageSummary] = []
         for mr_entry in self._root.find_entries("MeterReading"):
@@ -492,7 +496,7 @@ class EspiEntry:
             for related_href in related_hrefs:
                 if mr_href == related_href or mr_href.startswith(related_href + "/"):
                     logger.debug("Matched MeterReading %s to UsagePoint %s", mr_href, self_href)
-                    
+
                     # Get the related ReadingType to check flowDirection
                     try:
                         reading_type_entries = mr_entry.find_related_entries(
@@ -506,11 +510,11 @@ class EspiEntry:
                                 if rt.find_self_href() == reading_type.id:
                                     rt_entry = rt
                                     break
-                            
+
                             if rt_entry:
                                 flow_direction = rt_entry.parse_child_text("espi:flowDirection", int)
                                 interval_length = rt_entry.parse_child_text("espi:intervalLength", int)
-                                
+
                                 # For electricity: include sub-daily consumption (< 86400)
                                 # For gas: include daily consumption (== 86400)
                                 if (
@@ -543,9 +547,9 @@ class EspiEntry:
                     except (ValueError, EspiXmlParseError) as ex:
                         logger.warning("Failed to check flowDirection for %s: %s, including by default", mr_href, ex)
                         meter_readings.append(mr_entry.to_meter_reading())
-                    
+
                     break
-        
+
         # Attach UsageSummary entries related to this UsagePoint
         for us_entry in self._root.find_entries("UsageSummary"):
             # Match by related links
@@ -556,7 +560,7 @@ class EspiEntry:
                     start = us_entry.parse_child_text("espi:billingPeriod/espi:start", _to_utc_datetime)
                     duration = us_entry.parse_child_text("espi:billingPeriod/espi:duration", _to_timedelta)
                     currency = _parse_optional_child_text(
-                        us_entry._elem,
+                        us_entry.elem,
                         "./atom:content/espi:UsageSummary/espi:currency",
                         _CURRENCY_MAP.__getitem__,
                         "CAD",
@@ -583,11 +587,11 @@ class EspiEntry:
                                     val = float(amt.text or 0)
                                     return val * (10 ** power)
                         return None
-                    total_cost = _find_amount_due(us_entry._elem)
+                    total_cost = _find_amount_due(us_entry.elem)
                     # Extract currentBillingPeriodOverAllConsumption (m³) if available
                     consumption_m3: float | None = None
                     try:
-                        meas = us_entry._elem.find(
+                        meas = us_entry.elem.find(
                             "./atom:content/espi:UsageSummary/espi:currentBillingPeriodOverAllConsumption",
                             _NAMESPACE_MAP,
                         )
@@ -631,7 +635,7 @@ class EspiEntry:
             "UsagePoint %s found %d meter readings and %d usage summaries (after filtering)",
             self_href, len(meter_readings), len(usage_summaries)
         )
-        
+
         return model.UsagePoint(
             id=self_href,
             sensor_device_class=sensor_device_class,
