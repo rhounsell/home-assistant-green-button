@@ -13,8 +13,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, CoreState
-from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -72,46 +71,19 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}"
         # Use the config entry title (name set when adding integration) as the sensor name
         self._attr_name = coordinator.config_entry.title
-
-    @property
-    def native_value(self) -> float | None:
-        """Return the current energy value."""
-        if not self.coordinator.data or not self.coordinator.data.get("usage_points"):
-            return None
-
-        meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
-        if not meter_reading:
-            return None
-
-        # Calculate total energy from all interval blocks
-        total_energy = 0
-        for interval_block in meter_reading.interval_blocks:
-            for interval_reading in interval_block.interval_readings:
-                if interval_reading.value is not None:
-                    # Apply power of ten multiplier
-                    power_multiplier = (
-                        interval_reading.reading_type.power_of_ten_multiplier
-                    )
-                    value = interval_reading.value * (10**power_multiplier)
-                    total_energy += value
-
-        # Convert from Wh to kWh if needed
-        if total_energy > 0:
-            return total_energy / 1000.0
-        return 0
-
     @property
     def native_value(self):
         """Return the native value of the sensor."""
         value = self._attr_native_value
-        if value is not None and value > 10000:  # Log if suspiciously high
+        # Only compare to a numeric threshold for numeric types to avoid type errors
+        if isinstance(value, (int, float)) and value > 10000:  # Log if suspiciously high
             # Get the call stack to see WHO is accessing this value
             stack = traceback.extract_stack()
             caller_info = []
             for frame in stack[-5:-1]:  # Last 4 frames before this one
                 if 'green_button' not in frame.filename:  # Only non-Green Button frames
                     caller_info.append(f"{frame.filename}:{frame.lineno} in {frame.name}")
-            
+
             _LOGGER.warning(
                 "🔍 [DIAGNOSTIC] %s: native_value property accessed, returning %.2f kWh (cumulative). "
                 "Called from: %s",
@@ -265,7 +237,7 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
             self._attr_native_value,
         )
 
-        # NOTE: Do NOT call async_write_ha_state() here! 
+        # NOTE: Do NOT call async_write_ha_state() here!
         # Calling it before statistics update causes HA's Recorder to automatically
         # create a statistics record using the sensor's cumulative state value,
         # which creates corrupted records (state/sum swap, massive consumption values).
@@ -417,6 +389,42 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
                         )
 
     async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
+        """
+        Update the sensor's displayed value and long-term cost statistics from a MeterReading.
+
+        This coroutine computes the total cost from the provided MeterReading and updates
+        the sensor instance attributes accordingly, without calling async_write_ha_state().
+        It also triggers updating of Home Assistant's long-term statistics (cost statistics)
+        when a Home Assistant instance is available on the sensor.
+
+        Behavior:
+        - Iterates all interval_blocks and their interval_readings in meter_reading.
+        - For each interval_reading, reads the "cost" attribute (treating missing or None as 0)
+            and scales it by the reading_type.power_of_ten_multiplier (10 ** power_of_ten_multiplier).
+        - Sums the scaled costs to produce total_cost.
+        - If meter_reading.reading_type.currency is present, sets the sensor's
+            _attr_native_unit_of_measurement to that currency.
+        - Sets the sensor's _attr_native_value to float(total_cost).
+        - Does NOT call async_write_ha_state() here — the caller is responsible for writing state
+            to Home Assistant if needed.
+        - If the sensor has a non-None hass attribute, calls statistics.update_cost_statistics(...)
+            with statistics.CostDataExtractor() to refresh long-term statistics.
+
+        Parameters:
+        - meter_reading (model.MeterReading): Meter reading data containing interval_blocks,
+            interval_readings, and reading_type metadata (including currency and power_of_ten_multiplier).
+
+        Returns:
+        - None
+
+        Notes:
+        - This is an async function and must be awaited.
+        - Side effects: mutates sensor instance attributes:
+                - _attr_native_unit_of_measurement (may be set to currency)
+                - _attr_native_value (set to computed total cost as float)
+            and may update Home Assistant long-term statistics.
+        - Designed to be called from within Home Assistant's async context.
+        """
         # Update state
         total_cost = 0.0
         for interval_block in meter_reading.interval_blocks:
@@ -431,10 +439,10 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
             self._attr_native_unit_of_measurement = currency
 
         self._attr_native_value = float(total_cost)
-        
+
         # NOTE: Do NOT call async_write_ha_state() here!
         # See explanation in GreenButtonSensor class above.
-        
+
         # Update long-term statistics
         if hasattr(self, "hass") and self.hass is not None:
             await statistics.update_cost_statistics(
@@ -480,7 +488,7 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
                     total += float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
             self._cached_native_value = total  # Cache the value
             return self._cached_native_value
-        
+
         # If no meter reading, this might be a UsagePoint ID (UsageSummary-only case)
         # In this case, return the sum of all UsageSummary consumption values
         for usage_point in self.coordinator.usage_points:
@@ -489,7 +497,7 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
                 if total > 0:
                     self._cached_native_value = total
                     return self._cached_native_value
-        
+
         return self._cached_native_value  # Return cached value instead of None
 
     @property
@@ -540,7 +548,7 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
                         break
                 if found_meter_reading:
                     break
-            
+
             # If not found as meter reading, check if it's a UsagePoint ID (UsageSummary-only case)
             if not found_meter_reading:
                 for usage_point in self.coordinator.data["usage_points"]:
@@ -550,13 +558,60 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
                         )
                         break
     async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
+        """
+        Asynchronously update the sensor's native value from a MeterReading and import
+        gas usage statistics for the entity.
+
+        This coroutine computes the total measured value by iterating over
+        meter_reading.interval_blocks and summing each interval_reading.value scaled by
+        its reading_type.power_of_ten_multiplier (value * 10**power_of_ten_multiplier).
+        The computed total is stored on the entity as self._attr_native_value. This
+        function intentionally does not call async_write_ha_state(); the caller is
+        responsible for writing the entity state to Home Assistant.
+
+        After updating the sensor value, the function retrieves usage summaries for the
+        current meter reading from the coordinator and determines the gas usage
+        allocation mode from the config entry (options first, then data, falling back
+        to "daily_readings"). It then awaits statistics.update_gas_statistics to import
+        or update Home Assistant statistics for this entity.
+
+        Parameters
+        ----------
+        meter_reading : model.MeterReading
+            The Green Button MeterReading object containing interval_blocks and
+            interval_readings used to compute the total consumption for this sensor.
+
+        Returns
+        -------
+        None
+
+        Side effects
+        ------------
+        - Mutates self._attr_native_value with the computed total.
+        - Calls coordinator.get_usage_summaries_for_meter_reading(...) and may access
+          coordinator.config_entry to determine allocation mode.
+        - Awaits statistics.update_gas_statistics(...), which updates Home Assistant's
+          recorded statistics for this entity.
+
+        Raises
+        ------
+        Any exception raised by coordinator methods or statistics.update_gas_statistics
+        is propagated to the caller.
+
+        Notes
+        -----
+        - This is an async coroutine and must be awaited or scheduled on the Home
+          Assistant event loop.
+        - Do NOT call async_write_ha_state() inside this method; that is handled
+          elsewhere by the integration.
+        """
         # Update entity state
         total = 0.0
         for block in meter_reading.interval_blocks:
             for rd in block.interval_readings:
                 total += float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
         self._attr_native_value = total
-        
+
         # NOTE: Do NOT call async_write_ha_state() here!
         # See explanation in GreenButtonSensor class above.
 
@@ -580,7 +635,7 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
         # Update entity state (sum of all UsageSummary consumption values)
         total = sum(us.consumption_m3 or 0.0 for us in usage_point.usage_summaries)
         self._attr_native_value = total if total > 0 else 0.0
-        
+
         # NOTE: Do NOT call async_write_ha_state() here!
         # See explanation in GreenButtonSensor class above.
 
@@ -590,7 +645,7 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
             or self.coordinator.config_entry.data.get("gas_usage_allocation")
             or "daily_readings"
         )
-        
+
         if usage_allocation_mode == "monthly_increment" and usage_point.usage_summaries:
             _LOGGER.info(
                 "Gas Sensor %s: Generating statistics from UsageSummaries (no daily readings)",
@@ -601,7 +656,7 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
                 self.hass,
                 self,
                 None,  # No meter reading available
-                usage_summaries=usage_point.usage_summaries,
+                usage_summaries=list(usage_point.usage_summaries),
                 allocation_mode=usage_allocation_mode,
             )
         else:
@@ -709,7 +764,7 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
     async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
         # Update state
         self._attr_native_value = self.native_value
-        
+
         # NOTE: Do NOT call async_write_ha_state() here!
         # See explanation in GreenButtonSensor class above.
 
@@ -733,7 +788,7 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
         # Update entity state (sum of all UsageSummary total_cost values)
         total = sum(us.total_cost for us in usage_point.usage_summaries)
         self._attr_native_value = total if total > 0 else 0.0
-        
+
         # NOTE: Do NOT call async_write_ha_state() here!
         # See explanation in GreenButtonSensor class above.
 
@@ -743,7 +798,7 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
             or self.coordinator.config_entry.data.get("gas_cost_allocation")
             or "pro_rate_daily"
         )
-        
+
         # Force monthly_increment mode for UsageSummary-only data since pro_rate_daily requires daily readings
         if allocation_mode == "pro_rate_daily":
             _LOGGER.info(
@@ -751,19 +806,19 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
                 self.entity_id,
             )
             allocation_mode = "monthly_increment"
-        
+
         _LOGGER.info(
             "Gas Cost Sensor %s: Generating statistics from UsageSummaries, mode=%s",
             self.entity_id,
             allocation_mode,
         )
-        
+
         # Call update_gas_cost_statistics with no meter_reading (will use only UsageSummaries)
         await statistics.update_gas_cost_statistics(
             self.hass,
             self,
             None,  # No meter reading available
-            usage_point.usage_summaries,
+            list(usage_point.usage_summaries),
             allocation_mode=allocation_mode,
         )
 
@@ -798,7 +853,7 @@ async def async_setup_entry(
         if coordinator.data and coordinator.data.get("usage_points"):
             for usage_point in coordinator.usage_points:
                 is_gas = usage_point.sensor_device_class == SensorDeviceClass.GAS
-                
+
                 # Check if this is a gas usage point with only UsageSummaries (no daily meter readings)
                 # This happens with some Enbridge gas data that only provides monthly billing summaries
                 if is_gas and not usage_point.meter_readings and usage_point.usage_summaries:
@@ -808,7 +863,7 @@ async def async_setup_entry(
                         or entry.data.get("gas_usage_allocation")
                         or "daily_readings"
                     )
-                    
+
                     if allocation_mode == "monthly_increment":
                         # Create a virtual sensor using the UsagePoint ID since there's no MeterReading
                         virtual_key = f"{usage_point.id}__gas_summary"
@@ -822,7 +877,7 @@ async def async_setup_entry(
                                 gas_sensor.unique_id,
                                 usage_point.id,
                             )
-                        
+
                         virtual_cost_key = f"{usage_point.id}__gas_cost_summary"
                         if virtual_cost_key not in created_entities:
                             gas_cost_sensor = GreenButtonGasCostSensor(coordinator, usage_point.id)
@@ -839,7 +894,7 @@ async def async_setup_entry(
                             "Enable 'monthly_increment' mode in integration settings to use this data.",
                             usage_point.id,
                         )
-                
+
                 # Create sensors for meter readings (normal case)
                 for meter_reading in usage_point.meter_readings:
                     if is_gas:
