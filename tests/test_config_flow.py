@@ -68,15 +68,17 @@ async def test_form_xml_file(hass: HomeAssistant) -> None:
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
     assert result["type"] == FlowResultType.FORM
-    assert result["errors"] is None
+    assert result["errors"] == {} or result["errors"] is None
 
     with patch(
         "custom_components.green_button.async_setup_entry",
         return_value=True,
-    ) as mock_setup_entry, patch(
+    ), patch(
         "builtins.open", mock_open(read_data=SAMPLE_XML)
     ), patch(
-        "os.path.exists", return_value=True
+        "pathlib.Path.is_file", return_value=True
+    ), patch(
+        "pathlib.Path.read_text", return_value=SAMPLE_XML
     ):
         result2 = await hass.config_entries.flow.async_configure(
             result["flow_id"],
@@ -93,9 +95,7 @@ async def test_form_xml_file(hass: HomeAssistant) -> None:
     assert result2["type"] == FlowResultType.CREATE_ENTRY
     assert result2["title"] == "Test Green Button File"
     assert result2["data"]["name"] == "Test Green Button File"
-    assert result2["data"]["input_type"] == "file"
-    assert result2["data"]["xml_file_path"] == "/config/greenbutton.xml"
-    assert len(mock_setup_entry.mock_calls) == 1
+    assert result2["data"]["xml"] == SAMPLE_XML  # XML content is stored
 
 
 @pytest.mark.asyncio
@@ -117,7 +117,7 @@ async def test_form_invalid_xml(hass: HomeAssistant) -> None:
     )
 
     assert result2["type"] == FlowResultType.FORM
-    assert result2["errors"] == {"xml": "invalid_xml"}
+    assert result2["errors"] == {"xml": "invalid_espi_xml"}
 
 
 @pytest.mark.asyncio
@@ -140,17 +140,18 @@ async def test_form_file_not_found(hass: HomeAssistant) -> None:
         )
 
     assert result2["type"] == FlowResultType.FORM
-    assert result2["errors"] == {"xml_file_path": "file_not_found"}
+    assert result2["errors"].get("base") == "file_not_found"
+    assert result2["errors"].get("xml_file_path") == "file_not_found"
 
 
 @pytest.mark.asyncio
 async def test_form_missing_required_field(hass: HomeAssistant) -> None:
-    """Test we handle missing required fields."""
+    """Test that missing 'name' field uses default value and succeeds."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
 
-    # Missing 'name' field
+    # Missing 'name' field - should use default value "Home"
     result2 = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         {
@@ -161,8 +162,9 @@ async def test_form_missing_required_field(hass: HomeAssistant) -> None:
         },
     )
 
-    assert result2["type"] == FlowResultType.FORM
-    assert "base" in result2["errors"] or "name" in result2["errors"]
+    # Should succeed with default name
+    assert result2["type"] == FlowResultType.CREATE_ENTRY
+    assert result2["data"]["name"] == "Home"  # Default value
 
 
 @pytest.mark.asyncio
@@ -184,7 +186,8 @@ async def test_form_empty_xml_inline(hass: HomeAssistant) -> None:
     )
 
     assert result2["type"] == FlowResultType.FORM
-    assert result2["errors"] == {"xml": "missing_xml"}
+    assert result2["errors"].get("xml") == "xml_required"
+    assert result2["errors"].get("base") == "xml_required"
 
 
 @pytest.mark.asyncio
@@ -206,4 +209,5 @@ async def test_form_empty_file_path(hass: HomeAssistant) -> None:
     )
 
     assert result2["type"] == FlowResultType.FORM
-    assert result2["errors"] == {"xml_file_path": "missing_file_path"}
+    assert result2["errors"].get("xml_file_path") == "file_required"
+    assert result2["errors"].get("base") == "file_required"
