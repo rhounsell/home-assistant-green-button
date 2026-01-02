@@ -1571,14 +1571,18 @@ async def update_gas_statistics(
         except Exception:
             _LOGGER.exception("Failed to clear existing gas usage stats for %s", entity.entity_id)
 
+        _LOGGER.info("Gas %s: After clear_statistic, continuing with tzinfo setup", entity.entity_id)
+
         # Determine tzinfo from readings if present
         if meter_reading and meter_reading.interval_blocks:
             readings = [r for b in meter_reading.interval_blocks for r in b.interval_readings]
             tzinfo = readings[0].start.tzinfo if readings else datetime.timezone.utc
+            _LOGGER.info("Gas %s: Got tzinfo from meter reading, %d readings found", entity.entity_id, len(readings))
         else:
             # No meter reading available - use UTC as default
             tzinfo = datetime.timezone.utc
             readings = []
+            _LOGGER.info("Gas %s: No meter reading, using UTC timezone", entity.entity_id)
 
         # Build a list of billing periods from both UsageSummaries and long IntervalReadings
         # This handles the case where Enbridge provides:
