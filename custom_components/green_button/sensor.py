@@ -897,7 +897,15 @@ async def async_setup_entry(
 
                 # Create sensors for meter readings (normal case)
                 for meter_reading in usage_point.meter_readings:
+                    # Guard: skip gas meter readings that have no interval data to avoid empty entities
                     if is_gas:
+                        if not meter_reading.interval_blocks:
+                            _LOGGER.info(
+                                "Skipping gas meter reading %s because it has no interval blocks",
+                                meter_reading.id,
+                            )
+                            continue
+
                         # Gas consumption
                         gas_key = f"{meter_reading.id}__gas"
                         if gas_key not in created_entities:
