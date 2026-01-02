@@ -72,6 +72,16 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}"
         # Use the config entry title (name set when adding integration) as the sensor name
         self._attr_name = coordinator.config_entry.title
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Group electricity sensors under a dedicated device in the integration UI."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{self.coordinator.config_entry.entry_id}_electricity_device")},
+            name=f"{self.coordinator.config_entry.title} Electricity Consumption",
+            manufacturer="Green Button",
+            model="Electricity",
+        )
     @property
     def native_value(self):
         """Return the native value of the sensor."""
@@ -290,6 +300,16 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
 
         # Default currency; will be set on first update if available from reading type
         self._attr_native_unit_of_measurement = "CAD"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Group electricity cost sensors under the electricity device."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{self.coordinator.config_entry.entry_id}_electricity_device")},
+            name=f"{self.coordinator.config_entry.title} Electricity Consumption",
+            manufacturer="Green Button",
+            model="Electricity",
+        )
 
     @property
     def native_value(self) -> float | None:
@@ -632,6 +652,13 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
             self.coordinator.config_entry.options.get("gas_usage_allocation")
             or self.coordinator.config_entry.data.get("gas_usage_allocation")
             or "daily_readings"
+        )
+        _LOGGER.info(
+            "Gas Sensor %s: Updating gas statistics with mode=%s, %d interval blocks, %d usage summaries",
+            self.entity_id,
+            usage_allocation_mode,
+            len(meter_reading.interval_blocks),
+            len(summaries) if summaries else 0,
         )
         await statistics.update_gas_statistics(
             self.hass,
