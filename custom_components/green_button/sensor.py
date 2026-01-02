@@ -491,12 +491,8 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
         self._cached_native_value: float = 0.0  # Initialize to 0 for Energy Dashboard
         clean_id = meter_reading_id.split("/")[-1] if "/" in meter_reading_id else meter_reading_id
         self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}_gas"
-        base_name = coordinator.config_entry.title
-        # Replace "Electricity" with "Natural Gas Usage" if present, otherwise just append "Natural Gas Usage"
-        if "Electricity" in base_name:
-            self._attr_name = base_name.replace("Electricity", "Natural Gas Usage")
-        else:
-            self._attr_name = f"{base_name} Natural Gas Usage"
+        # Simple name - Home Assistant will combine with device name since _attr_has_entity_name=True
+        self._attr_name = "Natural Gas Usage"
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -712,12 +708,8 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
         self._meter_reading_id = meter_reading_id
         clean_id = meter_reading_id.split("/")[-1] if "/" in meter_reading_id else meter_reading_id
         self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}_gas_cost"
-        base_name = coordinator.config_entry.title
-        # Replace "Electricity" with "Natural Gas Cost" if present, otherwise append "Natural Gas Cost"
-        if "Electricity" in base_name:
-            self._attr_name = base_name.replace("Electricity", "Natural Gas Cost")
-        else:
-            self._attr_name = f"{base_name} Natural Gas Cost"
+        # Simple name - Home Assistant will combine with device name since _attr_has_entity_name=True
+        self._attr_name = "Natural Gas Cost"
         self._attr_native_unit_of_measurement = "CAD"
 
     @property
