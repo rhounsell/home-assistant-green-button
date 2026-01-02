@@ -1472,18 +1472,10 @@ async def _generate_daily_m3_statistics(
         for r in block.interval_readings
     ]
     if not readings:
-        _LOGGER.info("Gas %s: No interval readings found in meter reading", entity.entity_id)
         return stats
 
     # Sort readings by start
     readings.sort(key=lambda r: r.start)
-    _LOGGER.info(
-        "Gas %s: Processing %d interval readings for daily statistics (first: %s, last: %s)",
-        entity.entity_id,
-        len(readings),
-        readings[0].start.date(),
-        readings[-1].start.date(),
-    )
     # Expect daily intervals; compute daily totals in native m³
     daily_totals: dict[datetime.date, float] = {}
     for rd in readings:
@@ -1493,15 +1485,7 @@ async def _generate_daily_m3_statistics(
         daily_totals[day] = daily_totals.get(day, 0.0) + val
 
     if not daily_totals:
-        _LOGGER.warning("Gas %s: No daily totals computed from %d readings", entity.entity_id, len(readings))
         return stats
-    
-    _LOGGER.info(
-        "Gas %s: Computed %d daily totals: total m³ = %.2f",
-        entity.entity_id,
-        len(daily_totals),
-        sum(daily_totals.values()),
-    )
 
     # Find existing cumulative sum before first day
     first_day = min(daily_totals.keys())
@@ -1567,22 +1551,17 @@ async def update_gas_statistics(
         # Clear existing statistics to avoid residual daily bars or negative corrections
         try:
             await clear_statistic(hass, entity.long_term_statistics_id)
-            _LOGGER.info("Gas %s: Cleared existing statistics", entity.entity_id)
         except Exception:
             _LOGGER.exception("Failed to clear existing gas usage stats for %s", entity.entity_id)
-
-        _LOGGER.info("Gas %s: After clear_statistic, continuing with tzinfo setup", entity.entity_id)
 
         # Determine tzinfo from readings if present
         if meter_reading and meter_reading.interval_blocks:
             readings = [r for b in meter_reading.interval_blocks for r in b.interval_readings]
             tzinfo = readings[0].start.tzinfo if readings else datetime.timezone.utc
-            _LOGGER.info("Gas %s: Got tzinfo from meter reading, %d readings found", entity.entity_id, len(readings))
         else:
             # No meter reading available - use UTC as default
             tzinfo = datetime.timezone.utc
             readings = []
-            _LOGGER.info("Gas %s: No meter reading, using UTC timezone", entity.entity_id)
 
         # Build a list of billing periods from both UsageSummaries and long IntervalReadings
         # This handles the case where Enbridge provides:
@@ -1596,13 +1575,6 @@ async def update_gas_statistics(
             period_end = us.start + us.duration
             consumption_m3 = float(us.consumption_m3) if (hasattr(us, "consumption_m3") and us.consumption_m3 is not None) else None
             source = f"UsageSummary:{us.id}"
-            _LOGGER.info(
-                "Gas %s: UsageSummary %s to %s, consumption_m3=%s",
-                entity.entity_id,
-                period_start.date(),
-                period_end.date(),
-                consumption_m3,
-            )
             periods_to_process.append((period_start, period_end, consumption_m3, source))
 
         # Check for long IntervalReadings (>7 days) that might represent billing periods
@@ -1691,40 +1663,17 @@ async def update_gas_statistics(
                 period_m3 = total if total > 0 else None
 
             if period_m3 is None or period_m3 <= 0:
-                _LOGGER.warning(
-                    "Gas %s: Skipping billing period %s for %s: consumption_m3=%s (None or <=0)",
-                    entity.entity_id,
-                    source,
-                    f"{period_start.date()} to {period_end.date()}",
-                    period_m3,
-                )
                 continue
 
-            _LOGGER.info(
-                "Gas %s: Adding billing period from %s: %s to %s = %.1f m³",
-                entity.entity_id,
-                source,
-                period_start.date(),
-                period_end.date(),
-                period_m3,
-            )
             records.append({"start": rec_start, "state": period_m3, "sum": 0.0})
 
         if not records:
             _LOGGER.warning(
-                "Gas %s: No gas usage records generated (monthly_increment) - all %d periods had no consumption data",
+                "Gas %s: No gas usage records generated - all periods had no consumption data",
                 entity.entity_id,
-                len(periods_to_process),
             )
             return
 
-        _LOGGER.info(
-            "Gas %s: Generated %d records from %d periods (existing_sum=%.2f)",
-            entity.entity_id,
-            len(records),
-            len(periods_to_process),
-            existing_sum,
-        )
         # Apply cumulative
         cumulative = existing_sum
         for recd in records:
@@ -1753,13 +1702,10 @@ async def update_gas_statistics(
         try:
             async_import_statistics(hass, metadata, records)
             _LOGGER.info(
-                "Gas %s: ✅ Imported %d gas usage records (monthly_increment), range: %s (%.2f m³) to %s (%.2f m³)",
-                entity.entity_id,
+                "Imported %d gas usage records for %s (total: %.1f m³)",
                 len(records),
-                records[0]["start"].date(),
-                records[0]["sum"],
-                records[-1]["start"].date(),
-                records[-1]["sum"],
+                entity.entity_id,
+                records[-1].get("sum", 0.0),
             )
         except Exception:
             _LOGGER.exception("Failed to import gas stats for %s", entity.entity_id)
