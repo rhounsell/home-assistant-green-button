@@ -150,7 +150,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if new_up.id in existing_up_map:
                 # Merge meter readings for existing usage point
                 existing_up = existing_up_map[new_up.id]
-                self._merge_meter_readings(existing_up, new_up.meter_readings)
+                self._merge_meter_readings(existing_up, list(new_up.meter_readings))
                 # Merge usage summaries (unique by id)
                 existing_summaries = {us.id: us for us in existing_up.usage_summaries}
                 merged_summaries = list(existing_up.usage_summaries)
