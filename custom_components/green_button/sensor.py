@@ -78,7 +78,7 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         """Group electricity sensors under a dedicated device in the integration UI."""
         return DeviceInfo(
             identifiers={(DOMAIN, f"{self.coordinator.config_entry.entry_id}_electricity_device")},
-            name=f"{self.coordinator.config_entry.title} Electricity Consumption",
+            name=f"{self.coordinator.config_entry.title} Electricity",
             manufacturer="Green Button",
             model="Electricity",
         )
@@ -306,7 +306,7 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
         """Group electricity cost sensors under the electricity device."""
         return DeviceInfo(
             identifiers={(DOMAIN, f"{self.coordinator.config_entry.entry_id}_electricity_device")},
-            name=f"{self.coordinator.config_entry.title} Electricity Consumption",
+            name=f"{self.coordinator.config_entry.title} Electricity",
             manufacturer="Green Button",
             model="Electricity",
         )
@@ -503,7 +503,7 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
         """Return device metadata for grouping gas entities under a dedicated device."""
         return DeviceInfo(
             identifiers={(DOMAIN, f"{self.coordinator.config_entry.entry_id}_gas_device")},
-            name=f"{self.coordinator.config_entry.title} Natural Gas Consumption",
+            name=f"{self.coordinator.config_entry.title} Natural Gas",
             manufacturer="Green Button",
             model="Natural Gas",
         )
@@ -725,7 +725,7 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
         """Return device metadata for grouping gas cost under the gas device."""
         return DeviceInfo(
             identifiers={(DOMAIN, f"{self.coordinator.config_entry.entry_id}_gas_device")},
-            name=f"{self.coordinator.config_entry.title} Natural Gas Consumption",
+            name=f"{self.coordinator.config_entry.title} Natural Gas",
             manufacturer="Green Button",
             model="Natural Gas",
         )
