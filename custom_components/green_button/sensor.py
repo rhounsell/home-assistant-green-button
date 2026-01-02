@@ -14,6 +14,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -478,6 +479,16 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
             self._attr_name = f"{base_name} Natural Gas Usage"
 
     @property
+    def device_info(self) -> DeviceInfo:
+        """Return device metadata for grouping gas entities under a dedicated device."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{self.coordinator.config_entry.entry_id}_gas_device")},
+            name=f"{self.coordinator.config_entry.title} Natural Gas Consumption",
+            manufacturer="Green Button",
+            model="Natural Gas",
+        )
+
+    @property
     def native_value(self) -> float | None:
         # Try to get meter reading first (normal case)
         meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
@@ -688,6 +699,16 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
         else:
             self._attr_name = f"{base_name} Natural Gas Cost"
         self._attr_native_unit_of_measurement = "CAD"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device metadata for grouping gas cost under the gas device."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{self.coordinator.config_entry.entry_id}_gas_device")},
+            name=f"{self.coordinator.config_entry.title} Natural Gas Consumption",
+            manufacturer="Green Button",
+            model="Natural Gas",
+        )
 
     @property
     def native_value(self) -> float | None:
