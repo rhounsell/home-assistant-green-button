@@ -653,13 +653,6 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
             or self.coordinator.config_entry.data.get("gas_usage_allocation")
             or "daily_readings"
         )
-        _LOGGER.info(
-            "Gas Sensor %s: Updating gas statistics with mode=%s, %d interval blocks, %d usage summaries",
-            self.entity_id,
-            usage_allocation_mode,
-            len(meter_reading.interval_blocks),
-            len(summaries) if summaries else 0,
-        )
         await statistics.update_gas_statistics(
             self.hass,
             self,
