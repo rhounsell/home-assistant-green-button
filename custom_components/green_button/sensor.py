@@ -70,8 +70,8 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
             else meter_reading_id
         )
         self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}"
-        # Use the config entry title (name set when adding integration) as the sensor name
-        self._attr_name = coordinator.config_entry.title
+        # Simple name - Home Assistant will combine with device name since _attr_has_entity_name=True
+        self._attr_name = "Usage"
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -294,9 +294,8 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
             else meter_reading_id
         )
         self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}_cost"
-        # Name is entry title + " Cost"
-        base_name = coordinator.config_entry.title
-        self._attr_name = f"{base_name} Cost"
+        # Simple name - Home Assistant will combine with device name since _attr_has_entity_name=True
+        self._attr_name = "Cost"
 
         # Default currency; will be set on first update if available from reading type
         self._attr_native_unit_of_measurement = "CAD"
