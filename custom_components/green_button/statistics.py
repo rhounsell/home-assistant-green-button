@@ -1472,10 +1472,18 @@ async def _generate_daily_m3_statistics(
         for r in block.interval_readings
     ]
     if not readings:
+        _LOGGER.info("Gas %s: No interval readings found in meter reading", entity.entity_id)
         return stats
 
     # Sort readings by start
     readings.sort(key=lambda r: r.start)
+    _LOGGER.info(
+        "Gas %s: Processing %d interval readings for daily statistics (first: %s, last: %s)",
+        entity.entity_id,
+        len(readings),
+        readings[0].start.date(),
+        readings[-1].start.date(),
+    )
     # Expect daily intervals; compute daily totals in native m³
     daily_totals: dict[datetime.date, float] = {}
     for rd in readings:
@@ -1485,7 +1493,15 @@ async def _generate_daily_m3_statistics(
         daily_totals[day] = daily_totals.get(day, 0.0) + val
 
     if not daily_totals:
+        _LOGGER.warning("Gas %s: No daily totals computed from %d readings", entity.entity_id, len(readings))
         return stats
+    
+    _LOGGER.info(
+        "Gas %s: Computed %d daily totals: total m³ = %.2f",
+        entity.entity_id,
+        len(daily_totals),
+        sum(daily_totals.values()),
+    )
 
     # Find existing cumulative sum before first day
     first_day = min(daily_totals.keys())
