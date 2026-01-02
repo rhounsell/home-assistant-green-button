@@ -40,8 +40,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
             user_input_default = {
                 "name": "Home",
                 "input_type": "file",
-                "gas_cost_allocation": "pro_rate_daily",
-                "gas_usage_allocation": "daily_readings",
+                "gas_cost_allocation": "monthly_increment",
+                "gas_usage_allocation": "monthly_increment",
             }
         else:
             user_input_default = user_input
