@@ -895,61 +895,80 @@ async def async_setup_entry(
                             usage_point.id,
                         )
 
-                # Create sensors for meter readings (normal case)
-                for meter_reading in usage_point.meter_readings:
-                    # Guard: skip gas meter readings that have no interval data to avoid empty entities
-                    if is_gas:
-                        if not meter_reading.interval_blocks:
-                            _LOGGER.info(
-                                "Skipping gas meter reading %s because it has no interval blocks",
-                                meter_reading.id,
-                            )
-                            continue
+                # Gas meter readings: create exactly one pair per UsagePoint using a deterministic choice
+                if is_gas and usage_point.meter_readings:
+                    eligible_mrs = [
+                        mr
+                        for mr in usage_point.meter_readings
+                        if mr.interval_blocks
+                        and any(
+                            ir.value is not None
+                            for blk in mr.interval_blocks
+                            for ir in blk.interval_readings
+                        )
+                    ]
 
-                        # Gas consumption
-                        gas_key = f"{meter_reading.id}__gas"
-                        if gas_key not in created_entities:
-                            gas_sensor = GreenButtonGasSensor(coordinator, meter_reading.id)
-                            entities.append(gas_sensor)
-                            created_entities.add(gas_key)
-                            _LOGGER.info(
-                                "Created gas sensor %s for meter reading %s",
-                                gas_sensor.unique_id,
-                                meter_reading.id,
-                            )
-                        # Gas cost
-                        gas_cost_key = f"{meter_reading.id}__gas_cost"
-                        if gas_cost_key not in created_entities:
-                            gas_cost_sensor = GreenButtonGasCostSensor(coordinator, meter_reading.id)
-                            entities.append(gas_cost_sensor)
-                            created_entities.add(gas_cost_key)
-                            _LOGGER.info(
-                                "Created gas cost sensor %s for meter reading %s",
-                                gas_cost_sensor.unique_id,
-                                meter_reading.id,
-                            )
-                    else:
-                        # Electricity energy
-                        if meter_reading.id not in created_entities:
-                            energy_sensor = GreenButtonSensor(coordinator, meter_reading.id)
-                            entities.append(energy_sensor)
-                            created_entities.add(meter_reading.id)
-                            _LOGGER.info(
-                                "Created energy sensor %s for meter reading %s",
-                                energy_sensor.unique_id,
-                                meter_reading.id,
-                            )
-                        # Electricity cost
-                        cost_key = f"{meter_reading.id}__cost"
-                        if cost_key not in created_entities:
-                            cost_sensor = GreenButtonCostSensor(coordinator, meter_reading.id)
-                            entities.append(cost_sensor)
-                            created_entities.add(cost_key)
-                            _LOGGER.info(
-                                "Created cost sensor %s for meter reading %s",
-                                cost_sensor.unique_id,
-                                meter_reading.id,
-                            )
+                    if not eligible_mrs:
+                        _LOGGER.info(
+                            "Skipping gas UsagePoint %s because no meter reading has interval data",
+                            usage_point.id,
+                        )
+                        continue
+
+                    # Pick a deterministic meter reading so repeated calls don't create new pairs
+                    primary_mr = sorted(eligible_mrs, key=lambda mr: mr.id)[0]
+
+                    gas_key = f"{usage_point.id}__gas"
+                    if gas_key not in created_entities:
+                        gas_sensor = GreenButtonGasSensor(coordinator, primary_mr.id)
+                        entities.append(gas_sensor)
+                        created_entities.add(gas_key)
+                        _LOGGER.info(
+                            "Created gas sensor %s for meter reading %s (UsagePoint %s; %d eligible meter readings)",
+                            gas_sensor.unique_id,
+                            primary_mr.id,
+                            usage_point.id,
+                            len(eligible_mrs),
+                        )
+
+                    gas_cost_key = f"{usage_point.id}__gas_cost"
+                    if gas_cost_key not in created_entities:
+                        gas_cost_sensor = GreenButtonGasCostSensor(coordinator, primary_mr.id)
+                        entities.append(gas_cost_sensor)
+                        created_entities.add(gas_cost_key)
+                        _LOGGER.info(
+                            "Created gas cost sensor %s for meter reading %s (UsagePoint %s)",
+                            gas_cost_sensor.unique_id,
+                            primary_mr.id,
+                            usage_point.id,
+                        )
+
+                    # Skip electricity creation for this usage point
+                    continue
+
+                # Electricity meter readings (or non-gas usage points)
+                for meter_reading in usage_point.meter_readings:
+                    # Electricity energy
+                    if meter_reading.id not in created_entities:
+                        energy_sensor = GreenButtonSensor(coordinator, meter_reading.id)
+                        entities.append(energy_sensor)
+                        created_entities.add(meter_reading.id)
+                        _LOGGER.info(
+                            "Created energy sensor %s for meter reading %s",
+                            energy_sensor.unique_id,
+                            meter_reading.id,
+                        )
+                    # Electricity cost
+                    cost_key = f"{meter_reading.id}__cost"
+                    if cost_key not in created_entities:
+                        cost_sensor = GreenButtonCostSensor(coordinator, meter_reading.id)
+                        entities.append(cost_sensor)
+                        created_entities.add(cost_key)
+                        _LOGGER.info(
+                            "Created cost sensor %s for meter reading %s",
+                            cost_sensor.unique_id,
+                            meter_reading.id,
+                        )
 
         # Add new entities to Home Assistant
         if entities:
