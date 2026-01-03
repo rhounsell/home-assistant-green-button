@@ -491,7 +491,7 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
         clean_id = meter_reading_id.split("/")[-1] if "/" in meter_reading_id else meter_reading_id
         self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}_gas"
         # Simple name - Home Assistant will combine with device name since _attr_has_entity_name=True
-        self._attr_name = "Natural Gas Usage"
+        self._attr_name = "Usage"
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -708,7 +708,7 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
         clean_id = meter_reading_id.split("/")[-1] if "/" in meter_reading_id else meter_reading_id
         self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}_gas_cost"
         # Simple name - Home Assistant will combine with device name since _attr_has_entity_name=True
-        self._attr_name = "Natural Gas Cost"
+        self._attr_name = "Cost"
         self._attr_native_unit_of_measurement = "CAD"
 
     @property
