@@ -95,14 +95,6 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
             for frame in stack[-5:-1]:  # Last 4 frames before this one
                 if 'green_button' not in frame.filename:  # Only non-Green Button frames
                     caller_info.append(f"{frame.filename}:{frame.lineno} in {frame.name}")
-
-            _LOGGER.warning(
-                "🔍 [DIAGNOSTIC] %s: native_value property accessed, returning %.2f kWh (cumulative). "
-                "Called from: %s",
-                self.entity_id if hasattr(self, 'entity_id') else 'unknown',
-                value,
-                ' -> '.join(caller_info) if caller_info else 'internal',
-            )
         return value
 
     @property
@@ -881,9 +873,6 @@ async def async_setup_entry(
         "coordinator"
     ]
 
-    # Track created entities to avoid duplicates
-    created_entities: set[str] = set()
-
     def _async_create_entities() -> None:
         """Create new entities when data becomes available."""
         entities = []
@@ -911,57 +900,50 @@ async def async_setup_entry(
                     )
 
                     if allocation_mode == "monthly_increment":
-                        # Create a virtual sensor using the UsagePoint ID since there's no MeterReading
-                        virtual_key = f"{usage_point.id}__gas_summary"
-                        if virtual_key not in created_entities:
-                            # Use UsagePoint ID as the "meter_reading_id" - the sensor will handle this
-                            gas_sensor = GreenButtonGasSensor(coordinator, usage_point.id)
-                            # Check if this entity already exists in the registry
-                            if gas_sensor.unique_id:
-                                existing_entity = entity_registry.async_get_entity_id(
-                                    "sensor", DOMAIN, gas_sensor.unique_id
+                        # Use UsagePoint ID as the "meter_reading_id" - the sensor will handle this
+                        gas_sensor = GreenButtonGasSensor(coordinator, usage_point.id)
+                        # Check if this entity already exists in the registry
+                        if gas_sensor.unique_id:
+                            existing_entity = entity_registry.async_get_entity_id(
+                                "sensor", DOMAIN, gas_sensor.unique_id
+                            )
+                            if existing_entity:
+                                _LOGGER.debug(
+                                    "Gas sensor %s already exists (entity_id: %s), skipping creation",
+                                    gas_sensor.unique_id,
+                                    existing_entity,
                                 )
-                                if existing_entity:
-                                    _LOGGER.debug(
-                                        "Gas sensor %s already exists (entity_id: %s), skipping creation",
-                                        gas_sensor.unique_id,
-                                        existing_entity,
-                                    )
-                                else:
-                                    entities.append(gas_sensor)
-                                    created_entities.add(virtual_key)
-                                    _LOGGER.info(
-                                        "Created gas sensor %s for UsagePoint %s (UsageSummary only, no daily readings)",
-                                        gas_sensor.unique_id,
-                                        usage_point.id,
-                                    )
                             else:
-                                _LOGGER.warning("Gas sensor has no unique_id, skipping creation")
+                                entities.append(gas_sensor)
+                                _LOGGER.info(
+                                    "Created gas sensor %s for UsagePoint %s (UsageSummary only, no daily readings)",
+                                    gas_sensor.unique_id,
+                                    usage_point.id,
+                                )
+                        else:
+                            _LOGGER.warning("Gas sensor has no unique_id, skipping creation")
 
-                        virtual_cost_key = f"{usage_point.id}__gas_cost_summary"
-                        if virtual_cost_key not in created_entities:
-                            gas_cost_sensor = GreenButtonGasCostSensor(coordinator, usage_point.id)
-                            # Check if this entity already exists in the registry
-                            if gas_cost_sensor.unique_id:
-                                existing_entity = entity_registry.async_get_entity_id(
-                                    "sensor", DOMAIN, gas_cost_sensor.unique_id
+                        gas_cost_sensor = GreenButtonGasCostSensor(coordinator, usage_point.id)
+                        # Check if this entity already exists in the registry
+                        if gas_cost_sensor.unique_id:
+                            existing_entity = entity_registry.async_get_entity_id(
+                                "sensor", DOMAIN, gas_cost_sensor.unique_id
+                            )
+                            if existing_entity:
+                                _LOGGER.debug(
+                                    "Gas cost sensor %s already exists (entity_id: %s), skipping creation",
+                                    gas_cost_sensor.unique_id,
+                                    existing_entity,
                                 )
-                                if existing_entity:
-                                    _LOGGER.debug(
-                                        "Gas cost sensor %s already exists (entity_id: %s), skipping creation",
-                                        gas_cost_sensor.unique_id,
-                                        existing_entity,
-                                    )
-                                else:
-                                    entities.append(gas_cost_sensor)
-                                    created_entities.add(virtual_cost_key)
-                                    _LOGGER.info(
-                                        "Created gas cost sensor %s for UsagePoint %s (UsageSummary only, no daily readings)",
-                                        gas_cost_sensor.unique_id,
-                                        usage_point.id,
-                                    )
                             else:
-                                _LOGGER.warning("Gas cost sensor has no unique_id, skipping creation")
+                                entities.append(gas_cost_sensor)
+                                _LOGGER.info(
+                                    "Created gas cost sensor %s for UsagePoint %s (UsageSummary only, no daily readings)",
+                                    gas_cost_sensor.unique_id,
+                                    usage_point.id,
+                                )
+                        else:
+                            _LOGGER.warning("Gas cost sensor has no unique_id, skipping creation")
                     else:
                         _LOGGER.warning(
                             "Gas UsagePoint %s has only UsageSummaries (no daily readings). "
@@ -992,58 +974,52 @@ async def async_setup_entry(
                     # Pick a deterministic meter reading so repeated calls don't create new pairs
                     primary_mr = sorted(eligible_mrs, key=lambda mr: mr.id)[0]
 
-                    gas_key = f"{usage_point.id}__gas"
-                    if gas_key not in created_entities:
-                        gas_sensor = GreenButtonGasSensor(coordinator, primary_mr.id)
-                        # Check if this entity already exists in the registry
-                        if gas_sensor.unique_id:
-                            existing_entity = entity_registry.async_get_entity_id(
-                                "sensor", DOMAIN, gas_sensor.unique_id
+                    gas_sensor = GreenButtonGasSensor(coordinator, primary_mr.id)
+                    # Check if this entity already exists in the registry
+                    if gas_sensor.unique_id:
+                        existing_entity = entity_registry.async_get_entity_id(
+                            "sensor", DOMAIN, gas_sensor.unique_id
+                        )
+                        if existing_entity:
+                            _LOGGER.debug(
+                                "Gas sensor %s already exists (entity_id: %s), skipping creation",
+                                gas_sensor.unique_id,
+                                existing_entity,
                             )
-                            if existing_entity:
-                                _LOGGER.debug(
-                                    "Gas sensor %s already exists (entity_id: %s), skipping creation",
-                                    gas_sensor.unique_id,
-                                    existing_entity,
-                                )
-                            else:
-                                entities.append(gas_sensor)
-                                created_entities.add(gas_key)
-                                _LOGGER.info(
-                                    "Created gas sensor %s for meter reading %s (UsagePoint %s; %d eligible meter readings)",
-                                    gas_sensor.unique_id,
-                                    primary_mr.id,
-                                    usage_point.id,
-                                    len(eligible_mrs),
-                                )
                         else:
-                            _LOGGER.warning("Gas sensor has no unique_id, skipping creation")
+                            entities.append(gas_sensor)
+                            _LOGGER.info(
+                                "Created gas sensor %s for meter reading %s (UsagePoint %s; %d eligible meter readings)",
+                                gas_sensor.unique_id,
+                                primary_mr.id,
+                                usage_point.id,
+                                len(eligible_mrs),
+                            )
+                    else:
+                        _LOGGER.warning("Gas sensor has no unique_id, skipping creation")
 
-                    gas_cost_key = f"{usage_point.id}__gas_cost"
-                    if gas_cost_key not in created_entities:
-                        gas_cost_sensor = GreenButtonGasCostSensor(coordinator, primary_mr.id)
-                        # Check if this entity already exists in the registry
-                        if gas_cost_sensor.unique_id:
-                            existing_entity = entity_registry.async_get_entity_id(
-                                "sensor", DOMAIN, gas_cost_sensor.unique_id
+                    gas_cost_sensor = GreenButtonGasCostSensor(coordinator, primary_mr.id)
+                    # Check if this entity already exists in the registry
+                    if gas_cost_sensor.unique_id:
+                        existing_entity = entity_registry.async_get_entity_id(
+                            "sensor", DOMAIN, gas_cost_sensor.unique_id
+                        )
+                        if existing_entity:
+                            _LOGGER.debug(
+                                "Gas cost sensor %s already exists (entity_id: %s), skipping creation",
+                                gas_cost_sensor.unique_id,
+                                existing_entity,
                             )
-                            if existing_entity:
-                                _LOGGER.debug(
-                                    "Gas cost sensor %s already exists (entity_id: %s), skipping creation",
-                                    gas_cost_sensor.unique_id,
-                                    existing_entity,
-                                )
-                            else:
-                                entities.append(gas_cost_sensor)
-                                created_entities.add(gas_cost_key)
-                                _LOGGER.info(
-                                    "Created gas cost sensor %s for meter reading %s (UsagePoint %s)",
-                                    gas_cost_sensor.unique_id,
-                                    primary_mr.id,
-                                    usage_point.id,
-                                )
                         else:
-                            _LOGGER.warning("Gas cost sensor has no unique_id, skipping creation")
+                            entities.append(gas_cost_sensor)
+                            _LOGGER.info(
+                                "Created gas cost sensor %s for meter reading %s (UsagePoint %s)",
+                                gas_cost_sensor.unique_id,
+                                primary_mr.id,
+                                usage_point.id,
+                            )
+                    else:
+                        _LOGGER.warning("Gas cost sensor has no unique_id, skipping creation")
 
                     # Skip electricity creation for this usage point
                     continue
@@ -1072,58 +1048,52 @@ async def async_setup_entry(
                     # Pick a deterministic meter reading (sorted by ID for consistency)
                     primary_electric_mr = sorted(eligible_electric_mrs, key=lambda mr: mr.id)[0]
 
-                    electric_key = f"{usage_point.id}__electric"
-                    if electric_key not in created_entities:
-                        energy_sensor = GreenButtonSensor(coordinator, primary_electric_mr.id)
-                        # Check if this entity already exists in the registry
-                        if energy_sensor.unique_id:
-                            existing_entity = entity_registry.async_get_entity_id(
-                                "sensor", DOMAIN, energy_sensor.unique_id
+                    energy_sensor = GreenButtonSensor(coordinator, primary_electric_mr.id)
+                    # Check if this entity already exists in the registry
+                    if energy_sensor.unique_id:
+                        existing_entity = entity_registry.async_get_entity_id(
+                            "sensor", DOMAIN, energy_sensor.unique_id
+                        )
+                        if existing_entity:
+                            _LOGGER.debug(
+                                "Energy sensor %s already exists (entity_id: %s), skipping creation",
+                                energy_sensor.unique_id,
+                                existing_entity,
                             )
-                            if existing_entity:
-                                _LOGGER.debug(
-                                    "Energy sensor %s already exists (entity_id: %s), skipping creation",
-                                    energy_sensor.unique_id,
-                                    existing_entity,
-                                )
-                            else:
-                                entities.append(energy_sensor)
-                                created_entities.add(electric_key)
-                                _LOGGER.info(
-                                    "Created energy sensor %s for meter reading %s (UsagePoint %s; %d eligible meter readings)",
-                                    energy_sensor.unique_id,
-                                    primary_electric_mr.id,
-                                    usage_point.id,
-                                    len(eligible_electric_mrs),
-                                )
                         else:
-                            _LOGGER.warning("Energy sensor has no unique_id, skipping creation")
+                            entities.append(energy_sensor)
+                            _LOGGER.info(
+                                "Created energy sensor %s for meter reading %s (UsagePoint %s; %d eligible meter readings)",
+                                energy_sensor.unique_id,
+                                primary_electric_mr.id,
+                                usage_point.id,
+                                len(eligible_electric_mrs),
+                            )
+                    else:
+                        _LOGGER.warning("Energy sensor has no unique_id, skipping creation")
 
-                    electric_cost_key = f"{usage_point.id}__electric_cost"
-                    if electric_cost_key not in created_entities:
-                        cost_sensor = GreenButtonCostSensor(coordinator, primary_electric_mr.id)
-                        # Check if this entity already exists in the registry
-                        if cost_sensor.unique_id:
-                            existing_entity = entity_registry.async_get_entity_id(
-                                "sensor", DOMAIN, cost_sensor.unique_id
+                    cost_sensor = GreenButtonCostSensor(coordinator, primary_electric_mr.id)
+                    # Check if this entity already exists in the registry
+                    if cost_sensor.unique_id:
+                        existing_entity = entity_registry.async_get_entity_id(
+                            "sensor", DOMAIN, cost_sensor.unique_id
+                        )
+                        if existing_entity:
+                            _LOGGER.debug(
+                                "Cost sensor %s already exists (entity_id: %s), skipping creation",
+                                cost_sensor.unique_id,
+                                existing_entity,
                             )
-                            if existing_entity:
-                                _LOGGER.debug(
-                                    "Cost sensor %s already exists (entity_id: %s), skipping creation",
-                                    cost_sensor.unique_id,
-                                    existing_entity,
-                                )
-                            else:
-                                entities.append(cost_sensor)
-                                created_entities.add(electric_cost_key)
-                                _LOGGER.info(
-                                    "Created cost sensor %s for meter reading %s (UsagePoint %s)",
-                                    cost_sensor.unique_id,
-                                    primary_electric_mr.id,
-                                    usage_point.id,
-                                )
                         else:
-                            _LOGGER.warning("Cost sensor has no unique_id, skipping creation")
+                            entities.append(cost_sensor)
+                            _LOGGER.info(
+                                "Created cost sensor %s for meter reading %s (UsagePoint %s)",
+                                cost_sensor.unique_id,
+                                primary_electric_mr.id,
+                                usage_point.id,
+                            )
+                    else:
+                        _LOGGER.warning("Cost sensor has no unique_id, skipping creation")
 
         # Add new entities to Home Assistant
         if entities:
