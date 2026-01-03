@@ -185,6 +185,10 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         # which will be called after bootstrap completes
         # This prevents "Setup timed out for bootstrap" warnings
 
+        # Kick off a statistics update if data already exists (e.g., after import)
+        if self.coordinator.data and self.coordinator.data.get("usage_points"):
+            self._handle_coordinator_update()
+
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         # DO NOT call super()._handle_coordinator_update()!
