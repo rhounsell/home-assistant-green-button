@@ -6,7 +6,18 @@ The Green Button integration handles historical data by **generating its own sta
 
 ## Architecture
 
-### 1. Disables Automatic Recorder Statistics
+### 1. Manual Data Import Process
+
+The integration relies entirely on **manual XML imports** rather than automatic API calls:
+
+- **No automatic polling**: The coordinator has `update_interval=None` - it never fetches data automatically
+- **Service-based imports**: New data is added via the `import_espi_xml` service call
+- **Data merging**: Multiple XML imports are combined intelligently to avoid duplicates
+- **Stored data**: XML data is persisted in the config entry for restart recovery
+
+The `_async_update_data()` method only parses already-stored XML data and doesn't perform any external fetching.
+
+### 2. Disables Automatic Recorder Statistics
 
 The sensor is configured with `TOTAL_INCREASING` state class:
 
@@ -81,15 +92,16 @@ Key points:
 ## Data Flow
 
 ```
-Green Button XML Feed (e.g., from Enbridge, Hydro One)
+Manual XML Import (via import_espi_xml service)
     ↓
 Parse into UsagePoint → MeterReading → IntervalBlocks → IntervalReadings
     ↓
-GreenButtonCoordinator (coordinator.py)
-    └─ Fetches and parses Green Button data periodically
+GreenButtonCoordinator.async_add_xml_data()
+    └─ Merges new data with existing data
+    └─ Calls async_set_updated_data() to notify entities
     ↓
-GreenButtonSensor._handle_coordinator_update()
-    └─ Called on coordinator update
+GreenButtonSensor._handle_coordinator_update() [Electricity]
+    └─ Called when coordinator data changes
     ↓
 update_sensor_and_statistics()
     ├─ Calculate cumulative total from all interval readings
@@ -101,9 +113,23 @@ update_sensor_and_statistics()
          └─ Generates hourly records with cumulative sums
          ↓
          async_import_statistics() → Home Assistant Statistics Database
-         └─ Bypasses Recorder entirely
-         └─ Handles overlapping/duplicate data correctly
+
+GreenButtonSensor.async_added_to_hass() [Gas - Immediate]
+    └─ Called when sensor entity is first added to HA
+    └─ If coordinator has data, triggers statistics generation immediately
+    ↓
+update_sensor_and_statistics()
+    └─ For gas: calls statistics.update_gas_statistics()
+    └─ Uses monthly_increment or daily_readings mode
+    ↓
+async_import_statistics() → Home Assistant Statistics Database
 ```
+
+**Key Differences:**
+- **Electricity**: Statistics generated on coordinator updates (after XML import)
+- **Gas**: Statistics generated immediately when sensor is added (if data exists)
+- **No automatic fetching**: All data comes from manual XML imports
+- **Coordinator role**: Manages data merging, not fetching
 
 ## Why This Approach is Better
 
@@ -121,19 +147,25 @@ update_sensor_and_statistics()
 2. **Accurate Energy Dashboard**: Shows correct historical consumption patterns
 3. **Data Integrity**: Avoids corrupted statistics records from improper state/sum tracking
 4. **Flexibility**: Handles multiple interval types (electricity, gas, cost)
-5. **No Manual Intervention**: Automatically backfills and imports data on first setup
+5. **Manual Control**: Allows users to import specific data periods as needed
 
 ## Implementation Details
 
 ### Statistics Generation (`statistics.py`)
 
-The `_generate_statistics_data()` function:
+**Electricity Statistics (`_generate_statistics_data`):**
 - Collects all interval readings from meter readings
 - Sorts them chronologically
 - Groups readings into hourly buckets
 - Calculates proportional energy for readings that span multiple hours
 - Skips partial hours to avoid oversized last bars in Energy Dashboard
 - Computes cumulative sums based on existing statistics
+
+**Gas Statistics (`update_gas_statistics`):**
+- Supports two modes: `daily_readings` (daily totals) and `monthly_increment` (monthly billing periods)
+- For `monthly_increment`: Uses UsageSummary data to create monthly increment records
+- For `daily_readings`: Aggregates daily gas consumption from interval readings
+- Handles both interval-based data and summary-based data from different utility formats
 
 ### Metadata Management
 
@@ -145,7 +177,10 @@ The `create_metadata()` function creates Home Assistant `StatisticMetaData` with
 
 ## Notes
 
-- The sensor **does NOT** call `async_write_ha_state()` during coordinator updates to prevent automatic recorder statistics
-- Statistics are updated **after** the sensor state is set, but before `async_write_ha_state()` is called
+- **Electricity sensors** do NOT call `async_write_ha_state()` during coordinator updates to prevent automatic recorder statistics
+- **Gas sensors** call `async_write_ha_state()` in `async_added_to_hass()` to make entities available, but still prevent recorder statistics
+- Statistics are updated after the sensor state is set, but before `async_write_ha_state()` for electricity sensors
+- Gas statistics are generated immediately in `async_added_to_hass()` if data exists, rather than waiting for coordinator updates
 - The integration uses `await` to ensure statistics are imported before returning control
 - Duplicate or overlapping statistics are handled correctly by Home Assistant's `async_import_statistics()` API
+- No automatic data fetching - all data comes from manual XML imports via the service
