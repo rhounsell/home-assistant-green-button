@@ -17,7 +17,15 @@ The integration relies entirely on **manual XML imports** rather than automatic 
 
 The `_async_update_data()` method only parses already-stored XML data and doesn't perform any external fetching.
 
-### 2. Disables Automatic Recorder Statistics
+### 2. Entity Creation with Duplicate Prevention
+
+Sensors are created dynamically when data becomes available:
+
+- **Entity Registry Checks**: Before creating any sensor, the integration checks if an entity with the same `unique_id` already exists in Home Assistant's entity registry
+- **No Duplicate Creation**: If an entity already exists, creation is skipped with a debug log
+- **Dynamic Creation**: Sensors are created when the coordinator has data, either during initial setup or after XML imports
+
+### 3. Disables Automatic Recorder Statistics
 
 The sensor is configured with `TOTAL_INCREASING` state class:
 
@@ -32,7 +40,7 @@ While this signals to Home Assistant that the sensor is cumulative, the integrat
 
 This is critical because the recorder's automatic statistics would create **corrupted records** (state/sum swap, massive consumption values) when given cumulative sensor data without proper context.
 
-### 2. Manually Calculates Energy Values from Raw Interval Data
+### 4. Manually Calculates Energy Values from Raw Interval Data
 
 In `update_sensor_and_statistics()`, the sensor:
 
@@ -52,42 +60,19 @@ self._attr_native_value = total_energy / 1000.0
 
 This sums up all interval readings from the Green Button data and stores the cumulative total as the sensor state.
 
-### 3. Imports Historical Statistics Using `async_import_statistics`
+### 5. Imports Historical Statistics Using `async_import_statistics`
 
 Instead of relying on the recorder to generate statistics from individual state changes, the integration:
 
-- Calls `statistics.update_statistics()` with the entire meter reading
+- Calls `statistics.update_statistics()` (electricity) or `statistics.update_gas_statistics()` (gas) with the entire meter reading
 - Uses Home Assistant's `async_import_statistics()` API to bulk-import statistics records
 - Properly handles overlapping/duplicate data without corrupting records
 
-```python
-await statistics.update_statistics(
-    self.hass,
-    self,
-    statistics.DefaultDataExtractor(),
-    meter_reading,
-)
-```
-
-### 4. Generates Statistics with Correct Metadata
-
-The `create_metadata()` function defines how statistics should be recorded:
-
-```python
-def create_metadata(entity: GreenButtonEntity) -> statistics.StatisticMetaData:
-    return {
-        "mean_type": StatisticMeanType.NONE,  # Cumulative total, not averaged
-        "has_sum": True,                       # Track the sum value
-        "statistic_id": entity.long_term_statistics_id,
-        "unit_of_measurement": entity.native_unit_of_measurement,
-        "unit_class": None,
-    }
-```
-
-Key points:
-- **`mean_type: NONE`** — indicates this is a cumulative total, not an averaged value
-- **`has_sum: True`** — enables the Energy Dashboard to display consumption data
-- **`unit_class: None`** — allows flexibility across energy, gas, and monetary sensors
+**Gas vs Electricity Statistics:**
+- **Electricity**: Uses `update_statistics()` with hourly bucketing
+- **Gas**: Uses `update_gas_statistics()` with monthly_increment or daily_readings modes
+- **Gas timing**: Statistics generated immediately in `async_added_to_hass()` if data exists
+- **Electricity timing**: Statistics generated in `_handle_coordinator_update()` after data changes
 
 ## Data Flow
 
@@ -99,6 +84,14 @@ Parse into UsagePoint → MeterReading → IntervalBlocks → IntervalReadings
 GreenButtonCoordinator.async_add_xml_data()
     └─ Merges new data with existing data
     └─ Calls async_set_updated_data() to notify entities
+    ↓
+_async_create_entities() [Entity Creation]
+    └─ Checks entity registry to prevent duplicates
+    └─ Creates sensors if they don't exist
+    ↓
+GreenButtonSensor.async_added_to_hass() [All Sensors]
+    └─ Initializes sensor state
+    └─ Triggers immediate statistics generation if data exists
     ↓
 GreenButtonSensor._handle_coordinator_update() [Electricity]
     └─ Called when coordinator data changes
@@ -114,20 +107,21 @@ update_sensor_and_statistics()
          ↓
          async_import_statistics() → Home Assistant Statistics Database
 
-GreenButtonSensor.async_added_to_hass() [Gas - Immediate]
-    └─ Called when sensor entity is first added to HA
-    └─ If coordinator has data, triggers statistics generation immediately
+GreenButtonGasSensor._handle_coordinator_update() [Gas]
+    └─ Called when coordinator data changes
     ↓
 update_sensor_and_statistics()
-    └─ For gas: calls statistics.update_gas_statistics()
+    └─ Calculate cumulative total from all interval readings
+    └─ Call statistics.update_gas_statistics()
     └─ Uses monthly_increment or daily_readings mode
-    ↓
-async_import_statistics() → Home Assistant Statistics Database
+         ↓
+         async_import_statistics() → Home Assistant Statistics Database
 ```
 
 **Key Differences:**
-- **Electricity**: Statistics generated on coordinator updates (after XML import)
-- **Gas**: Statistics generated immediately when sensor is added (if data exists)
+- **Entity Creation**: Uses entity registry checks to prevent duplicates
+- **Gas Statistics**: Generated immediately in `async_added_to_hass()` if data exists
+- **Electricity Statistics**: Generated in `_handle_coordinator_update()` after data changes
 - **No automatic fetching**: All data comes from manual XML imports
 - **Coordinator role**: Manages data merging, not fetching
 
