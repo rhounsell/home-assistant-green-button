@@ -41,7 +41,34 @@ def _read_file_sync(file_path: Path) -> str:
 
 
 async def async_setup_services(hass: HomeAssistant) -> None:
-    """Set up services for the Green Button integration."""
+    async def log_meter_reading_intervals_service(call: ServiceCall) -> None:
+        """Log all meter readings, their interval block date ranges, and mapped sensor entities."""
+        entity_registry = async_get_entity_registry(hass)
+        entries = list(hass.config_entries.async_entries(DOMAIN))
+        for entry in entries:
+            coordinator: GreenButtonCoordinator | None = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("coordinator")
+            if not coordinator or not coordinator.data:
+                _LOGGER.info(f"Entry {entry.entry_id}: No coordinator or data available.")
+                continue
+            usage_points = coordinator.data.get("usage_points", [])
+            for up_idx, usage_point in enumerate(usage_points):
+                _LOGGER.info(f"UsagePoint {up_idx} (id={usage_point.id}): {len(usage_point.meter_readings)} meter readings.")
+                for mr_idx, meter_reading in enumerate(usage_point.meter_readings):
+                    clean_id = meter_reading.id.split("/")[-1] if "/" in meter_reading.id else meter_reading.id
+                    unique_id = f"{entry.entry_id}_{clean_id}"
+                    entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+                    _LOGGER.info(f"  MeterReading {mr_idx} (id={meter_reading.id}): mapped entity_id={entity_id}")
+                    for ib_idx, interval_block in enumerate(meter_reading.interval_blocks):
+                        start = interval_block.start.isoformat()
+                        end = (interval_block.start + interval_block.duration).isoformat()
+                        _LOGGER.info(f"    IntervalBlock {ib_idx}: start={start}, end={end}, readings={len(interval_block.interval_readings)}")
+
+    # Register the diagnostic service
+    hass.services.async_register(
+        DOMAIN,
+        "log_meter_reading_intervals",
+        log_meter_reading_intervals_service,
+    )
 
     async def import_espi_xml_service(call: ServiceCall) -> None:
         """Handle the import_espi_xml service call."""
