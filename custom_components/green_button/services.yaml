@@ -1,3 +1,7 @@
+log_meter_reading_intervals:
+  name: Log Green Button Meter Reading Intervals
+  description: >
+    Log all Green Button meter readings, their interval block date ranges, and mapped sensor entities for all Green Button usage points. This diagnostic service writes detailed information to the Home Assistant log to help debug data import and entity mapping issues. No fields are required.
 delete_statistics:
   name: Delete Green Button Statistics
   description: Delete all historical statistics for a Green Button sensor. This will clear the data from the Energy Dashboard. You will need to re-import your XML data after deletion.
