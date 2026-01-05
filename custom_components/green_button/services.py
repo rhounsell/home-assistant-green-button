@@ -152,6 +152,37 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     entry.entry_id,
                 )
 
+                # --- NEW: After import, always trigger statistics update for all mapped sensor entities ---
+                entity_registry = async_get_entity_registry(hass)
+                usage_points = coordinator.usage_points
+                for usage_point in usage_points:
+                    for meter_reading in usage_point.meter_readings:
+                        clean_id = meter_reading.id.split("/")[-1] if "/" in meter_reading.id else meter_reading.id
+                        unique_id = f"{entry.entry_id}_{clean_id}"
+                        entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+                        if entity_id:
+                            # Find the entity instance in hass
+                            entity = None
+                            for ent in hass.data[DOMAIN][entry.entry_id].get("entities", []):
+                                if getattr(ent, "entity_id", None) == entity_id:
+                                    entity = ent
+                                    break
+                            if entity is not None and hasattr(entity, "update_sensor_and_statistics"):
+                                _LOGGER.info(
+                                    "Triggering full statistics update for entity %s (meter reading %s)",
+                                    entity_id,
+                                    meter_reading.id,
+                                )
+                                hass.async_create_task(entity.update_sensor_and_statistics(meter_reading))
+                            else:
+                                _LOGGER.warning(
+                                    "Could not find sensor entity instance for %s after import.", entity_id
+                                )
+                        else:
+                            _LOGGER.warning(
+                                "No mapped entity_id for meter reading %s after import.", meter_reading.id
+                            )
+
             _LOGGER.info("ESPI XML import completed successfully")
 
         except Exception as err:
