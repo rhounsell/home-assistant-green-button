@@ -915,10 +915,10 @@ async def async_setup_entry(
         entity_registry = async_get_entity_registry(hass)
 
         # Debug: Check what data is available
-        _LOGGER.debug("Entity creation: coordinator.data = %s", coordinator.data)
-        _LOGGER.debug(
-            "Entity creation: usage_points count = %d", len(coordinator.usage_points)
-        )
+        # _LOGGER.debug("Entity creation: coordinator.data = %s", coordinator.data)
+        # _LOGGER.debug(
+        #     "Entity creation: usage_points count = %d", len(coordinator.usage_points)
+        # )
 
         # If we have data, create entities for each meter reading
         if coordinator.data and coordinator.data.get("usage_points"):
