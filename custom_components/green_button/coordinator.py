@@ -79,6 +79,27 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 len(new_usage_points),
                 total_readings,
             )
+            # Log interval block date ranges for each new usage point and meter reading
+            for up in new_usage_points:
+                for mr in up.meter_readings:
+                    for ib in mr.interval_blocks:
+                        if ib.interval_readings:
+                            start = ib.interval_readings[0].start
+                            end = ib.interval_readings[-1].end
+                            _LOGGER.info(
+                                "[IMPORT] UsagePoint %s MeterReading %s IntervalBlock: %s - %s (%d readings)",
+                                up.id,
+                                mr.id,
+                                start,
+                                end,
+                                len(ib.interval_readings),
+                            )
+                        else:
+                            _LOGGER.info(
+                                "[IMPORT] UsagePoint %s MeterReading %s IntervalBlock: No readings",
+                                up.id,
+                                mr.id,
+                            )
 
             # Merge new data with existing data (combine multiple imports)
             self._merge_usage_points(new_usage_points)
@@ -92,6 +113,20 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     _LOGGER.info(
                         "  MeterReading %d: %d intervals", j, len(mr.interval_blocks)
                     )
+                    for ib in mr.interval_blocks:
+                        if ib.interval_readings:
+                            start = ib.interval_readings[0].start
+                            end = ib.interval_readings[-1].end
+                            _LOGGER.info(
+                                "  IntervalBlock: %s - %s (%d readings)",
+                                start,
+                                end,
+                                len(ib.interval_readings),
+                            )
+                        else:
+                            _LOGGER.info(
+                                "  IntervalBlock: No readings",
+                            )
 
             # Update the data and notify all entities
             self.async_set_updated_data({"usage_points": self.usage_points})
@@ -141,6 +176,27 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not self.usage_points:
             # No existing data, just use new data
             self.usage_points = new_usage_points
+            _LOGGER.info("[MERGE] No existing usage points, using new data only.")
+            for up in new_usage_points:
+                for mr in up.meter_readings:
+                    for ib in mr.interval_blocks:
+                        if ib.interval_readings:
+                            start = ib.interval_readings[0].start
+                            end = ib.interval_readings[-1].end
+                            _LOGGER.info(
+                                "[MERGE] UsagePoint %s MeterReading %s IntervalBlock: %s - %s (%d readings)",
+                                up.id,
+                                mr.id,
+                                start,
+                                end,
+                                len(ib.interval_readings),
+                            )
+                        else:
+                            _LOGGER.info(
+                                "[MERGE] UsagePoint %s MeterReading %s IntervalBlock: No readings",
+                                up.id,
+                                mr.id,
+                            )
             return
 
         # Create a mapping of existing usage points by ID
@@ -162,9 +218,21 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if added:
                     merged_up = dataclasses.replace(existing_up, usage_summaries=merged_summaries)
                     self.usage_points = [merged_up if up.id == existing_up.id else up for up in self.usage_points]
+                _LOGGER.info(
+                    "[MERGE] Merged usage point %s: %d meter readings, %d usage summaries",
+                    new_up.id,
+                    len(existing_up.meter_readings),
+                    len(merged_summaries),
+                )
             else:
                 # Add new usage point
                 self.usage_points.append(new_up)
+                _LOGGER.info(
+                    "[MERGE] Added new usage point %s: %d meter readings, %d usage summaries",
+                    new_up.id,
+                    len(new_up.meter_readings),
+                    len(new_up.usage_summaries),
+                )
 
     def _merge_meter_readings(
         self,
@@ -198,6 +266,22 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if block_key not in existing_blocks:
                         merged_blocks.append(new_block)
                         new_blocks_added += 1
+                        # Log interval block date range for merged block
+                        if new_block.interval_readings:
+                            start = new_block.interval_readings[0].start
+                            end = new_block.interval_readings[-1].end
+                            _LOGGER.info(
+                                "[MERGE] MeterReading %s: Merged IntervalBlock %s - %s (%d readings)",
+                                existing_mr.id,
+                                start,
+                                end,
+                                len(new_block.interval_readings),
+                            )
+                        else:
+                            _LOGGER.info(
+                                "[MERGE] MeterReading %s: Merged IntervalBlock with no readings",
+                                existing_mr.id,
+                            )
 
                 if new_blocks_added > 0:
                     # Sort blocks by start time to maintain chronological order
@@ -224,10 +308,26 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if new_mr.id not in existing_mr_map:
                 merged_meter_readings.append(new_mr)
                 _LOGGER.info(
-                    "Added new meter reading: %s to usage point %s",
+                    "[MERGE] Added new meter reading: %s to usage point %s",
                     new_mr.id,
                     existing_up.id,
                 )
+                for ib in new_mr.interval_blocks:
+                    if ib.interval_readings:
+                        start = ib.interval_readings[0].start
+                        end = ib.interval_readings[-1].end
+                        _LOGGER.info(
+                            "[MERGE] MeterReading %s: Added IntervalBlock %s - %s (%d readings)",
+                            new_mr.id,
+                            start,
+                            end,
+                            len(ib.interval_readings),
+                        )
+                    else:
+                        _LOGGER.info(
+                            "[MERGE] MeterReading %s: Added IntervalBlock with no readings",
+                            new_mr.id,
+                        )
 
         # Replace usage point with merged meter readings
         merged_up = dataclasses.replace(
