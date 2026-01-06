@@ -156,7 +156,7 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         return self._attr_native_unit_of_measurement or "kWh"
 
     async def async_added_to_hass(self) -> None:
-        """When entity is added to hass, trigger statistics generation."""
+        """When entity is added to hass, re-calculate state from merged data and trigger statistics generation."""
         await super().async_added_to_hass()
 
         _LOGGER.info(
@@ -164,15 +164,36 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
             self.entity_id,
         )
 
-        # Initialize entity with value of 0 to make it "available" for Energy Dashboard
-        # This does NOT trigger statistics generation because we have state_class=None
-        if self._attr_native_value is None:
-            self._attr_native_value = 0.0
+        # Always re-calculate state from merged data after restart
+        meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
+        if meter_reading:
+            # Calculate total energy from all interval blocks
+            total_energy = 0
+            for interval_block in meter_reading.interval_blocks:
+                for interval_reading in interval_block.interval_readings:
+                    if interval_reading.value is not None:
+                        power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
+                        value = interval_reading.value * (10**power_multiplier)
+                        total_energy += value
+            if total_energy > 0:
+                self._attr_native_value = total_energy / 1000.0
+            else:
+                self._attr_native_value = 0.0
             self.async_write_ha_state()
             _LOGGER.info(
-                "Sensor %s: Initialized with value 0.0 to make entity available",
+                "Sensor %s: State re-calculated from merged data: %.2f kWh",
                 self.entity_id,
+                self._attr_native_value,
             )
+        else:
+            # If no data, initialize to 0.0 to make entity available
+            if self._attr_native_value is None:
+                self._attr_native_value = 0.0
+                self.async_write_ha_state()
+                _LOGGER.info(
+                    "Sensor %s: Initialized with value 0.0 to make entity available (no meter reading found)",
+                    self.entity_id,
+                )
 
         # Don't generate statistics during bootstrap - rely on _handle_coordinator_update
         # which will be called after bootstrap completes
