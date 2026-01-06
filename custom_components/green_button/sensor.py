@@ -99,10 +99,17 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
 
     @property
     def available(self) -> bool:
-        """Return if entity is available."""
-        return self.coordinator.last_update_success and (
+        available = self.coordinator.last_update_success and (
             self.coordinator.data is not None
         )
+        _LOGGER.info(
+            "Sensor %s: available property evaluated to %s (last_update_success=%s, data is not None=%s)",
+            getattr(self, 'entity_id', self._attr_unique_id),
+            available,
+            self.coordinator.last_update_success,
+            self.coordinator.data is not None,
+        )
+        return available
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -355,9 +362,17 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
 
     @property
     def available(self) -> bool:
-        return self.coordinator.last_update_success and (
+        available = self.coordinator.last_update_success and (
             self.coordinator.data is not None
         )
+        _LOGGER.info(
+            "Cost Sensor %s: available property evaluated to %s (last_update_success=%s, data is not None=%s)",
+            getattr(self, 'entity_id', self._attr_unique_id),
+            available,
+            self.coordinator.last_update_success,
+            self.coordinator.data is not None,
+        )
+        return available
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
