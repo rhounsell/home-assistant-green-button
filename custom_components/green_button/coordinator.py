@@ -153,23 +153,20 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         try:
-            _LOGGER.info("Loading stored XML data from config entry (restart)")
-            # Parse stored XML data
+            _LOGGER.info("[RESTART] Loading stored XML data from config entry")
             usage_points = await self.hass.async_add_executor_job(
                 espi.parse_xml, xml_data
             )
             self.usage_points = usage_points or []
-
-            # Update the data and notify all entities
             self.async_set_updated_data({"usage_points": self.usage_points})
-
+            self.last_update_success = True
             _LOGGER.info(
-                "Successfully loaded %d usage points from stored data",
+                "[RESTART] Successfully loaded %d usage points from stored data. last_update_success set to True.",
                 len(self.usage_points),
             )
-
         except (ValueError, OSError) as err:
-            _LOGGER.warning("Failed to load stored XML data: %s", err)
+            self.last_update_success = False
+            _LOGGER.warning("[RESTART] Failed to load stored XML data: %s. last_update_success set to False.", err)
 
     def _merge_usage_points(self, new_usage_points: list[model.UsagePoint]) -> None:
         """Merge new usage points with existing ones, combining interval blocks."""
