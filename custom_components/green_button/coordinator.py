@@ -132,10 +132,46 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.async_set_updated_data({"usage_points": self.usage_points})
 
             _LOGGER.info("Successfully updated coordinator with new data")
+            
+            # Trigger statistics generation for all meter readings after import
+            await self._trigger_statistics_update_for_all_readings()
 
         except Exception as err:
             _LOGGER.error("Error adding Green Button XML data: %s", err)
             raise UpdateFailed(f"Error adding Green Button XML data: {err}") from err
+
+    async def _trigger_statistics_update_for_all_readings(self) -> None:
+        """Trigger statistics update for all meter readings in coordinator data.
+        
+        This ensures that after import, statistics are generated for every meter reading,
+        including newly merged ones from imports. The coordinator update listeners
+        (entity sensors) will be notified and will generate statistics automatically.
+        """
+        _LOGGER.info("Starting statistics update for all meter readings")
+        
+        if not self.data or not self.data.get("usage_points"):
+            _LOGGER.info("No coordinator data available for statistics update")
+            return
+        
+        # Log all meter readings that need statistics generated
+        total_meter_readings = 0
+        for usage_point in self.usage_points:
+            for meter_reading in usage_point.meter_readings:
+                total_meter_readings += 1
+                interval_count = sum(len(blk.interval_readings) for blk in meter_reading.interval_blocks)
+                if interval_count > 0:
+                    first_reading = meter_reading.interval_blocks[0].interval_readings[0] if meter_reading.interval_blocks[0].interval_readings else None
+                    last_reading = meter_reading.interval_blocks[-1].interval_readings[-1] if meter_reading.interval_blocks[-1].interval_readings else None
+                    if first_reading and last_reading:
+                        _LOGGER.info(
+                            "Will generate statistics for meter reading %s: %s - %s (%d readings)",
+                            meter_reading.id.split("/")[-1] if "/" in meter_reading.id else meter_reading.id,
+                            first_reading.start.isoformat(),
+                            last_reading.end.isoformat(),
+                            interval_count,
+                        )
+        
+        _LOGGER.info("Statistics update scheduled for %d meter readings", total_meter_readings)
 
     def has_existing_entities(self) -> bool:
         """Check if entities already exist for the current data."""
