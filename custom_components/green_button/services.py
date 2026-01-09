@@ -144,8 +144,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     continue
 
                 # Let the coordinator handle all data parsing and updates
-                # Don't store in config to avoid triggering reload (merge in memory only)
-                await coordinator.async_add_xml_data(xml_data, store_in_config=False)
+                # Store in config entry so data persists across restarts
+                await coordinator.async_add_xml_data(xml_data, store_in_config=True)
 
                 _LOGGER.info(
                     "Updated coordinator and refreshed entities for entry %s",
