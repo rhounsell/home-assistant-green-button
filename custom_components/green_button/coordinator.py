@@ -160,16 +160,24 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 total_meter_readings += 1
                 interval_count = sum(len(blk.interval_readings) for blk in meter_reading.interval_blocks)
                 if interval_count > 0:
-                    first_reading = meter_reading.interval_blocks[0].interval_readings[0] if meter_reading.interval_blocks[0].interval_readings else None
-                    last_reading = meter_reading.interval_blocks[-1].interval_readings[-1] if meter_reading.interval_blocks[-1].interval_readings else None
-                    if first_reading and last_reading:
-                        _LOGGER.info(
-                            "Will generate statistics for meter reading %s: %s - %s (%d readings)",
-                            meter_reading.id.split("/")[-1] if "/" in meter_reading.id else meter_reading.id,
-                            first_reading.start.isoformat(),
-                            last_reading.end.isoformat(),
-                            interval_count,
-                        )
+                    _LOGGER.info(
+                        "Will generate statistics for meter reading %s: %d total readings across %d interval blocks",
+                        meter_reading.id.split("/")[-1] if "/" in meter_reading.id else meter_reading.id,
+                        interval_count,
+                        len(meter_reading.interval_blocks),
+                    )
+                    for ib in meter_reading.interval_blocks:
+                        if ib.interval_readings:
+                            first = ib.interval_readings[0].start
+                            last = ib.interval_readings[-1].end
+                            _LOGGER.info(
+                                "  IntervalBlock: %s - %s (%d readings)",
+                                first.isoformat(),
+                                last.isoformat(),
+                                len(ib.interval_readings),
+                            )
+                        else:
+                            _LOGGER.info("  IntervalBlock: No readings")
         
         _LOGGER.info("Statistics update scheduled for %d meter readings", total_meter_readings)
 
