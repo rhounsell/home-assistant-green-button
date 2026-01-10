@@ -937,12 +937,6 @@ async def async_setup_entry(
         entities = []
         entity_registry = async_get_entity_registry(hass)
 
-        # Debug: Check what data is available
-        # _LOGGER.debug("Entity creation: coordinator.data = %s", coordinator.data)
-        # _LOGGER.debug(
-        #     "Entity creation: usage_points count = %d", len(coordinator.usage_points)
-        # )
-
         # If we have data, create entities for each meter reading
         if coordinator.data and coordinator.data.get("usage_points"):
             for usage_point in coordinator.usage_points:
@@ -961,48 +955,50 @@ async def async_setup_entry(
                     if allocation_mode == "monthly_increment":
                         # Use UsagePoint ID as the "meter_reading_id" - the sensor will handle this
                         gas_sensor = GreenButtonGasSensor(coordinator, usage_point.id)
-                        # Check if this entity already exists in the registry
                         if gas_sensor.unique_id:
+                            # Check if this entity already exists in the registry (to log if reused)
                             existing_entity = entity_registry.async_get_entity_id(
                                 "sensor", DOMAIN, gas_sensor.unique_id
                             )
                             if existing_entity:
                                 _LOGGER.debug(
-                                    "Gas sensor %s already exists (entity_id: %s), skipping creation",
+                                    "Reusing gas sensor %s (entity_id: %s)",
                                     gas_sensor.unique_id,
                                     existing_entity,
                                 )
                             else:
-                                entities.append(gas_sensor)
-                                created_entities.append(gas_sensor)
                                 _LOGGER.info(
                                     "Created gas sensor %s for UsagePoint %s (UsageSummary only, no daily readings)",
                                     gas_sensor.unique_id,
                                     usage_point.id,
                                 )
+                                created_entities.append(gas_sensor)
+                            # Always add to entities list so it gets instantiated and added to HA
+                            entities.append(gas_sensor)
                         else:
                             _LOGGER.warning("Gas sensor has no unique_id, skipping creation")
 
                         gas_cost_sensor = GreenButtonGasCostSensor(coordinator, usage_point.id)
-                        # Check if this entity already exists in the registry
                         if gas_cost_sensor.unique_id:
+                            # Check if this entity already exists in the registry (to log if reused)
                             existing_entity = entity_registry.async_get_entity_id(
                                 "sensor", DOMAIN, gas_cost_sensor.unique_id
                             )
                             if existing_entity:
                                 _LOGGER.debug(
-                                    "Gas cost sensor %s already exists (entity_id: %s), skipping creation",
+                                    "Reusing gas cost sensor %s (entity_id: %s)",
                                     gas_cost_sensor.unique_id,
                                     existing_entity,
                                 )
                             else:
-                                entities.append(gas_cost_sensor)
-                                created_entities.append(gas_cost_sensor)
                                 _LOGGER.info(
                                     "Created gas cost sensor %s for UsagePoint %s (UsageSummary only, no daily readings)",
                                     gas_cost_sensor.unique_id,
                                     usage_point.id,
                                 )
+                                created_entities.append(gas_cost_sensor)
+                            # Always add to entities list so it gets instantiated and added to HA
+                            entities.append(gas_cost_sensor)
                         else:
                             _LOGGER.warning("Gas cost sensor has no unique_id, skipping creation")
                     else:
@@ -1036,20 +1032,18 @@ async def async_setup_entry(
                     primary_mr = sorted(eligible_mrs, key=lambda mr: mr.id)[0]
 
                     gas_sensor = GreenButtonGasSensor(coordinator, primary_mr.id)
-                    # Check if this entity already exists in the registry
                     if gas_sensor.unique_id:
+                        # Check if this entity already exists in the registry (to log if reused)
                         existing_entity = entity_registry.async_get_entity_id(
                             "sensor", DOMAIN, gas_sensor.unique_id
                         )
                         if existing_entity:
                             _LOGGER.debug(
-                                "Gas sensor %s already exists (entity_id: %s), skipping creation",
+                                "Reusing gas sensor %s (entity_id: %s)",
                                 gas_sensor.unique_id,
                                 existing_entity,
                             )
                         else:
-                            entities.append(gas_sensor)
-                            created_entities.append(gas_sensor)
                             _LOGGER.info(
                                 "Created gas sensor %s for meter reading %s (UsagePoint %s; %d eligible meter readings)",
                                 gas_sensor.unique_id,
@@ -1057,30 +1051,34 @@ async def async_setup_entry(
                                 usage_point.id,
                                 len(eligible_mrs),
                             )
+                            created_entities.append(gas_sensor)
+                        # Always add to entities list so it gets instantiated and added to HA
+                        entities.append(gas_sensor)
                     else:
                         _LOGGER.warning("Gas sensor has no unique_id, skipping creation")
 
                     gas_cost_sensor = GreenButtonGasCostSensor(coordinator, primary_mr.id)
-                    # Check if this entity already exists in the registry
                     if gas_cost_sensor.unique_id:
+                        # Check if this entity already exists in the registry (to log if reused)
                         existing_entity = entity_registry.async_get_entity_id(
                             "sensor", DOMAIN, gas_cost_sensor.unique_id
                         )
                         if existing_entity:
                             _LOGGER.debug(
-                                "Gas cost sensor %s already exists (entity_id: %s), skipping creation",
+                                "Reusing gas cost sensor %s (entity_id: %s)",
                                 gas_cost_sensor.unique_id,
                                 existing_entity,
                             )
                         else:
-                            entities.append(gas_cost_sensor)
-                            created_entities.append(gas_cost_sensor)
                             _LOGGER.info(
                                 "Created gas cost sensor %s for meter reading %s (UsagePoint %s)",
                                 gas_cost_sensor.unique_id,
                                 primary_mr.id,
                                 usage_point.id,
                             )
+                            created_entities.append(gas_cost_sensor)
+                        # Always add to entities list so it gets instantiated and added to HA
+                        entities.append(gas_cost_sensor)
                     else:
                         _LOGGER.warning("Gas cost sensor has no unique_id, skipping creation")
 
@@ -1112,20 +1110,18 @@ async def async_setup_entry(
                     primary_electric_mr = sorted(eligible_electric_mrs, key=lambda mr: mr.id)[0]
 
                     energy_sensor = GreenButtonSensor(coordinator, primary_electric_mr.id)
-                    # Check if this entity already exists in the registry
                     if energy_sensor.unique_id:
+                        # Check if this entity already exists in the registry (to log if reused)
                         existing_entity = entity_registry.async_get_entity_id(
                             "sensor", DOMAIN, energy_sensor.unique_id
                         )
                         if existing_entity:
                             _LOGGER.debug(
-                                "Energy sensor %s already exists (entity_id: %s), skipping creation",
+                                "Reusing energy sensor %s (entity_id: %s)",
                                 energy_sensor.unique_id,
                                 existing_entity,
                             )
                         else:
-                            entities.append(energy_sensor)
-                            created_entities.append(energy_sensor)
                             _LOGGER.info(
                                 "Created energy sensor %s for meter reading %s (UsagePoint %s; %d eligible meter readings)",
                                 energy_sensor.unique_id,
@@ -1133,39 +1129,45 @@ async def async_setup_entry(
                                 usage_point.id,
                                 len(eligible_electric_mrs),
                             )
+                            created_entities.append(energy_sensor)
+                        # Always add to entities list so it gets instantiated and added to HA
+                        entities.append(energy_sensor)
                     else:
                         _LOGGER.warning("Energy sensor has no unique_id, skipping creation")
 
                     cost_sensor = GreenButtonCostSensor(coordinator, primary_electric_mr.id)
-                    # Check if this entity already exists in the registry
                     if cost_sensor.unique_id:
+                        # Check if this entity already exists in the registry (to log if reused)
                         existing_entity = entity_registry.async_get_entity_id(
                             "sensor", DOMAIN, cost_sensor.unique_id
                         )
                         if existing_entity:
                             _LOGGER.debug(
-                                "Cost sensor %s already exists (entity_id: %s), skipping creation",
+                                "Reusing cost sensor %s (entity_id: %s)",
                                 cost_sensor.unique_id,
                                 existing_entity,
                             )
                         else:
-                            entities.append(cost_sensor)
-                            created_entities.append(cost_sensor)
                             _LOGGER.info(
                                 "Created cost sensor %s for meter reading %s (UsagePoint %s)",
                                 cost_sensor.unique_id,
                                 primary_electric_mr.id,
                                 usage_point.id,
                             )
+                            created_entities.append(cost_sensor)
+                        # Always add to entities list so it gets instantiated and added to HA
+                        entities.append(cost_sensor)
                     else:
                         _LOGGER.warning("Cost sensor has no unique_id, skipping creation")
 
-        # Add new entities to Home Assistant
+        # Add all entities (new and reused) to Home Assistant
         if entities:
             async_add_entities(entities)
-            _LOGGER.info("Added %d new Green Button sensor entities", len(entities))
+            _LOGGER.info("Added %d Green Button sensor entities (%d newly created, %d reused)", 
+                        len(entities), len(created_entities), len(entities) - len(created_entities))
 
-            # After adding, schedule a state write for just-created entities
+            # After adding, schedule a state write for created entities only
+            # (reused entities will have state written via async_added_to_hass or coordinator updates)
             _schedule_hass_task_from_any_thread(hass, _async_update_created_entities())
 
     # Create initial entities (if any data is already available)
