@@ -909,6 +909,29 @@ async def async_setup_entry(
         "coordinator"
     ]
 
+    # Track only entities created by this setup so we can safely write state afterwards
+    created_entities: list[SensorEntity] = []
+
+    async def _async_update_created_entities() -> None:
+        """Write state for newly created entities after they are added to HA."""
+        if not created_entities:
+            _LOGGER.debug("No newly created entities to update")
+            return
+
+        _LOGGER.info(
+            "Updating %d newly created sensor entities (data_available=%s, last_update_success=%s)",
+            len(created_entities),
+            coordinator.data is not None,
+            coordinator.last_update_success,
+        )
+
+        for entity in created_entities:
+            _LOGGER.info(
+                "Calling async_write_ha_state() on newly created sensor %s",
+                getattr(entity, "entity_id", "UNKNOWN"),
+            )
+            entity.async_write_ha_state()
+
     def _async_create_entities() -> None:
         """Create new entities when data becomes available."""
         entities = []
@@ -951,6 +974,7 @@ async def async_setup_entry(
                                 )
                             else:
                                 entities.append(gas_sensor)
+                                created_entities.append(gas_sensor)
                                 _LOGGER.info(
                                     "Created gas sensor %s for UsagePoint %s (UsageSummary only, no daily readings)",
                                     gas_sensor.unique_id,
@@ -973,6 +997,7 @@ async def async_setup_entry(
                                 )
                             else:
                                 entities.append(gas_cost_sensor)
+                                created_entities.append(gas_cost_sensor)
                                 _LOGGER.info(
                                     "Created gas cost sensor %s for UsagePoint %s (UsageSummary only, no daily readings)",
                                     gas_cost_sensor.unique_id,
@@ -1024,6 +1049,7 @@ async def async_setup_entry(
                             )
                         else:
                             entities.append(gas_sensor)
+                            created_entities.append(gas_sensor)
                             _LOGGER.info(
                                 "Created gas sensor %s for meter reading %s (UsagePoint %s; %d eligible meter readings)",
                                 gas_sensor.unique_id,
@@ -1048,6 +1074,7 @@ async def async_setup_entry(
                             )
                         else:
                             entities.append(gas_cost_sensor)
+                            created_entities.append(gas_cost_sensor)
                             _LOGGER.info(
                                 "Created gas cost sensor %s for meter reading %s (UsagePoint %s)",
                                 gas_cost_sensor.unique_id,
@@ -1098,6 +1125,7 @@ async def async_setup_entry(
                             )
                         else:
                             entities.append(energy_sensor)
+                            created_entities.append(energy_sensor)
                             _LOGGER.info(
                                 "Created energy sensor %s for meter reading %s (UsagePoint %s; %d eligible meter readings)",
                                 energy_sensor.unique_id,
@@ -1122,6 +1150,7 @@ async def async_setup_entry(
                             )
                         else:
                             entities.append(cost_sensor)
+                            created_entities.append(cost_sensor)
                             _LOGGER.info(
                                 "Created cost sensor %s for meter reading %s (UsagePoint %s)",
                                 cost_sensor.unique_id,
@@ -1135,6 +1164,9 @@ async def async_setup_entry(
         if entities:
             async_add_entities(entities)
             _LOGGER.info("Added %d new Green Button sensor entities", len(entities))
+
+            # After adding, schedule a state write for just-created entities
+            _schedule_hass_task_from_any_thread(hass, _async_update_created_entities())
 
     # Create initial entities (if any data is already available)
     _async_create_entities()
