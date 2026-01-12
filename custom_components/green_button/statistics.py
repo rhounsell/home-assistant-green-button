@@ -15,9 +15,9 @@ from typing import final
 from typing import Literal
 from typing import Protocol
 from typing import TypeVar
+from typing import TYPE_CHECKING
 
 from homeassistant import exceptions
-from homeassistant.components import recorder
 from homeassistant.components.recorder import db_schema as recorder_db_schema
 from homeassistant.components.recorder import statistics
 from homeassistant.components.recorder.statistics import async_import_statistics
@@ -26,9 +26,12 @@ from homeassistant.components.recorder import tasks
 from homeassistant.components.recorder import util as recorder_util
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import recorder as recorder_helper
 
 from . import model
 
+if TYPE_CHECKING:
+    from homeassistant.components.recorder.core import Recorder
 
 class GreenButtonEntity(Protocol):
     """Protocol for Green Button entities that support statistics."""
@@ -282,7 +285,8 @@ def _queue_task(
     hass: HomeAssistant, task_ctor: Callable[[asyncio.Future[T]], tasks.RecorderTask]
 ) -> asyncio.Future[T]:
     future = asyncio.get_event_loop().create_future()
-    recorder_util.get_instance(hass).queue_task(task_ctor(future))
+    recorder_helper.get_instance(hass).queue_task(task_ctor(future))
+#   RDH recorder_util.get_instance(hass).queue_task(task_ctor(future))
     return future
 
 
@@ -592,7 +596,7 @@ class _ComputeUpdatedPeriodStatisticsTask(tasks.RecorderTask):
             )
         return stat_samples
 
-    def run(self, instance: recorder.Recorder) -> None:
+    def run(self, instance: Recorder) -> None:
         start = self._interval_block.start
         end = self._interval_block.end
         samples = self._compute_samples(start=start, end=end)
@@ -633,7 +637,7 @@ class _ImportStatisticsTask(tasks.RecorderTask):
     table: type[recorder_db_schema.StatisticsShortTerm | recorder_db_schema.Statistics]
     future: asyncio.Future[None]
 
-    def run(self, instance: recorder.Recorder) -> None:
+    def run(self, instance: Recorder) -> None:
         statistic_id = self.entity.long_term_statistics_id
         _LOGGER.debug(
             "[%s] Importing %d statistics samples to table '%s'",
@@ -650,7 +654,8 @@ class _ImportStatisticsTask(tasks.RecorderTask):
             instance, metadata, self.samples, self.table
         )
         if not success:
-            recorder_util.get_instance(self.hass).queue_task(self)
+            recorder_helper.get_instance(self.hass).queue_task(self)
+            #  RDH recorder_util.get_instance(self.hass).queue_task(self)
             return
         _complete_future(self.future, None)
 
@@ -688,7 +693,7 @@ class _AdjustStatisticsTask(tasks.RecorderTask):
     sum_adjustment: float
     future: asyncio.Future[None]
 
-    def run(self, instance: recorder.Recorder) -> None:
+    def run(self, instance: Recorder) -> None:
         _LOGGER.debug(
             "[%s] Adjusting statistics after '%s' by %s %s",
             self.statistic_id,
@@ -704,7 +709,8 @@ class _AdjustStatisticsTask(tasks.RecorderTask):
             self.unit_of_measurement,
         )
         if not success:
-            recorder_util.get_instance(self.hass).queue_task(self)
+            recorder_helper.get_instance(self.hass).queue_task(self)
+            #  RDH recorder_util.get_instance(self.hass).queue_task(self)
             return
         _complete_future(self.future, None)
 
@@ -739,7 +745,7 @@ class _ClearStatisticsTask(tasks.RecorderTask):
     statistic_id: str
     future: asyncio.Future[None]
 
-    def run(self, instance: recorder.Recorder) -> None:
+    def run(self, instance: Recorder) -> None:
         _LOGGER.debug("[%s] Clearing statistics", self.statistic_id)
         statistics.clear_statistics(
             instance=instance, statistic_ids=[self.statistic_id]
@@ -775,7 +781,7 @@ class _TruncateStatisticsAfterTask(tasks.RecorderTask):
     table: type[recorder_db_schema.StatisticsShortTerm | recorder_db_schema.Statistics]
     future: asyncio.Future[None]
 
-    def run(self, instance: recorder.Recorder) -> None:
+    def run(self, instance: Recorder) -> None:
         _LOGGER.info(
             "[%s] Truncating statistics in table '%s' at and after %s",
             self.statistic_id,
@@ -808,7 +814,7 @@ class _TruncateStatisticsAfterTask(tasks.RecorderTask):
                     )
         except Exception:
             # Re-queue if recorder is not ready
-            recorder_util.get_instance(self.hass).queue_task(self)
+            recorder_helper.get_instance(self.hass).queue_task(self)
             return
         _complete_future(self.future, None)
 
@@ -1092,7 +1098,7 @@ async def _generate_statistics_data(
     first_hour_start = hour_keys_sorted[0]
     existing_sum = 0.0
     try:
-        rec = recorder.get_instance(hass)
+        rec = recorder_helper.get_instance(hass)
         existing_stats = await rec.async_add_executor_job(
             statistics.statistic_during_period,
             hass,
@@ -1250,7 +1256,7 @@ async def _generate_statistics_data_cost(
     first_hour_start = hour_keys_sorted[0]
     existing_sum = 0.0
     try:
-        rec = recorder.get_instance(hass)
+        rec = recorder_helper.get_instance(hass)
         existing_stats = await rec.async_add_executor_job(
             statistics.statistic_during_period,
             hass,
@@ -1492,7 +1498,7 @@ async def _generate_daily_m3_statistics(
     first_start = datetime.datetime.combine(first_day, datetime.time.min, tzinfo=readings[0].start.tzinfo)
     existing_sum = 0.0
     try:
-        rec = recorder.get_instance(hass)
+        rec = recorder_helper.get_instance(hass)
         existing_stats = await rec.async_add_executor_job(
             statistics.statistic_during_period,
             hass,
@@ -1626,7 +1632,7 @@ async def update_gas_statistics(
                 first_start = rec_start
                 # Existing cumulative before first record
                 try:
-                    rec = recorder.get_instance(hass)
+                    rec = recorder_helper.get_instance(hass)
                     existing_stats = await rec.async_add_executor_job(
                         statistics.statistic_during_period,
                         hass,
@@ -1780,7 +1786,7 @@ async def update_gas_cost_statistics(
             if first_start is None:
                 first_start = rec_start
                 try:
-                    rec = recorder.get_instance(hass)
+                    rec = recorder_helper.get_instance(hass)
                     existing_stats = await rec.async_add_executor_job(
                         statistics.statistic_during_period,
                         hass,
@@ -1871,7 +1877,7 @@ async def update_gas_cost_statistics(
         # Existing cumulative cost before first day
         existing_sum = 0.0
         try:
-            rec = recorder.get_instance(hass)
+            rec = recorder_helper.get_instance(hass)
             existing_stats = await rec.async_add_executor_job(
                 statistics.statistic_during_period,
                 hass,
