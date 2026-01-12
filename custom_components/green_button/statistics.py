@@ -22,8 +22,8 @@ from homeassistant.components.recorder import db_schema as recorder_db_schema
 from homeassistant.components.recorder import statistics
 from homeassistant.components.recorder.statistics import async_import_statistics
 from homeassistant.components.recorder.models import StatisticData, StatisticMeanType
+from homeassistant.components.recorder.models.statistics import StatisticMetaData
 from homeassistant.components.recorder import tasks
-from homeassistant.components.recorder import util as recorder_util
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import recorder as recorder_helper
@@ -144,9 +144,9 @@ class _SensorStatRecord:
 
     def to_statistics_data(
         self, period: Literal["5minute", "hour"]
-    ) -> statistics.StatisticData:
+    ) -> StatisticData:
         """Create a StatisticData from this record."""
-        return statistics.StatisticData(
+        return StatisticData(
             start=self.timestamp - _to_time_delta(period),
             last_reset=self.last_reset,
             state=float(self.state),
@@ -633,7 +633,7 @@ class _ComputeUpdatedPeriodStatisticsTask(tasks.RecorderTask):
 class _ImportStatisticsTask(tasks.RecorderTask):
     hass: HomeAssistant
     entity: GreenButtonEntity
-    samples: list[statistics.StatisticData]
+    samples: list[StatisticData]
     table: type[recorder_db_schema.StatisticsShortTerm | recorder_db_schema.Statistics]
     future: asyncio.Future[None]
 
@@ -664,8 +664,8 @@ class _ImportStatisticsTask(tasks.RecorderTask):
         cls,
         hass: HomeAssistant,
         entity: GreenButtonEntity,
-        samples: list[statistics.StatisticData],
-        table: type[statistics.Statistics | statistics.StatisticsShortTerm],
+        samples: list[StatisticData],
+        table: type[recorder_db_schema.Statistics | recorder_db_schema.StatisticsShortTerm],
     ) -> asyncio.Future[None]:
         """Queue the task and return a future that completes when the task completes."""
 
@@ -790,7 +790,7 @@ class _TruncateStatisticsAfterTask(tasks.RecorderTask):
         )
         try:
             # Use recorder session to delete rows at and after the cutoff
-            with recorder_util.session_scope(session=instance.get_session()) as session:
+            with recorder_helper.session_scope(session=instance.get_session()) as session:
                 # Find metadata_id for the statistic_id
                 meta = (
                     session.query(recorder_db_schema.StatisticsMeta)
@@ -938,6 +938,7 @@ class DataExtractor(Protocol):
         self, interval_reading: model.IntervalReading
     ) -> decimal.Decimal:
         """Get the native value from the IntervalReading."""
+        ...
 
 
 class DefaultDataExtractor:
@@ -980,7 +981,7 @@ class CostDataExtractor:
         return decimal.Decimal(cost * (10**power_multiplier))
 
 
-def create_metadata(entity: GreenButtonEntity) -> statistics.StatisticMetaData:
+def create_metadata(entity: GreenButtonEntity) -> StatisticMetaData:
     """Create the statistic metadata for the entity."""
     return {
         "mean_type": StatisticMeanType.NONE,
