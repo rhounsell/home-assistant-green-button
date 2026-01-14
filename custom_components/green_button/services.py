@@ -20,6 +20,7 @@ _LOGGER = logging.getLogger(__name__)
 
 SERVICE_IMPORT_ESPI_XML = "import_espi_xml"
 SERVICE_DELETE_STATISTICS = "delete_statistics"
+SERVICE_LOG_METER_READING_INTERVALS = "log_meter_reading_intervals"
 
 IMPORT_ESPI_XML_SCHEMA = vol.Schema(
     {
@@ -48,27 +49,32 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         for entry in entries:
             coordinator: GreenButtonCoordinator | None = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("coordinator")
             if not coordinator or not coordinator.data:
-                _LOGGER.info(f"Entry {entry.entry_id}: No coordinator or data available.")
+                _LOGGER.info("Entry %s: No coordinator or data available.", entry.entry_id)
                 continue
             usage_points = coordinator.data.get("usage_points", [])
             for up_idx, usage_point in enumerate(usage_points):
-                _LOGGER.info(f"UsagePoint {up_idx} (id={usage_point.id}): {len(usage_point.meter_readings)} meter readings.")
+                _LOGGER.info(
+                    "UsagePoint %s (id=%s): %s meter readings.",
+                    up_idx,
+                    usage_point.id,
+                    len(usage_point.meter_readings),
+                )
                 for mr_idx, meter_reading in enumerate(usage_point.meter_readings):
                     clean_id = meter_reading.id.split("/")[-1] if "/" in meter_reading.id else meter_reading.id
                     unique_id = f"{entry.entry_id}_{clean_id}"
                     entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
-                    _LOGGER.info(f"  MeterReading {mr_idx} (id={meter_reading.id}): mapped entity_id={entity_id}")
+                    _LOGGER.info("  MeterReading %s (id=%s): mapped entity_id=%s", mr_idx, meter_reading.id, entity_id)
                     for ib_idx, interval_block in enumerate(meter_reading.interval_blocks):
                         start = interval_block.start.isoformat()
                         end = (interval_block.start + interval_block.duration).isoformat()
-                        _LOGGER.info(f"    IntervalBlock {ib_idx}: start={start}, end={end}, readings={len(interval_block.interval_readings)}")
+                        _LOGGER.info(
+                            "    IntervalBlock %s: start=%s, end=%s, readings=%s",
+                            ib_idx,
+                            start,
+                            end,
+                            len(interval_block.interval_readings),
+                        )
 
-    # Register the diagnostic service
-    hass.services.async_register(
-        DOMAIN,
-        "log_meter_reading_intervals",
-        log_meter_reading_intervals_service,
-    )
 
     async def import_espi_xml_service(call: ServiceCall) -> None:
         """Handle the import_espi_xml service call."""
@@ -206,6 +212,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             schema=DELETE_STATISTICS_SCHEMA,
         )
 
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_LOG_METER_READING_INTERVALS,
+            log_meter_reading_intervals_service,
+        )
+
         _LOGGER.info("Green Button services registered successfully")
     except Exception as err:
         _LOGGER.error("Failed to register Green Button services: %s", err)
@@ -216,4 +228,5 @@ async def async_unload_services(hass: HomeAssistant) -> None:
     """Unload services for the Green Button integration."""
     hass.services.async_remove(DOMAIN, SERVICE_IMPORT_ESPI_XML)
     hass.services.async_remove(DOMAIN, SERVICE_DELETE_STATISTICS)
+    hass.services.async_remove(DOMAIN, SERVICE_LOG_METER_READING_INTERVALS)
     _LOGGER.info("Green Button services unloaded")

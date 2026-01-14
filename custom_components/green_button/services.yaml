@@ -34,32 +34,3 @@ import_espi_xml:
       selector:
         text:
           multiline: true
-
-log_statistics:
-  name: Log Statistics
-  description: Log Statistics
-  target:
-    entity:
-      domain: number
-      integration: green_button
-  fields:
-    start:
-      name: Start
-      description: Start
-      required: true
-      selector:
-        datetime:
-    end:
-      name: End
-      description: End
-      required: true
-      selector:
-        datetime:
-
-reset:
-  name: Reset
-  description: Reset
-  target:
-    entity:
-      domain: number
-      integration: green_button
