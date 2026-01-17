@@ -1163,7 +1163,7 @@ async def async_setup_entry(
         # Add all entities (new and reused) to Home Assistant
         if entities:
             async_add_entities(entities)
-            _LOGGER.info("Added %d Green Button sensor entities (%d newly created, %d reused)", 
+            _LOGGER.info("Added %d Green Button sensor entities (%d newly created, %d reused)",
                         len(entities), len(created_entities), len(entities) - len(created_entities))
 
             # After adding, schedule a state write for created entities only
