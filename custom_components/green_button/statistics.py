@@ -329,8 +329,16 @@ async def _get_all_existing_statistics(
         result: list[StatisticData] = []
         for stat in stats_list:
             stat_dict = cast(dict[str, Any], stat)
+            # Convert start time - it may be a datetime or a timestamp float
+            start_val = stat_dict["start"]
+            if isinstance(start_val, datetime.datetime):
+                start_dt = start_val
+            else:
+                # It's a Unix timestamp (float)
+                start_dt = datetime.datetime.fromtimestamp(start_val, tz=datetime.timezone.utc)
+            
             stat_data: StatisticData = {
-                "start": stat_dict["start"],
+                "start": start_dt,
                 "state": float(stat_dict.get("state", 0.0)),
                 "sum": float(stat_dict.get("sum", 0.0)),
             }
