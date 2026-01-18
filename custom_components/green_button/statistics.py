@@ -304,17 +304,22 @@ async def _get_all_existing_statistics(
     """
     try:
         rec = recorder_helper.get_instance(hass)
-        # Get all statistics from the beginning of time to now
-        raw_stats = await rec.async_add_executor_job(
-            statistics.statistics_during_period,
-            hass,
-            None,  # start_time (beginning of time)
-            None,  # end_time (now)
-            {statistic_id},
-            "hour",
-            {"sum", "state"},
-            None,  # units
-        )
+        
+        # Define a wrapper to call with keyword arguments
+        # Use a very wide date range to get all statistics
+        def _get_stats() -> dict[str, list[Any]]:
+            return statistics.statistics_during_period(
+                hass=hass,
+                start_time=datetime.datetime(2000, 1, 1, tzinfo=datetime.timezone.utc),  # earliest possible date
+                end_time=datetime.datetime(2100, 1, 1, tzinfo=datetime.timezone.utc),  # far future date
+                statistic_ids={statistic_id},
+                period="hour",
+                types={"sum", "state"},
+                units=None,
+            )
+        
+        # Get all statistics
+        raw_stats = await rec.async_add_executor_job(_get_stats)
         
         stats_list = raw_stats.get(statistic_id, [])
         if not stats_list:
