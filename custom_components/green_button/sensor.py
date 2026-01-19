@@ -279,8 +279,20 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         # which creates corrupted records (state/sum swap, massive consumption values).
         # The coordinator will handle state updates, and we manually manage statistics below.
 
-        # Update statistics for Energy Dashboard
+        # Update statistics for Energy Dashboard (run in background to not block startup)
         if hasattr(self, "hass") and self.hass is not None:
+            asyncio.create_task(
+                self._update_statistics_async(meter_reading),
+                name=f"green_button_stats_{self.entity_id}"
+            )
+            _LOGGER.debug(
+                "%s: Statistics update scheduled in background.",
+                self.entity_id,
+            )
+
+    async def _update_statistics_async(self, meter_reading: model.MeterReading) -> None:
+        """Update statistics in background without blocking."""
+        try:
             await statistics.update_statistics(
                 self.hass,
                 self,
@@ -289,6 +301,11 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
             )
             _LOGGER.info(
                 "%s: Statistics update completed.",
+                self.entity_id,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "%s: Statistics update failed.",
                 self.entity_id,
             )
 
@@ -496,13 +513,34 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
         # NOTE: Do NOT call async_write_ha_state() here!
         # See explanation in GreenButtonSensor class above.
 
-        # Update long-term statistics
+        # Update long-term statistics (run in background to not block startup)
         if hasattr(self, "hass") and self.hass is not None:
+            asyncio.create_task(
+                self._update_cost_statistics_async(meter_reading),
+                name=f"green_button_cost_stats_{self.entity_id}"
+            )
+            _LOGGER.debug(
+                "%s: Cost statistics update scheduled in background.",
+                self.entity_id,
+            )
+
+    async def _update_cost_statistics_async(self, meter_reading: model.MeterReading) -> None:
+        """Update cost statistics in background without blocking."""
+        try:
             await statistics.update_cost_statistics(
                 self.hass,
                 self,
                 statistics.CostDataExtractor(),
                 meter_reading,
+            )
+            _LOGGER.info(
+                "%s: Cost statistics update completed.",
+                self.entity_id,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "%s: Cost statistics update failed.",
+                self.entity_id,
             )
 
 
@@ -685,13 +723,40 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
             or self.coordinator.config_entry.data.get("gas_usage_allocation")
             or "daily_readings"
         )
-        await statistics.update_gas_statistics(
-            self.hass,
-            self,
-            meter_reading,
-            usage_summaries=summaries,
-            allocation_mode=usage_allocation_mode,
+        # Run statistics update in background to not block startup
+        asyncio.create_task(
+            self._update_gas_statistics_async(meter_reading, summaries, usage_allocation_mode),
+            name=f"green_button_gas_stats_{self.entity_id}"
         )
+        _LOGGER.debug(
+            "%s: Gas statistics update scheduled in background.",
+            self.entity_id,
+        )
+
+    async def _update_gas_statistics_async(
+        self,
+        meter_reading: model.MeterReading,
+        summaries: list[model.UsageSummary],
+        usage_allocation_mode: str
+    ) -> None:
+        """Update gas statistics in background without blocking."""
+        try:
+            await statistics.update_gas_statistics(
+                self.hass,
+                self,
+                meter_reading,
+                usage_summaries=summaries,
+                allocation_mode=usage_allocation_mode,
+            )
+            _LOGGER.info(
+                "%s: Gas statistics update completed.",
+                self.entity_id,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "%s: Gas statistics update failed.",
+                self.entity_id,
+            )
 
     async def update_sensor_and_statistics_from_summaries(self, usage_point: model.UsagePoint) -> None:
         """Update sensor and statistics when only UsageSummaries are available (no daily MeterReadings)."""
@@ -703,6 +768,7 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
         # See explanation in GreenButtonSensor class above.
 
         # Import gas statistics in monthly_increment mode (UsageSummaries only)
+        # Run in background to not block startup
         usage_allocation_mode = (
             self.coordinator.config_entry.options.get("gas_usage_allocation")
             or self.coordinator.config_entry.data.get("gas_usage_allocation")
@@ -714,7 +780,28 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
                 "Gas Sensor %s: Generating statistics from UsageSummaries (no daily readings)",
                 self.entity_id,
             )
-            # Call update_gas_statistics with no meter_reading (will use only UsageSummaries)
+            # Call update_gas_statistics in background - no meter reading available
+            asyncio.create_task(
+                self._update_gas_statistics_from_summaries_async(usage_point, usage_allocation_mode),
+                name=f"green_button_gas_stats_summaries_{self.entity_id}"
+            )
+            _LOGGER.debug(
+                "%s: Gas statistics update (from summaries) scheduled in background.",
+                self.entity_id,
+            )
+        else:
+            _LOGGER.warning(
+                "Gas Sensor %s: Cannot generate statistics - monthly_increment mode required for UsageSummary-only data",
+                self.entity_id,
+            )
+
+    async def _update_gas_statistics_from_summaries_async(
+        self,
+        usage_point: model.UsagePoint,
+        usage_allocation_mode: str
+    ) -> None:
+        """Update gas statistics from summaries in background without blocking."""
+        try:
             await statistics.update_gas_statistics(
                 self.hass,
                 self,
@@ -722,9 +809,13 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
                 usage_summaries=list(usage_point.usage_summaries),
                 allocation_mode=usage_allocation_mode,
             )
-        else:
-            _LOGGER.warning(
-                "Gas Sensor %s: Cannot generate statistics - monthly_increment mode required for UsageSummary-only data",
+            _LOGGER.info(
+                "%s: Gas statistics update (from summaries) completed.",
+                self.entity_id,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "%s: Gas statistics update (from summaries) failed.",
                 self.entity_id,
             )
 
@@ -842,19 +933,46 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
         # See explanation in GreenButtonSensor class above.
 
         # Update long-term statistics with pro-rated daily cost
+        # Run in background to not block startup
         summaries = self.coordinator.get_usage_summaries_for_meter_reading(self._meter_reading_id)
         allocation_mode = (
             self.coordinator.config_entry.options.get("gas_cost_allocation")
             or self.coordinator.config_entry.data.get("gas_cost_allocation")
             or "pro_rate_daily"
         )
-        await statistics.update_gas_cost_statistics(
-            self.hass,
-            self,
-            meter_reading,
-            summaries,
-            allocation_mode=allocation_mode,
+        asyncio.create_task(
+            self._update_gas_cost_statistics_async(meter_reading, summaries, allocation_mode),
+            name=f"green_button_gas_cost_stats_{self.entity_id}"
         )
+        _LOGGER.debug(
+            "%s: Gas cost statistics update scheduled in background.",
+            self.entity_id,
+        )
+
+    async def _update_gas_cost_statistics_async(
+        self,
+        meter_reading: model.MeterReading,
+        summaries: list[model.UsageSummary],
+        allocation_mode: str
+    ) -> None:
+        """Update gas cost statistics in background without blocking."""
+        try:
+            await statistics.update_gas_cost_statistics(
+                self.hass,
+                self,
+                meter_reading,
+                summaries,
+                allocation_mode=allocation_mode,
+            )
+            _LOGGER.info(
+                "%s: Gas cost statistics update completed.",
+                self.entity_id,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "%s: Gas cost statistics update failed.",
+                self.entity_id,
+            )
 
     async def update_sensor_and_statistics_from_summaries(self, usage_point: model.UsagePoint) -> None:
         """Update sensor and statistics when only UsageSummaries are available (no MeterReadings)."""
@@ -886,14 +1004,39 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
             allocation_mode,
         )
 
-        # Call update_gas_cost_statistics with no meter_reading (will use only UsageSummaries)
-        await statistics.update_gas_cost_statistics(
-            self.hass,
-            self,
-            None,  # No meter reading available
-            list(usage_point.usage_summaries),
-            allocation_mode=allocation_mode,
+        # Call update_gas_cost_statistics in background - no meter reading available
+        asyncio.create_task(
+            self._update_gas_cost_statistics_from_summaries_async(usage_point, allocation_mode),
+            name=f"green_button_gas_cost_stats_summaries_{self.entity_id}"
         )
+        _LOGGER.debug(
+            "%s: Gas cost statistics update (from summaries) scheduled in background.",
+            self.entity_id,
+        )
+
+    async def _update_gas_cost_statistics_from_summaries_async(
+        self,
+        usage_point: model.UsagePoint,
+        allocation_mode: str
+    ) -> None:
+        """Update gas cost statistics from summaries in background without blocking."""
+        try:
+            await statistics.update_gas_cost_statistics(
+                self.hass,
+                self,
+                None,  # No meter reading available
+                list(usage_point.usage_summaries),
+                allocation_mode=allocation_mode,
+            )
+            _LOGGER.info(
+                "%s: Gas cost statistics update (from summaries) completed.",
+                self.entity_id,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "%s: Gas cost statistics update (from summaries) failed.",
+                self.entity_id,
+            )
 
 
 async def async_setup_entry(
