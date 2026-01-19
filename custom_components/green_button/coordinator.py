@@ -153,31 +153,32 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.info("No coordinator data available for statistics update")
             return
         
-        # Log all meter readings that need statistics generated
-        total_meter_readings = 0
-        for usage_point in self.usage_points:
-            for meter_reading in usage_point.meter_readings:
-                total_meter_readings += 1
-                interval_count = sum(len(blk.interval_readings) for blk in meter_reading.interval_blocks)
-                if interval_count > 0:
-                    _LOGGER.info(
-                        "Will generate statistics for meter reading %s: %d total readings across %d interval blocks",
-                        meter_reading.id.split("/")[-1] if "/" in meter_reading.id else meter_reading.id,
-                        interval_count,
-                        len(meter_reading.interval_blocks),
-                    )
-                    for ib in meter_reading.interval_blocks:
-                        if ib.interval_readings:
-                            first = ib.interval_readings[0].start
-                            last = ib.interval_readings[-1].end
-                            _LOGGER.info(
-                                "  IntervalBlock: %s - %s (%d readings)",
-                                first.isoformat(),
-                                last.isoformat(),
-                                len(ib.interval_readings),
-                            )
-                        else:
-                            _LOGGER.info("  IntervalBlock: No readings")
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            # Log all meter readings that need statistics generated
+            total_meter_readings = 0
+            for usage_point in self.usage_points:
+                for meter_reading in usage_point.meter_readings:
+                    total_meter_readings += 1
+                    interval_count = sum(len(blk.interval_readings) for blk in meter_reading.interval_blocks)
+                    if interval_count > 0:
+                        _LOGGER.debug(
+                            "Will generate statistics for meter reading %s: %d total readings across %d interval blocks",
+                            meter_reading.id.split("/")[-1] if "/" in meter_reading.id else meter_reading.id,
+                            interval_count,
+                            len(meter_reading.interval_blocks),
+                        )
+                        for ib in meter_reading.interval_blocks:
+                            if ib.interval_readings:
+                                first = ib.interval_readings[0].start
+                                last = ib.interval_readings[-1].end
+                                _LOGGER.debug(
+                                    "  IntervalBlock: %s - %s (%d readings)",
+                                    first.isoformat(),
+                                    last.isoformat(),
+                                    len(ib.interval_readings),
+                                )
+                            else:
+                                _LOGGER.debug("  IntervalBlock: No readings")
         
         _LOGGER.info("Statistics update scheduled for %d meter readings", total_meter_readings)
 
