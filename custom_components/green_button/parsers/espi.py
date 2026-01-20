@@ -631,7 +631,7 @@ class EspiEntry:
                 except Exception as ex:
                     logger.warning("Failed to parse UsageSummary for %s: %s", self_href, ex)
 
-        logger.info(
+        logger.debug(
             "UsagePoint %s found %d meter readings and %d usage summaries (after filtering)",
             self_href, len(meter_readings), len(usage_summaries)
         )
