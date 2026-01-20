@@ -1054,6 +1054,8 @@ async def async_setup_entry(
 
     # Track only entities created by this setup so we can safely write state afterwards
     created_entities: list[SensorEntity] = []
+    # Track entities that have been added to HA to avoid re-adding reused entities on subsequent coordinator updates
+    entities_added_to_hass: bool = False
 
     async def _async_update_created_entities() -> None:
         """Write state for newly created entities after they are added to HA."""
@@ -1303,15 +1305,32 @@ async def async_setup_entry(
                     else:
                         _LOGGER.warning("Cost sensor has no unique_id, skipping creation")
 
-        # Add all entities (new and reused) to Home Assistant
-        if entities:
+        # Add entities to Home Assistant only if this is the first time (initial setup)
+        # or if there are newly created entities. On subsequent coordinator updates,
+        # skip async_add_entities if all entities are reused (to avoid duplicate ID errors).
+        nonlocal entities_added_to_hass
+        if not entities_added_to_hass and entities:
+            # First time: add all entities (new and reused)
             async_add_entities(entities)
+            entities_added_to_hass = True
             _LOGGER.info("Added %d Green Button sensor entities (%d newly created, %d reused)",
                         len(entities), len(created_entities), len(entities) - len(created_entities))
 
             # After adding, schedule a state write for created entities only
             # (reused entities will have state written via async_added_to_hass or coordinator updates)
             _schedule_hass_task_from_any_thread(hass, _async_update_created_entities())
+        elif entities and created_entities:
+            # Subsequent updates: only add if there are newly created entities
+            async_add_entities(created_entities)
+            _LOGGER.info("Added %d new Green Button sensor entities on data import",
+                        len(created_entities))
+
+            # Schedule state write for these new entities
+            _schedule_hass_task_from_any_thread(hass, _async_update_created_entities())
+        elif entities:
+            # All entities are reused, no need to call async_add_entities
+            _LOGGER.debug("All %d entities already exist in Home Assistant, skipping async_add_entities",
+                         len(entities))
 
     # Create initial entities (if any data is already available)
     _async_create_entities()
