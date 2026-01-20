@@ -102,7 +102,7 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         available = self.coordinator.last_update_success and (
             self.coordinator.data is not None
         )
-        _LOGGER.info(
+        _LOGGER.debug(
             "Sensor %s: available property evaluated to %s (last_update_success=%s, data is not None=%s)",
             getattr(self, 'entity_id', self._attr_unique_id),
             available,
@@ -382,7 +382,7 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
         available = self.coordinator.last_update_success and (
             self.coordinator.data is not None
         )
-        _LOGGER.info(
+        _LOGGER.debug(
             "Cost Sensor %s: available property evaluated to %s (last_update_success=%s, data is not None=%s)",
             getattr(self, 'entity_id', self._attr_unique_id),
             available,
@@ -437,7 +437,7 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
         # Initialize entity state to make it "available" for Energy Dashboard
         # native_value property will return _cached_native_value (initialized to 0.0)
         self.async_write_ha_state()
-        _LOGGER.info(
+        _LOGGER.debug(
             "Cost Sensor %s: Initialized state to make entity available",
             self.entity_id,
         )
@@ -620,7 +620,7 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
         # Initialize entity state to make it "available" for Energy Dashboard
         # native_value property will return _cached_native_value (initialized to 0.0)
         self.async_write_ha_state()
-        _LOGGER.info(
+        _LOGGER.debug(
             "Gas Sensor %s: Initialized state to make entity available",
             self.entity_id,
         )
@@ -886,7 +886,7 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
         # Initialize entity state to make it "available" for Energy Dashboard
         # native_value property will return a value (defaults to 0.0 when no summaries)
         self.async_write_ha_state()
-        _LOGGER.info(
+        _LOGGER.debug(
             "Gas Cost Sensor %s: Initialized state to make entity available",
             self.entity_id,
         )

@@ -199,14 +199,14 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         try:
-            _LOGGER.info("[RESTART] Loading stored XML data from config entry")
+            _LOGGER.debug("[RESTART] Loading stored XML data from config entry")
             usage_points = await self.hass.async_add_executor_job(
                 espi.parse_xml, xml_data
             )
             self.usage_points = usage_points or []
             self.async_set_updated_data({"usage_points": self.usage_points})
             self.last_update_success = True
-            _LOGGER.info(
+            _LOGGER.debug(
                 "[RESTART] Successfully loaded %d usage points from stored data. last_update_success set to True.",
                 len(self.usage_points),
             )
