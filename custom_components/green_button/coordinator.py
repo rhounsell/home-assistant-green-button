@@ -80,26 +80,27 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 total_readings,
             )
             # Log interval block date ranges for each new usage point and meter reading
-            for up in new_usage_points:
-                for mr in up.meter_readings:
-                    for ib in mr.interval_blocks:
-                        if ib.interval_readings:
-                            start = ib.interval_readings[0].start
-                            end = ib.interval_readings[-1].end
-                            _LOGGER.info(
-                                "[IMPORT] UsagePoint %s MeterReading %s IntervalBlock: %s - %s (%d readings)",
-                                up.id,
-                                mr.id,
-                                start,
-                                end,
-                                len(ib.interval_readings),
-                            )
-                        else:
-                            _LOGGER.info(
-                                "[IMPORT] UsagePoint %s MeterReading %s IntervalBlock: No readings",
-                                up.id,
-                                mr.id,
-                            )
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                for up in new_usage_points:
+                    for mr in up.meter_readings:
+                        for ib in mr.interval_blocks:
+                            if ib.interval_readings:
+                                start = ib.interval_readings[0].start
+                                end = ib.interval_readings[-1].end
+                                _LOGGER.debug(
+                                    "[IMPORT] UsagePoint %s MeterReading %s IntervalBlock: %s - %s (%d readings)",
+                                    up.id,
+                                    mr.id,
+                                    start,
+                                    end,
+                                    len(ib.interval_readings),
+                                )
+                            else:
+                                _LOGGER.debug(
+                                    "[IMPORT] UsagePoint %s MeterReading %s IntervalBlock: No readings",
+                                    up.id,
+                                    mr.id,
+                                )
 
             # Merge new data with existing data (combine multiple imports)
             self._merge_usage_points(new_usage_points)
@@ -225,7 +226,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         if ib.interval_readings:
                             start = ib.interval_readings[0].start
                             end = ib.interval_readings[-1].end
-                            _LOGGER.info(
+                            _LOGGER.debug(
                                 "[MERGE] UsagePoint %s MeterReading %s IntervalBlock: %s - %s (%d readings)",
                                 up.id,
                                 mr.id,
@@ -234,7 +235,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 len(ib.interval_readings),
                             )
                         else:
-                            _LOGGER.info(
+                            _LOGGER.debug(
                                 "[MERGE] UsagePoint %s MeterReading %s IntervalBlock: No readings",
                                 up.id,
                                 mr.id,
