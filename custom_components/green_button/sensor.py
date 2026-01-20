@@ -166,7 +166,7 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         """When entity is added to hass, re-calculate state from merged data and trigger statistics generation."""
         await super().async_added_to_hass()
 
-        _LOGGER.info(
+        _LOGGER.debug(
             "Sensor %s: Entity added to Home Assistant",
             self.entity_id,
         )
@@ -267,8 +267,8 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         else:
             self._attr_native_value = 0
 
-        _LOGGER.info(
-            "🔍 [DIAGNOSTIC] %s: Setting sensor state to %.2f kWh (cumulative).",
+        _LOGGER.debug(
+            "🔍 %s: Setting sensor state to %.2f kWh (cumulative).",
             self.entity_id,
             self._attr_native_value,
         )
@@ -429,7 +429,7 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
 
-        _LOGGER.info(
+        _LOGGER.debug(
             "Cost Sensor %s: Entity added to Home Assistant",
             self.entity_id,
         )
@@ -612,7 +612,7 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
 
-        _LOGGER.info(
+        _LOGGER.debug(
             "Gas Sensor %s: Entity added to Home Assistant",
             self.entity_id,
         )
@@ -878,7 +878,7 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
 
-        _LOGGER.info(
+        _LOGGER.debug(
             "Gas Cost Sensor %s: Entity added to Home Assistant",
             self.entity_id,
         )

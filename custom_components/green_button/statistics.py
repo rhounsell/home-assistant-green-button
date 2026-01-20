@@ -422,7 +422,7 @@ def _merge_statistics_with_out_of_order_support(
     baseline_stat = _find_last_statistic_before(existing_stats, first_new_start)
     baseline_sum = baseline_stat.get("sum", 0.0) if baseline_stat else 0.0
     
-    _LOGGER.info(
+    _LOGGER.debug(
         "Baseline sum before new data: %.3f (from %s)",
         baseline_sum,
         baseline_stat["start"] if baseline_stat else "start",
@@ -443,7 +443,7 @@ def _merge_statistics_with_out_of_order_support(
             stats_after.append(stat)
         # Stats in between are discarded (will be replaced by new_stats)
     
-    _LOGGER.info(
+    _LOGGER.debug(
         "Existing statistics: %d before, %d after new data range",
         len(stats_before),
         len(stats_after),
@@ -1618,7 +1618,7 @@ async def update_statistics(
         # Import historical statistics using the proper Home Assistant API
         try:
             async_import_statistics(hass, metadata, statistics_data)
-            _LOGGER.info(
+            _LOGGER.debug(
                 "✅ Successfully called async_import_statistics with %d records for entity %s",
                 len(statistics_data),
                 entity.entity_id,
