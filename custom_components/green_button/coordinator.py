@@ -180,7 +180,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             else:
                                 _LOGGER.debug("  IntervalBlock: No readings")
         
-        _LOGGER.info("Statistics update scheduled for %d meter readings", total_meter_readings)
+            _LOGGER.info("Statistics update scheduled for %d meter readings", total_meter_readings)
 
     def has_existing_entities(self) -> bool:
         """Check if entities already exist for the current data."""
