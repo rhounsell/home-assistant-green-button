@@ -412,7 +412,7 @@ def _merge_statistics_with_out_of_order_support(
     first_new_start = new_stats[0]["start"]
     last_new_start = new_stats[-1]["start"]
     
-    _LOGGER.info(
+    _LOGGER.debug(
         "Merging statistics: new data range %s to %s",
         first_new_start,
         last_new_start,
@@ -1322,7 +1322,7 @@ async def _generate_statistics_data(
     )
 
     # Log summary of what was processed
-    _LOGGER.info(
+    _LOGGER.debug(
         "Generated %d hourly statistics for entity %s (skipped %d partial hours, existing: %d, merged result: %d)",
         len(new_statistics_data),
         entity.entity_id,
@@ -1571,7 +1571,7 @@ async def update_statistics(
     metadata = create_metadata(entity)
 
     # Generate statistics data from meter reading
-    _LOGGER.info(
+    _LOGGER.debug(
         "Starting statistics generation for entity %s, meter reading %s",
         entity.entity_id,
         meter_reading.id,
