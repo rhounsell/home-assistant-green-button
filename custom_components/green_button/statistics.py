@@ -466,23 +466,15 @@ def _merge_statistics_with_out_of_order_support(
         }
         result.append(stat_data)
     
-    # 3. Recalculate stats after the new data with updated baseline
-    # The new baseline is the last sum from the merged new data
+    # 3. Discard all statistics after the new data
+    # When importing new data, we should not preserve old statistics that extend beyond
+    # the new data range. This prevents "ghost" statistics from old imports carrying forward.
     if stats_after:
         _LOGGER.info(
-            "Recalculating %d statistics after new data with baseline sum %.3f",
+            "Discarding %d statistics that extend beyond the new data range (after %s)",
             len(stats_after),
-            cumulative,
+            last_new_start,
         )
-        
-        for stat in stats_after:
-            cumulative += stat.get("state", 0.0)
-            stat_data: StatisticData = {
-                "start": stat["start"],
-                "state": float(stat.get("state", 0.0)),
-                "sum": cumulative,
-            }
-            result.append(stat_data)
     
     return result
 
