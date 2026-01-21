@@ -1361,7 +1361,17 @@ async def _generate_statistics_data_cost(
     ]
 
     if not all_readings:
+        _LOGGER.warning(
+            "No interval readings found in meter reading %s for cost statistics",
+            meter_reading.id,
+        )
         return []
+
+    _LOGGER.debug(
+        "Cost statistics: Collected %d interval readings for meter reading %s",
+        len(all_readings),
+        meter_reading.id,
+    )
 
     # Sort readings by start time
     all_readings.sort(key=lambda r: r.start)
@@ -1370,6 +1380,13 @@ async def _generate_statistics_data_cost(
     last_end: datetime.datetime = max(r.end for r in all_readings)
     cutoff_end: datetime.datetime = last_end.replace(minute=0, second=0, microsecond=0)
     include_trailing_hour = last_end == cutoff_end
+    
+    _LOGGER.debug(
+        "Cost statistics: Last end time = %s, cutoff_end = %s, include_trailing_hour = %s",
+        last_end,
+        cutoff_end,
+        include_trailing_hour,
+    )
 
     # Build hourly buckets with coverage tracking
     hourly_cost: dict[datetime.datetime, decimal.Decimal] = {}
@@ -1427,7 +1444,16 @@ async def _generate_statistics_data_cost(
     # Build new statistics for FULLY covered hours only (3600s)
     hour_keys_sorted = sorted(hourly_cost.keys())
     if not hour_keys_sorted:
+        _LOGGER.warning(
+            "Cost statistics: No hourly buckets created for entity %s",
+            entity.entity_id,
+        )
         return []
+
+    _LOGGER.debug(
+        "Cost statistics: Created %d hourly cost buckets before filtering",
+        len(hour_keys_sorted),
+    )
 
     new_statistics_data: list[StatisticData] = []
     skipped_count = 0
@@ -1435,7 +1461,7 @@ async def _generate_statistics_data_cost(
         coverage = hourly_coverage_seconds.get(hour_start, 0)
         if coverage < 3600:
             _LOGGER.debug(
-                "Skipping partial hour starting %s (covered %ds)",
+                "Cost statistics: Skipping partial hour starting %s (covered %ds)",
                 hour_start,
                 coverage,
             )
@@ -1448,6 +1474,13 @@ async def _generate_statistics_data_cost(
             "sum": 0.0,  # Will be calculated during merge
         }
         new_statistics_data.append(stat_record)
+
+    _LOGGER.info(
+        "Cost statistics: Generated %d complete hourly records (skipped %d partial hours) for entity %s",
+        len(new_statistics_data),
+        skipped_count,
+        entity.entity_id,
+    )
 
     if not new_statistics_data:
         _LOGGER.info(
