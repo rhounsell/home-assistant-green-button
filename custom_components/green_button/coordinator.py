@@ -48,23 +48,53 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.usage_points = usage_points or []
             return {"usage_points": usage_points or []}
 
-    async def async_add_xml_data(self, xml_data: str, store_in_config: bool = True) -> None:
+    async def async_add_xml_data(self, xml_data: str, store_in_config: bool = True, label: str | None = None) -> None:
         """Add new Green Button XML data and update entities.
         
         Args:
             xml_data: The XML data to parse and add
-            store_in_config: If True, store the XML in config entry (for initial setup).
+            store_in_config: If True, store the XML in config entry.
                            If False, just merge the data without persisting (for service imports).
+            label: Optional label for this XML (e.g., 'electricity', 'gas'). Used for multi-XML storage.
+                  If not provided, a label will be auto-generated from the XML content.
         """
         try:
-            # Only store XML in config entry if requested (e.g., during initial setup)
-            # For service imports, we don't store to avoid triggering a reload
-            if store_in_config:
-                data_updates = dict(self.config_entry.data)
-                data_updates["xml"] = xml_data
+            # Migrate legacy single XML storage to multi-XML storage
+            data_updates = dict(self.config_entry.data)
+            if "xml" in data_updates and "stored_xmls" not in data_updates:
+                _LOGGER.info("Migrating legacy single XML storage to multi-XML format")
+                legacy_xml = data_updates.pop("xml")
+                data_updates["stored_xmls"] = [{"label": "imported_data", "xml": legacy_xml}]
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=data_updates
                 )
+
+            # Store XML in config entry if requested (for persistence across restarts)
+            if store_in_config:
+                # Generate label if not provided
+                if label is None:
+                    # Try to extract a meaningful label from XML content (e.g., utility name)
+                    # For now, use a timestamp-based label
+                    import datetime
+                    label = f"import_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                
+                data_updates = dict(self.config_entry.data)
+                stored_xmls = data_updates.get("stored_xmls", [])
+                
+                # Check if an XML with this label already exists and update it, otherwise append
+                existing_index = next((i for i, entry in enumerate(stored_xmls) if entry.get("label") == label), None)
+                if existing_index is not None:
+                    _LOGGER.info("Updating existing stored XML with label '%s'", label)
+                    stored_xmls[existing_index] = {"label": label, "xml": xml_data}
+                else:
+                    _LOGGER.info("Adding new stored XML with label '%s'", label)
+                    stored_xmls.append({"label": label, "xml": xml_data})
+                
+                data_updates["stored_xmls"] = stored_xmls
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=data_updates
+                )
+                _LOGGER.info("Stored %d XML(s) in config entry", len(stored_xmls))
 
             # Parse and update immediately
             usage_points = await self.hass.async_add_executor_job(
@@ -189,26 +219,58 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_load_stored_data(self) -> None:
         """Load XML data from config entry (used during startup)."""
-        xml_data = self.config_entry.data.get("xml")
-        if not xml_data:
-            _LOGGER.debug("No stored XML data found in config entry")
-            return
+        # Check for new multi-XML storage format first
+        stored_xmls = self.config_entry.data.get("stored_xmls", [])
+        
+        # Fall back to legacy single XML storage if multi-XML not found
+        if not stored_xmls:
+            xml_data = self.config_entry.data.get("xml")
+            if xml_data:
+                _LOGGER.debug("Found legacy single XML storage, will migrate on next save")
+                stored_xmls = [{"label": "imported_data", "xml": xml_data}]
+            else:
+                _LOGGER.debug("No stored XML data found in config entry")
+                return
 
         if self.has_existing_entities():
             _LOGGER.debug("Entities already exist, skipping XML re-parsing on restart")
             return
 
         try:
-            _LOGGER.debug("[RESTART] Loading stored XML data from config entry")
-            usage_points = await self.hass.async_add_executor_job(
-                espi.parse_xml, xml_data
-            )
-            self.usage_points = usage_points or []
+            _LOGGER.info("[RESTART] Loading %d stored XML(s) from config entry", len(stored_xmls))
+            
+            # Parse and merge all stored XMLs
+            for idx, xml_entry in enumerate(stored_xmls):
+                label = xml_entry.get("label", f"xml_{idx}")
+                xml_data = xml_entry.get("xml")
+                
+                if not xml_data:
+                    _LOGGER.warning("[RESTART] Skipping empty XML entry with label '%s'", label)
+                    continue
+                
+                _LOGGER.debug("[RESTART] Parsing stored XML with label '%s'", label)
+                usage_points = await self.hass.async_add_executor_job(
+                    espi.parse_xml, xml_data
+                )
+                
+                if usage_points:
+                    # Merge with existing data (if any from previous XMLs)
+                    if idx == 0:
+                        self.usage_points = usage_points
+                    else:
+                        self._merge_usage_points(usage_points)
+                    _LOGGER.debug(
+                        "[RESTART] Loaded %d usage points from XML '%s'",
+                        len(usage_points),
+                        label,
+                    )
+            
             self.async_set_updated_data({"usage_points": self.usage_points})
             self.last_update_success = True
-            _LOGGER.debug(
-                "[RESTART] Successfully loaded %d usage points from stored data. last_update_success set to True.",
+            _LOGGER.info(
+                "[RESTART] Successfully loaded %d total usage points from %d stored XML(s). last_update_success set to True.",
                 len(self.usage_points),
+                len(stored_xmls),
             )
         except (ValueError, OSError) as err:
             self.last_update_success = False
