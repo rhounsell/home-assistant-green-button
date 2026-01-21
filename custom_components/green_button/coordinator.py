@@ -118,14 +118,14 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         if ib.interval_readings:
                             start = ib.interval_readings[0].start
                             end = ib.interval_readings[-1].end
-                            _LOGGER.info(
+                            _LOGGER.debug(
                                 "  IntervalBlock: %s - %s (%d readings)",
                                 start,
                                 end,
                                 len(ib.interval_readings),
                             )
                         else:
-                            _LOGGER.info(
+                            _LOGGER.debug(
                                 "  IntervalBlock: No readings",
                             )
 
@@ -313,7 +313,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         if new_block.interval_readings:
                             start = new_block.interval_readings[0].start
                             end = new_block.interval_readings[-1].end
-                            _LOGGER.info(
+                            _LOGGER.debug(
                                 "[MERGE] MeterReading %s: Merged IntervalBlock %s - %s (%d readings)",
                                 existing_mr.id,
                                 start,
@@ -321,7 +321,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 len(new_block.interval_readings),
                             )
                         else:
-                            _LOGGER.info(
+                            _LOGGER.debug(
                                 "[MERGE] MeterReading %s: Merged IntervalBlock with no readings",
                                 existing_mr.id,
                             )
@@ -359,7 +359,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if ib.interval_readings:
                         start = ib.interval_readings[0].start
                         end = ib.interval_readings[-1].end
-                        _LOGGER.info(
+                        _LOGGER.debug(
                             "[MERGE] MeterReading %s: Added IntervalBlock %s - %s (%d readings)",
                             new_mr.id,
                             start,
@@ -367,7 +367,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             len(ib.interval_readings),
                         )
                     else:
-                        _LOGGER.info(
+                        _LOGGER.debug(
                             "[MERGE] MeterReading %s: Added IntervalBlock with no readings",
                             new_mr.id,
                         )
