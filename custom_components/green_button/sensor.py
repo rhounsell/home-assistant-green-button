@@ -153,9 +153,8 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
 
     @property
     def name(self) -> str:
-        """Return the entity name for statistics protocol."""
-        # Return the config entry title (name set when adding integration)
-        return self._attr_name or self.coordinator.config_entry.title
+        """Return the entity name (delegates to parent SensorEntity for automatic composition)."""
+        return super().name  # type: ignore[misc]
 
     @property
     def native_unit_of_measurement(self) -> str:
@@ -420,7 +419,8 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
 
     @property
     def name(self) -> str:
-        return self._attr_name or f"{self.coordinator.config_entry.title} Natural Gas Cost"
+        """Return the entity name (delegates to parent SensorEntity for automatic composition)."""
+        return super().name  # type: ignore[misc]
 
     @property
     def native_unit_of_measurement(self) -> str:
@@ -603,7 +603,8 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
 
     @property
     def name(self) -> str:
-        return self._attr_name or f"{self.coordinator.config_entry.title} Natural Gas Usage"
+        """Return the entity name (delegates to parent SensorEntity for automatic composition)."""
+        return super().name  # type: ignore[misc]
 
     @property
     def native_unit_of_measurement(self) -> str:
@@ -863,13 +864,8 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
 
     @property
     def name(self) -> str:
-        if self._attr_name:
-            return self._attr_name
-        # Fallback: replace "Electricity" with "Natural Gas" if present
-        base_name = self.coordinator.config_entry.title
-        if "Electricity" in base_name:
-            return base_name.replace("Electricity", "Natural Gas") + " Cost"
-        return f"{base_name} Gas Cost"
+        """Return the entity name (delegates to parent SensorEntity for automatic composition)."""
+        return super().name  # type: ignore[misc]
 
     @property
     def native_unit_of_measurement(self) -> str:
