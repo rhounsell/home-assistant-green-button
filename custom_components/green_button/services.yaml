@@ -52,8 +52,11 @@ clear_stored_xml:
   name: Clear Stored Green Button XML Data
   description: >
     Clear all stored Green Button XML data for a specific label, or all labels if not specified.
-    Use this to reset storage if it grows too large from multiple imports.
-    You will need to re-import your XML data after clearing.
+    Use this to reset saved storage in .storage/core.config_entries if it grows too large from
+    multiple imports. You will need to re-import your XML data after clearing. 
+    This service does not delete statistics from the recorder database. The energy dashboard history
+    remains intact. If you also want to clear the statistics from the database, you'd use the 
+    Delete Green Button Statistics service separately.
   fields:
     label:
       name: Label to Clear
