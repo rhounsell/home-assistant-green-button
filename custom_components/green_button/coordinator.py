@@ -53,64 +53,26 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         
         Args:
             xml_data: The XML data to parse and add
-            store_in_config: If True, store the XML in config entry.
+            store_in_config: If True, store the XML in a separate storage file.
                            If False, just merge the data without persisting (for service imports).
             label: Optional label for this XML (e.g., 'electricity', 'gas'). Used for multi-XML storage.
                   If not provided, a label will be auto-generated from the XML content.
         """
         try:
-            # Migrate legacy single XML storage to multi-XML storage
-            data_updates = dict(self.config_entry.data)
-            if "xml" in data_updates and "stored_xmls" not in data_updates:
-                _LOGGER.info("Migrating legacy single XML storage to multi-XML format")
-                legacy_xml = data_updates.pop("xml")
-                data_updates["stored_xmls"] = [{"label": "imported_data", "xmls": [legacy_xml]}]
-                self.hass.config_entries.async_update_entry(
-                    self.config_entry, data=data_updates
-                )
-
-            # Store XML in config entry if requested (for persistence across restarts)
+            # Store XML in separate storage file if requested (for persistence across restarts)
+            # NOTE: We use a separate Store instance instead of config entry data because
+            # config entries use delayed writes and are not designed for multi-MB data storage.
             if store_in_config:
+                from .xml_storage import async_get_xml_storage
+                
                 # Generate label if not provided
                 if label is None:
-                    # Try to extract a meaningful label from XML content (e.g., utility name)
-                    # For now, use a timestamp-based label
                     import datetime
                     label = f"import_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 
-                data_updates = dict(self.config_entry.data)
-                stored_xmls = data_updates.get("stored_xmls", [])
-                
-                # Migrate old format entries (single "xml" key) to new format ("xmls" list)
-                for entry in stored_xmls:
-                    if "xml" in entry and "xmls" not in entry:
-                        entry["xmls"] = [entry.pop("xml")]
-                
-                # Check if an entry with this label already exists
-                existing_index = next((i for i, entry in enumerate(stored_xmls) if entry.get("label") == label), None)
-                if existing_index is not None:
-                    # Merge with existing: append new XML to the list for this label
-                    existing_entry = stored_xmls[existing_index]
-                    existing_xmls = existing_entry.get("xmls", [])
-                    # Also handle old format
-                    if "xml" in existing_entry and not existing_xmls:
-                        existing_xmls = [existing_entry["xml"]]
-                    existing_xmls.append(xml_data)
-                    stored_xmls[existing_index] = {"label": label, "xmls": existing_xmls}
-                    _LOGGER.info(
-                        "Merged new XML into existing label '%s' (now %d XMLs stored for this label)",
-                        label,
-                        len(existing_xmls),
-                    )
-                else:
-                    _LOGGER.info("Adding new stored XML with label '%s'", label)
-                    stored_xmls.append({"label": label, "xmls": [xml_data]})
-                
-                data_updates["stored_xmls"] = stored_xmls
-                self.hass.config_entries.async_update_entry(
-                    self.config_entry, data=data_updates
-                )
-                _LOGGER.info("Stored %d label(s) in config entry", len(stored_xmls))
+                # Use dedicated XML storage (immediate save for reliability)
+                xml_storage = await async_get_xml_storage(self.hass, self.config_entry.entry_id)
+                await xml_storage.async_add_xml(xml_data, label)
 
             # Parse and update immediately
             usage_points = await self.hass.async_add_executor_job(
@@ -234,26 +196,39 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return bool(self.usage_points)
 
     async def async_load_stored_data(self) -> None:
-        """Load XML data from config entry (used during startup)."""
-        # Check for new multi-XML storage format first
-        stored_xmls = self.config_entry.data.get("stored_xmls", [])
+        """Load XML data from storage file (used during startup).
         
-        # Fall back to legacy single XML storage if multi-XML not found
+        Uses a separate Store instance instead of config entry data because
+        config entries use delayed writes and are not designed for multi-MB data.
+        Falls back to config entry data for backwards compatibility.
+        """
+        from .xml_storage import async_get_xml_storage
+        
+        # Try to load from new separate storage file first
+        xml_storage = await async_get_xml_storage(self.hass, self.config_entry.entry_id)
+        stored_xmls = xml_storage.get_stored_xmls()
+        
+        # Fall back to config entry storage for backwards compatibility
         if not stored_xmls:
-            xml_data = self.config_entry.data.get("xml")
-            if xml_data:
-                _LOGGER.debug("Found legacy single XML storage, will migrate on next save")
-                stored_xmls = [{"label": "imported_data", "xml": xml_data}]
-            else:
-                _LOGGER.debug("No stored XML data found in config entry")
-                return
+            stored_xmls = self.config_entry.data.get("stored_xmls", [])
+            
+            # Fall back to legacy single XML storage if multi-XML not found
+            if not stored_xmls:
+                xml_data = self.config_entry.data.get("xml")
+                if xml_data:
+                    _LOGGER.debug("Found legacy single XML storage, will migrate on next save")
+                    stored_xmls = [{"label": "imported_data", "xml": xml_data}]
+        
+        if not stored_xmls:
+            _LOGGER.debug("No stored XML data found in storage or config entry")
+            return
 
         if self.has_existing_entities():
             _LOGGER.debug("Entities already exist, skipping XML re-parsing on restart")
             return
 
         try:
-            _LOGGER.info("[RESTART] Loading %d stored label(s) from config entry", len(stored_xmls))
+            _LOGGER.info("[RESTART] Loading %d stored label(s) from XML storage", len(stored_xmls))
             
             # Log labels of stored XMLs for debugging
             stored_labels = [
