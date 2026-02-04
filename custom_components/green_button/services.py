@@ -85,24 +85,31 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                         )
 
     async def log_stored_xmls_service(call: ServiceCall) -> None:
-        """Log information about stored XMLs in config entry."""
+        """Log information about stored XMLs in storage files."""
         from .parsers import espi
+        from .xml_storage import async_get_xml_storage
         
         entries = list(hass.config_entries.async_entries(DOMAIN))
         for entry in entries:
             _LOGGER.info("=" * 60)
             _LOGGER.info("Config Entry: %s (entry_id: %s)", entry.title, entry.entry_id)
             
-            stored_xmls = entry.data.get("stored_xmls", [])
-            legacy_xml = entry.data.get("xml")
+            # Load from new separate storage file
+            xml_storage = await async_get_xml_storage(hass, entry.entry_id)
+            stored_xmls = xml_storage.get_stored_xmls()
             
-            if not stored_xmls and not legacy_xml:
+            # Fall back to config entry for backwards compatibility
+            if not stored_xmls:
+                stored_xmls = entry.data.get("stored_xmls", [])
+                legacy_xml = entry.data.get("xml")
+                
+                if legacy_xml and not stored_xmls:
+                    _LOGGER.info("  Found legacy single XML storage (not yet migrated)")
+                    stored_xmls = [{"label": "legacy", "xmls": [legacy_xml]}]
+            
+            if not stored_xmls:
                 _LOGGER.info("  No stored XMLs found")
                 continue
-            
-            if legacy_xml and not stored_xmls:
-                _LOGGER.info("  Found legacy single XML storage (not yet migrated)")
-                stored_xmls = [{"label": "legacy", "xmls": [legacy_xml]}]
             
             _LOGGER.info("  Found %d label(s)", len(stored_xmls))
             
@@ -280,6 +287,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def clear_stored_xml_service(call: ServiceCall) -> None:
         """Handle the clear_stored_xml service call."""
+        from .xml_storage import async_get_xml_storage
+        
         label_to_clear = call.data.get("label")
         
         entries = list(hass.config_entries.async_entries(DOMAIN))
@@ -289,22 +298,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             return
         
         for entry in entries:
-            data_updates = dict(entry.data)
-            stored_xmls = data_updates.get("stored_xmls", [])
-            
-            if not stored_xmls:
-                _LOGGER.info("No stored XMLs found for entry %s", entry.entry_id)
-                continue
+            # Use new separate storage file
+            xml_storage = await async_get_xml_storage(hass, entry.entry_id)
+            removed_count, remaining_count = await xml_storage.async_clear_label(label_to_clear)
             
             if label_to_clear:
-                # Clear specific label
-                original_count = len(stored_xmls)
-                stored_xmls = [x for x in stored_xmls if x.get("label") != label_to_clear]
-                removed_count = original_count - len(stored_xmls)
-                
                 if removed_count > 0:
-                    data_updates["stored_xmls"] = stored_xmls
-                    hass.config_entries.async_update_entry(entry, data=data_updates)
                     _LOGGER.info(
                         "✅ Cleared stored XML with label '%s' from entry %s",
                         label_to_clear,
@@ -317,15 +316,14 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                         entry.title,
                     )
             else:
-                # Clear all
-                label_count = len(stored_xmls)
-                data_updates["stored_xmls"] = []
-                hass.config_entries.async_update_entry(entry, data=data_updates)
-                _LOGGER.info(
-                    "✅ Cleared ALL %d stored XML label(s) from entry %s",
-                    label_count,
-                    entry.title,
-                )
+                if removed_count > 0:
+                    _LOGGER.info(
+                        "✅ Cleared ALL %d stored XML label(s) from entry %s",
+                        removed_count,
+                        entry.title,
+                    )
+                else:
+                    _LOGGER.info("No stored XMLs found for entry %s", entry.entry_id)
 
     # Register services
     try:
