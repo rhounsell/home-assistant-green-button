@@ -1098,17 +1098,16 @@ async def async_setup_entry(
             for usage_point in coordinator.usage_points:
                 is_gas = usage_point.sensor_device_class == SensorDeviceClass.GAS
 
-                # Check if this is a gas usage point with only UsageSummaries (no daily meter readings)
-                # This happens with some Enbridge gas data that only provides monthly billing summaries
-                if is_gas and not usage_point.meter_readings and usage_point.usage_summaries:
-                    # Check if monthly_increment mode is enabled
+                # For gas usage points, check the allocation mode setting first
+                if is_gas:
                     allocation_mode = (
                         entry.options.get("gas_usage_allocation")
                         or entry.data.get("gas_usage_allocation")
                         or "daily_readings"
                     )
 
-                    if allocation_mode == "monthly_increment":
+                    # If monthly_increment mode is enabled, use UsageSummaries regardless of meter readings availability
+                    if allocation_mode == "monthly_increment" and usage_point.usage_summaries:
                         # Use UsagePoint ID as the "meter_reading_id" - the sensor will handle this
                         gas_sensor = GreenButtonGasSensor(coordinator, usage_point.id)
                         if gas_sensor.unique_id:
@@ -1124,7 +1123,7 @@ async def async_setup_entry(
                                 )
                             else:
                                 _LOGGER.info(
-                                    "Created gas sensor %s for UsagePoint %s (UsageSummary only, no daily readings)",
+                                    "Created gas sensor %s for UsagePoint %s (using monthly increment mode with UsageSummaries)",
                                     gas_sensor.unique_id,
                                     usage_point.id,
                                 )
@@ -1148,7 +1147,7 @@ async def async_setup_entry(
                                 )
                             else:
                                 _LOGGER.info(
-                                    "Created gas cost sensor %s for UsagePoint %s (UsageSummary only, no daily readings)",
+                                    "Created gas cost sensor %s for UsagePoint %s (using monthly increment mode with UsageSummaries)",
                                     gas_cost_sensor.unique_id,
                                     usage_point.id,
                                 )
@@ -1157,89 +1156,101 @@ async def async_setup_entry(
                             entities.append(gas_cost_sensor)
                         else:
                             _LOGGER.warning("Gas cost sensor has no unique_id, skipping creation")
-                    else:
-                        _LOGGER.warning(
-                            "Gas UsagePoint %s has only UsageSummaries (no daily readings). "
-                            "Enable 'monthly_increment' mode in integration settings to use this data.",
-                            usage_point.id,
-                        )
-
-                # Gas meter readings: create exactly one pair per UsagePoint using a deterministic choice
-                if is_gas and usage_point.meter_readings:
-                    eligible_mrs = [
-                        mr
-                        for mr in usage_point.meter_readings
-                        if mr.interval_blocks
-                        and any(
-                            ir.value is not None
-                            for blk in mr.interval_blocks
-                            for ir in blk.interval_readings
-                        )
-                    ]
-
-                    if not eligible_mrs:
-                        _LOGGER.info(
-                            "Skipping gas UsagePoint %s because no meter reading has interval data",
-                            usage_point.id,
-                        )
+                        
+                        # Skip to next usage point since we handled this gas data with monthly mode
                         continue
 
-                    # Pick a deterministic meter reading so repeated calls don't create new pairs
-                    primary_mr = sorted(eligible_mrs, key=lambda mr: mr.id)[0]
+                    # Gas meter readings: create exactly one pair per UsagePoint using a deterministic choice
+                    # (only if NOT using monthly_increment mode)
+                    if usage_point.meter_readings:
+                        eligible_mrs = [
+                            mr
+                            for mr in usage_point.meter_readings
+                            if mr.interval_blocks
+                            and any(
+                                ir.value is not None
+                                for blk in mr.interval_blocks
+                                for ir in blk.interval_readings
+                            )
+                        ]
 
-                    gas_sensor = GreenButtonGasSensor(coordinator, primary_mr.id)
-                    if gas_sensor.unique_id:
-                        # Check if this entity already exists in the registry (to log if reused)
-                        existing_entity = entity_registry.async_get_entity_id(
-                            "sensor", DOMAIN, gas_sensor.unique_id
-                        )
-                        if existing_entity:
-                            _LOGGER.debug(
-                                "Reusing gas sensor %s (entity_id: %s)",
-                                gas_sensor.unique_id,
-                                existing_entity,
-                            )
-                        else:
+                        if not eligible_mrs:
                             _LOGGER.info(
-                                "Created gas sensor %s for meter reading %s (UsagePoint %s; %d eligible meter readings)",
-                                gas_sensor.unique_id,
-                                primary_mr.id,
-                                usage_point.id,
-                                len(eligible_mrs),
-                            )
-                            created_entities.append(gas_sensor)
-                        # Always add to entities list so it gets instantiated and added to HA
-                        entities.append(gas_sensor)
-                    else:
-                        _LOGGER.warning("Gas sensor has no unique_id, skipping creation")
-
-                    gas_cost_sensor = GreenButtonGasCostSensor(coordinator, primary_mr.id)
-                    if gas_cost_sensor.unique_id:
-                        # Check if this entity already exists in the registry (to log if reused)
-                        existing_entity = entity_registry.async_get_entity_id(
-                            "sensor", DOMAIN, gas_cost_sensor.unique_id
-                        )
-                        if existing_entity:
-                            _LOGGER.debug(
-                                "Reusing gas cost sensor %s (entity_id: %s)",
-                                gas_cost_sensor.unique_id,
-                                existing_entity,
-                            )
-                        else:
-                            _LOGGER.info(
-                                "Created gas cost sensor %s for meter reading %s (UsagePoint %s)",
-                                gas_cost_sensor.unique_id,
-                                primary_mr.id,
+                                "Skipping gas UsagePoint %s because no meter reading has interval data",
                                 usage_point.id,
                             )
-                            created_entities.append(gas_cost_sensor)
-                        # Always add to entities list so it gets instantiated and added to HA
-                        entities.append(gas_cost_sensor)
-                    else:
-                        _LOGGER.warning("Gas cost sensor has no unique_id, skipping creation")
+                            continue
 
-                    # Skip electricity creation for this usage point
-                    continue
+                        # Pick a deterministic meter reading so repeated calls don't create new pairs
+                        primary_mr = sorted(eligible_mrs, key=lambda mr: mr.id)[0]
+
+                        gas_sensor = GreenButtonGasSensor(coordinator, primary_mr.id)
+                        if gas_sensor.unique_id:
+                            # Check if this entity already exists in the registry (to log if reused)
+                            existing_entity = entity_registry.async_get_entity_id(
+                                "sensor", DOMAIN, gas_sensor.unique_id
+                            )
+                            if existing_entity:
+                                _LOGGER.debug(
+                                    "Reusing gas sensor %s (entity_id: %s)",
+                                    gas_sensor.unique_id,
+                                    existing_entity,
+                                )
+                            else:
+                                _LOGGER.info(
+                                    "Created gas sensor %s for meter reading %s (UsagePoint %s; %d eligible meter readings)",
+                                    gas_sensor.unique_id,
+                                    primary_mr.id,
+                                    usage_point.id,
+                                    len(eligible_mrs),
+                                )
+                                created_entities.append(gas_sensor)
+                            # Always add to entities list so it gets instantiated and added to HA
+                            entities.append(gas_sensor)
+                        else:
+                            _LOGGER.warning("Gas sensor has no unique_id, skipping creation")
+
+                        gas_cost_sensor = GreenButtonGasCostSensor(coordinator, primary_mr.id)
+                        if gas_cost_sensor.unique_id:
+                            # Check if this entity already exists in the registry (to log if reused)
+                            existing_entity = entity_registry.async_get_entity_id(
+                                "sensor", DOMAIN, gas_cost_sensor.unique_id
+                            )
+                            if existing_entity:
+                                _LOGGER.debug(
+                                    "Reusing gas cost sensor %s (entity_id: %s)",
+                                    gas_cost_sensor.unique_id,
+                                    existing_entity,
+                                )
+                            else:
+                                _LOGGER.info(
+                                    "Created gas cost sensor %s for meter reading %s (UsagePoint %s)",
+                                    gas_cost_sensor.unique_id,
+                                    primary_mr.id,
+                                    usage_point.id,
+                                )
+                                created_entities.append(gas_cost_sensor)
+                            # Always add to entities list so it gets instantiated and added to HA
+                            entities.append(gas_cost_sensor)
+                        else:
+                            _LOGGER.warning("Gas cost sensor has no unique_id, skipping creation")
+
+                        # Skip electricity creation for this usage point
+                        continue
+                    else:
+                        # Gas usage point has no meter readings and either no summaries or not using monthly mode
+                        if not usage_point.usage_summaries:
+                            _LOGGER.warning(
+                                "Skipping gas UsagePoint %s: no meter readings and no usage summaries",
+                                usage_point.id,
+                            )
+                        else:
+                            _LOGGER.warning(
+                                "Gas UsagePoint %s has UsageSummaries but monthly_increment mode is not enabled. "
+                                "Enable 'Single billing-period usage increment' in integration settings to use this data.",
+                                usage_point.id,
+                            )
+                        continue
 
                 # Electricity meter readings (or non-gas usage points)
                 # Create exactly one pair per UsagePoint to avoid duplicates on reload
