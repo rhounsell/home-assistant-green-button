@@ -3,6 +3,12 @@ log_meter_reading_intervals:
   description: >
     Log all Green Button meter readings, their interval block date ranges, and mapped sensor entities for all Green Button usage points. This diagnostic service writes detailed information to the Home Assistant log to help debug data import and entity mapping issues. No fields are required.
 
+log_stored_xmls:
+  name: Log Stored XML Info
+  description: >
+    Log information about stored XML data in the config entry, including labels and date ranges. 
+    This helps diagnose why data might be missing after restart.
+
 delete_statistics:
   name: Delete Green Button Statistics
   description: Delete all historical statistics for a Green Button sensor. This will clear the data from the Energy Dashboard. You will need to re-import your XML data after deletion.
@@ -19,7 +25,7 @@ delete_statistics:
 
 import_espi_xml:
   name: Import Green Button ESPI XML
-  description: Import usage data from an XML file or XML content in the ESPI atom format. Provide either xml_file_path OR xml, not both.
+  description: Import usage data from an XML file or XML content in the ESPI atom format. Provide either xml_file_path OR xml, not both. Using the same label will merge new data with existing data for that label.
   fields:
     xml_file_path:
       name: XML File Path
@@ -34,3 +40,25 @@ import_espi_xml:
       selector:
         text:
           multiline: true
+    label:
+      name: Storage Label
+      description: "Label to identify this data source (e.g., 'electricity' or 'gas'). Using the same label merges data. Different labels keep data separate."
+      required: false
+      example: "electricity"
+      selector:
+        text:
+
+clear_stored_xml:
+  name: Clear Stored XML Data
+  description: >
+    Clear all stored XML data for a specific label, or all labels if not specified.
+    Use this to reset storage if it grows too large from multiple imports.
+    You will need to re-import your XML data after clearing.
+  fields:
+    label:
+      name: Label to Clear
+      description: "The label to clear (e.g., 'electricity'). Leave empty to clear ALL stored XMLs."
+      required: false
+      example: "electricity"
+      selector:
+        text:

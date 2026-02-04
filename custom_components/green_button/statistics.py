@@ -380,10 +380,11 @@ def _merge_statistics_with_out_of_order_support(
     Algorithm:
     1. Determine the date range of new data
     2. Find the last existing statistic before the new data (baseline)
-    3. Remove all existing statistics that overlap with or come after the new data
-    4. Merge new data with baseline
-    5. If there are statistics after the new data range, recalculate them using
-       the last sum from the merged data as the new baseline
+    3. Remove existing statistics that overlap with the new data range (they get replaced)
+    4. Add new data with cumulative sums starting from baseline
+    5. Preserve statistics after the new data range, recalculating their sums
+       with the updated baseline (important for restart scenarios where stored XML
+       may not have the latest imported data)
     
     Args:
         existing_stats: List of existing StatisticData sorted by start time
@@ -471,16 +472,27 @@ def _merge_statistics_with_out_of_order_support(
         }
         result.append(stat_data)
     
-    # 3. Discard all statistics after the new data
-    # When importing new data, we should not preserve old statistics that extend beyond
-    # the new data range. This prevents "ghost" statistics from old imports carrying forward.
+    # 3. Preserve and recalculate statistics after the new data range
+    # This handles the case where we're importing older data and need to maintain
+    # newer statistics that were previously imported (e.g., after restart when
+    # stored XML might not have the latest data).
     if stats_after:
         _LOGGER.info(
-            "Discarding %d statistics for %s that extend beyond the new data range (after %s)",
+            "Preserving %d existing statistics for %s that are after the new data range (after %s). "
+            "Recalculating their sums with new baseline.",
             len(stats_after),
             statistic_id,
             last_new_start,
         )
+        # The last cumulative sum from new data becomes the baseline for stats_after
+        for stat in stats_after:
+            cumulative += stat.get("state", 0.0)
+            stat_data: StatisticData = {
+                "start": stat["start"],
+                "state": float(stat.get("state", 0.0)),
+                "sum": cumulative,
+            }
+            result.append(stat_data)
     
     return result
 
