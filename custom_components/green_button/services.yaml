@@ -4,7 +4,7 @@ log_meter_reading_intervals:
     Log all Green Button meter readings, their interval block date ranges, and mapped sensor entities for all Green Button usage points. This diagnostic service writes detailed information to the Home Assistant log to help debug data import and entity mapping issues. No fields are required.
 
 log_stored_xmls:
-  name: Log Stored XML Info
+  name: Log Stored Green Button XML Info
   description: >
     Log information about stored XML data in the config entry, including labels and date ranges. 
     This helps diagnose why data might be missing after restart.
@@ -49,9 +49,9 @@ import_espi_xml:
         text:
 
 clear_stored_xml:
-  name: Clear Stored XML Data
+  name: Clear Stored Green Button XML Data
   description: >
-    Clear all stored XML data for a specific label, or all labels if not specified.
+    Clear all stored Green Button XML data for a specific label, or all labels if not specified.
     Use this to reset storage if it grows too large from multiple imports.
     You will need to re-import your XML data after clearing.
   fields:
