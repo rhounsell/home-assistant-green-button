@@ -14,14 +14,12 @@ delete_statistics:
   description: Delete all historical statistics for a Green Button sensor. This will clear the data from the Energy Dashboard. You will need to re-import your XML data after deletion.
   fields:
     statistic_id:
-      name: Green Button Sensor
-      description: Select the Green Button sensor whose statistics you want to delete.
+      name: Statistic ID
+      description: "The statistic ID to delete (e.g., sensor.home_electricity_usage). Check Developer Tools → Statistics to find the ID."
       required: true
-      example: "sensor.home_electricity_consumption"
+      example: "sensor.home_electricity_usage"
       selector:
-        entity:
-          integration: green_button
-          domain: sensor
+        text:
 
 import_espi_xml:
   name: Import Green Button ESPI XML
