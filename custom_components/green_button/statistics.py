@@ -373,6 +373,7 @@ def _find_last_statistic_before(
 def _merge_statistics_with_out_of_order_support(
     existing_stats: list[StatisticData],
     new_stats: list[StatisticData],
+    statistic_id: str,
 ) -> list[StatisticData]:
     """Merge new statistics into existing statistics, handling out-of-order imports.
     
@@ -387,6 +388,7 @@ def _merge_statistics_with_out_of_order_support(
     Args:
         existing_stats: List of existing StatisticData sorted by start time
         new_stats: List of new StatisticData to merge, sorted by start time
+        statistic_id: The ID of the statistic being merged
         
     Returns:
         Complete list of StatisticData that should be imported
@@ -413,7 +415,8 @@ def _merge_statistics_with_out_of_order_support(
     last_new_start = new_stats[-1]["start"]
     
     _LOGGER.debug(
-        "Merging statistics: new data range %s to %s",
+        "Merging statistics for %s: new data range %s to %s",
+        statistic_id,
         first_new_start,
         last_new_start,
     )
@@ -423,7 +426,8 @@ def _merge_statistics_with_out_of_order_support(
     baseline_sum = baseline_stat.get("sum", 0.0) if baseline_stat else 0.0
     
     _LOGGER.debug(
-        "Baseline sum before new data: %.3f (from %s)",
+        "Baseline sum before new data for %s: %.3f (from %s)",
+        statistic_id,
         baseline_sum,
         baseline_stat["start"] if baseline_stat else "start",
     )
@@ -444,7 +448,8 @@ def _merge_statistics_with_out_of_order_support(
         # Stats in between are discarded (will be replaced by new_stats)
     
     _LOGGER.debug(
-        "Existing statistics: %d before, %d after new data range",
+        "Existing statistics for %s: %d before, %d after new data range",
+        statistic_id,
         len(stats_before),
         len(stats_after),
     )
@@ -471,8 +476,9 @@ def _merge_statistics_with_out_of_order_support(
     # the new data range. This prevents "ghost" statistics from old imports carrying forward.
     if stats_after:
         _LOGGER.info(
-            "Discarding %d statistics that extend beyond the new data range (after %s)",
+            "Discarding %d statistics for %s that extend beyond the new data range (after %s)",
             len(stats_after),
+            statistic_id,
             last_new_start,
         )
     
@@ -1319,6 +1325,7 @@ async def _generate_statistics_data(
     merged_stats = _merge_statistics_with_out_of_order_support(
         existing_stats,
         new_statistics_data,
+        entity.long_term_statistics_id,
     )
 
     # Log summary of what was processed
@@ -1500,6 +1507,7 @@ async def _generate_statistics_data_cost(
     merged_stats = _merge_statistics_with_out_of_order_support(
         existing_stats,
         new_statistics_data,
+        entity.long_term_statistics_id,
     )
 
     # Log summary of what was processed
@@ -1744,6 +1752,7 @@ async def _generate_daily_m3_statistics(
     merged_stats = _merge_statistics_with_out_of_order_support(
         existing_stats,
         new_statistics_data,
+        entity.long_term_statistics_id,
     )
 
     return merged_stats
@@ -2028,6 +2037,7 @@ async def update_gas_cost_statistics(
         records = _merge_statistics_with_out_of_order_support(
             existing_stats,
             new_statistics_data,
+            entity.long_term_statistics_id,
         )
 
     else:
@@ -2109,6 +2119,7 @@ async def update_gas_cost_statistics(
         records = _merge_statistics_with_out_of_order_support(
             existing_stats,
             new_statistics_data,
+            entity.long_term_statistics_id,
         )
 
     if not records:
