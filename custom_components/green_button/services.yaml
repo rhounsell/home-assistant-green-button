@@ -23,7 +23,11 @@ delete_statistics:
 
 import_espi_xml:
   name: Import Green Button ESPI XML
-  description: Import usage data from an XML file or XML content in the ESPI atom format. Provide either xml_file_path OR xml, not both. Using the same label will merge new data with existing data for that label.
+  description: >
+    Import usage data from an XML file or XML content in the ESPI atom format.
+    Provide either xml_file_path OR xml, not both.
+    The commodity type (electricity or gas) is auto-detected from the XML content.
+    Importing additional data of the same type accumulates with existing data.
   fields:
     xml_file_path:
       name: XML File Path
@@ -38,28 +42,25 @@ import_espi_xml:
       selector:
         text:
           multiline: true
-    label:
-      name: Storage Label
-      description: "Label to identify this data source (e.g., 'electricity' or 'gas'). Using the same label merges data. Different labels keep data separate."
-      required: false
-      example: "electricity"
-      selector:
-        text:
 
 clear_stored_xml:
   name: Clear Stored Green Button XML Data
   description: >
-    Clear all stored Green Button XML data for a specific label, or all labels if not specified.
-    Use this to reset saved storage in .storage/core.config_entries if it grows too large from
-    multiple imports. You will need to re-import your XML data after clearing. 
-    This service does not delete statistics from the recorder database. The energy dashboard history
-    remains intact. If you also want to clear the statistics from the database, you'd use the 
-    Delete Green Button Statistics service separately.
+    Clear stored Green Button XML data. Labels are auto-assigned based on commodity type:
+    'electricity' for electric data, 'gas' for gas data.
+    Use this to reset saved storage if it grows too large from multiple imports.
+    You will need to re-import your XML data after clearing.
+    This service does not delete statistics from the recorder database. The energy dashboard
+    history remains intact. Use Delete Green Button Statistics to clear database statistics.
   fields:
-    label:
-      name: Label to Clear
-      description: "The label to clear (e.g., 'electricity'). Leave empty to clear ALL stored XMLs."
+    commodity:
+      name: Commodity Type
+      description: "Select which data to clear, or leave empty to clear all."
       required: false
-      example: "electricity"
       selector:
-        text:
+        select:
+          options:
+            - label: "Electricity"
+              value: "electricity"
+            - label: "Gas"
+              value: "gas"

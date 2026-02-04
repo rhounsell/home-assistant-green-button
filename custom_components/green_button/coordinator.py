@@ -48,39 +48,41 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.usage_points = usage_points or []
             return {"usage_points": usage_points or []}
 
-    async def async_add_xml_data(self, xml_data: str, store_in_config: bool = True, label: str | None = None) -> None:
+    async def async_add_xml_data(self, xml_data: str, store_in_config: bool = True) -> None:
         """Add new Green Button XML data and update entities.
         
         Args:
             xml_data: The XML data to parse and add
             store_in_config: If True, store the XML in a separate storage file.
                            If False, just merge the data without persisting (for service imports).
-            label: Optional label for this XML (e.g., 'electricity', 'gas'). Used for multi-XML storage.
-                  If not provided, a label will be auto-generated from the XML content.
+        
+        The label is auto-detected from the XML content based on commodity type:
+        - Electricity (ServiceCategory kind=0) -> 'electricity'
+        - Gas (ServiceCategory kind=1) -> 'gas'
+        - Unknown -> 'imported_data'
         """
         try:
+            # Parse XML first to detect commodity type for auto-labeling
+            usage_points = await self.hass.async_add_executor_job(
+                espi.parse_xml, xml_data
+            )
+            new_usage_points = usage_points or []
+            
+            # Auto-detect label from commodity type
+            label = self._detect_label_from_usage_points(new_usage_points)
+            _LOGGER.info("Auto-detected label '%s' from XML content", label)
+            
             # Store XML in separate storage file if requested (for persistence across restarts)
             # NOTE: We use a separate Store instance instead of config entry data because
             # config entries use delayed writes and are not designed for multi-MB data storage.
             if store_in_config:
                 from .xml_storage import async_get_xml_storage
                 
-                # Generate label if not provided
-                if label is None:
-                    import datetime
-                    label = f"import_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                
                 # Use dedicated XML storage (immediate save for reliability)
                 xml_storage = await async_get_xml_storage(self.hass, self.config_entry.entry_id)
                 await xml_storage.async_add_xml(xml_data, label)
 
-            # Parse and update immediately
-            usage_points = await self.hass.async_add_executor_job(
-                espi.parse_xml, xml_data
-            )
-            new_usage_points = usage_points or []
-
-            # Log what we're processing
+            # Log what we're processing (usage_points already parsed above for label detection)
             total_readings = sum(len(up.meter_readings) for up in new_usage_points)
             _LOGGER.info(
                 "Processing %d usage points with %d total meter readings",
@@ -149,6 +151,24 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.error("Error adding Green Button XML data: %s", err)
             raise UpdateFailed(f"Error adding Green Button XML data: {err}") from err
 
+    def _detect_label_from_usage_points(self, usage_points: list[model.UsagePoint]) -> str:
+        """Detect label from usage points based on commodity type.
+        
+        Returns:
+            'electricity' if any usage point is ENERGY type
+            'gas' if any usage point is GAS type
+            'imported_data' if no usage points or unknown type
+        """
+        from homeassistant.components.sensor import SensorDeviceClass
+        
+        for up in usage_points:
+            if up.sensor_device_class == SensorDeviceClass.ENERGY:
+                return "electricity"
+            elif up.sensor_device_class == SensorDeviceClass.GAS:
+                return "gas"
+        
+        return "imported_data"
+
     async def _trigger_statistics_update_for_all_readings(self) -> None:
         """Trigger statistics update for all meter readings in coordinator data.
         
@@ -203,6 +223,22 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Falls back to config entry data for backwards compatibility.
         """
         from .xml_storage import async_get_xml_storage
+        
+        # Check for initial_xml from config flow (first setup)
+        initial_xml = self.config_entry.data.get("initial_xml")
+        if initial_xml:
+            _LOGGER.info("Processing initial XML from config flow setup")
+            # Process through normal flow which auto-detects label and stores properly
+            await self.async_add_xml_data(initial_xml, store_in_config=True)
+            
+            # Remove initial_xml from config entry data (it's now in proper storage)
+            data_updates = dict(self.config_entry.data)
+            data_updates.pop("initial_xml", None)
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, data=data_updates
+            )
+            _LOGGER.info("Migrated initial_xml to proper storage and removed from config entry")
+            return  # Data already processed
         
         # Try to load from new separate storage file first
         xml_storage = await async_get_xml_storage(self.hass, self.config_entry.entry_id)
