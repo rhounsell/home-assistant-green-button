@@ -21,6 +21,8 @@ _LOGGER = logging.getLogger(__name__)
 SERVICE_IMPORT_ESPI_XML = "import_espi_xml"
 SERVICE_DELETE_STATISTICS = "delete_statistics"
 SERVICE_LOG_METER_READING_INTERVALS = "log_meter_reading_intervals"
+SERVICE_LOG_STORED_XMLS = "log_stored_xmls"
+SERVICE_CLEAR_STORED_XML = "clear_stored_xml"
 
 IMPORT_ESPI_XML_SCHEMA = vol.Schema(
     {
@@ -33,6 +35,12 @@ IMPORT_ESPI_XML_SCHEMA = vol.Schema(
 DELETE_STATISTICS_SCHEMA = vol.Schema(
     {
         vol.Required("statistic_id"): cv.entity_id,
+    }
+)
+
+CLEAR_STORED_XML_SCHEMA = vol.Schema(
+    {
+        vol.Optional("label"): cv.string,
     }
 )
 
@@ -75,6 +83,78 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                             end,
                             len(interval_block.interval_readings),
                         )
+
+    async def log_stored_xmls_service(call: ServiceCall) -> None:
+        """Log information about stored XMLs in config entry."""
+        from .parsers import espi
+        
+        entries = list(hass.config_entries.async_entries(DOMAIN))
+        for entry in entries:
+            _LOGGER.info("=" * 60)
+            _LOGGER.info("Config Entry: %s (entry_id: %s)", entry.title, entry.entry_id)
+            
+            stored_xmls = entry.data.get("stored_xmls", [])
+            legacy_xml = entry.data.get("xml")
+            
+            if not stored_xmls and not legacy_xml:
+                _LOGGER.info("  No stored XMLs found")
+                continue
+            
+            if legacy_xml and not stored_xmls:
+                _LOGGER.info("  Found legacy single XML storage (not yet migrated)")
+                stored_xmls = [{"label": "legacy", "xmls": [legacy_xml]}]
+            
+            _LOGGER.info("  Found %d label(s)", len(stored_xmls))
+            
+            for idx, xml_entry in enumerate(stored_xmls):
+                label = xml_entry.get("label", f"xml_{idx}")
+                
+                # Handle both old format (single "xml") and new format ("xmls" list)
+                xml_list = xml_entry.get("xmls", [])
+                if not xml_list and "xml" in xml_entry:
+                    xml_list = [xml_entry["xml"]]
+                
+                total_size = sum(len(x) for x in xml_list if x)
+                _LOGGER.info("  [%d] Label: '%s', %d XML(s), Total size: %d bytes", idx, label, len(xml_list), total_size)
+                
+                for xml_idx, xml_data in enumerate(xml_list):
+                    if not xml_data:
+                        continue
+                    
+                    _LOGGER.info("      XML[%d]: %d bytes", xml_idx, len(xml_data))
+                    
+                    try:
+                        # Parse XML to get date ranges
+                        usage_points = await hass.async_add_executor_job(
+                            espi.parse_xml, xml_data
+                        )
+                        for up in usage_points:
+                            _LOGGER.info("        UsagePoint: %s", up.id)
+                            for mr in up.meter_readings:
+                                all_readings = [
+                                    ir for ib in mr.interval_blocks for ir in ib.interval_readings
+                                ]
+                                if all_readings:
+                                    min_start = min(ir.start for ir in all_readings)
+                                    max_end = max(ir.end for ir in all_readings)
+                                    _LOGGER.info(
+                                        "          MeterReading %s: %s to %s (%d readings)",
+                                        mr.id.split("/")[-1] if "/" in mr.id else mr.id,
+                                        min_start.strftime("%Y-%m-%d %H:%M"),
+                                        max_end.strftime("%Y-%m-%d %H:%M"),
+                                        len(all_readings),
+                                    )
+                                else:
+                                    _LOGGER.info(
+                                        "          MeterReading %s: NO INTERVAL READINGS",
+                                        mr.id.split("/")[-1] if "/" in mr.id else mr.id,
+                                    )
+                            if up.usage_summaries:
+                                _LOGGER.info("        UsageSummaries: %d", len(up.usage_summaries))
+                    except Exception as e:
+                        _LOGGER.error("        Failed to parse XML: %s", e)
+            
+            _LOGGER.info("=" * 60)
 
 
     async def import_espi_xml_service(call: ServiceCall) -> None:
@@ -198,6 +278,55 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             _LOGGER.error("❌ Failed to delete statistics for %s: %s", statistic_id, err)
             raise HomeAssistantError(f"Failed to delete statistics: {err}") from err
 
+    async def clear_stored_xml_service(call: ServiceCall) -> None:
+        """Handle the clear_stored_xml service call."""
+        label_to_clear = call.data.get("label")
+        
+        entries = list(hass.config_entries.async_entries(DOMAIN))
+        
+        if not entries:
+            _LOGGER.warning("No Green Button integrations found")
+            return
+        
+        for entry in entries:
+            data_updates = dict(entry.data)
+            stored_xmls = data_updates.get("stored_xmls", [])
+            
+            if not stored_xmls:
+                _LOGGER.info("No stored XMLs found for entry %s", entry.entry_id)
+                continue
+            
+            if label_to_clear:
+                # Clear specific label
+                original_count = len(stored_xmls)
+                stored_xmls = [x for x in stored_xmls if x.get("label") != label_to_clear]
+                removed_count = original_count - len(stored_xmls)
+                
+                if removed_count > 0:
+                    data_updates["stored_xmls"] = stored_xmls
+                    hass.config_entries.async_update_entry(entry, data=data_updates)
+                    _LOGGER.info(
+                        "✅ Cleared stored XML with label '%s' from entry %s",
+                        label_to_clear,
+                        entry.title,
+                    )
+                else:
+                    _LOGGER.warning(
+                        "No stored XML found with label '%s' in entry %s",
+                        label_to_clear,
+                        entry.title,
+                    )
+            else:
+                # Clear all
+                label_count = len(stored_xmls)
+                data_updates["stored_xmls"] = []
+                hass.config_entries.async_update_entry(entry, data=data_updates)
+                _LOGGER.info(
+                    "✅ Cleared ALL %d stored XML label(s) from entry %s",
+                    label_count,
+                    entry.title,
+                )
+
     # Register services
     try:
         hass.services.async_register(
@@ -220,6 +349,19 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             log_meter_reading_intervals_service,
         )
 
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_LOG_STORED_XMLS,
+            log_stored_xmls_service,
+        )
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_CLEAR_STORED_XML,
+            clear_stored_xml_service,
+            schema=CLEAR_STORED_XML_SCHEMA,
+        )
+
         _LOGGER.info("Green Button services registered successfully")
     except Exception as err:
         _LOGGER.error("Failed to register Green Button services: %s", err)
@@ -231,4 +373,6 @@ async def async_unload_services(hass: HomeAssistant) -> None:
     hass.services.async_remove(DOMAIN, SERVICE_IMPORT_ESPI_XML)
     hass.services.async_remove(DOMAIN, SERVICE_DELETE_STATISTICS)
     hass.services.async_remove(DOMAIN, SERVICE_LOG_METER_READING_INTERVALS)
+    hass.services.async_remove(DOMAIN, SERVICE_LOG_STORED_XMLS)
+    hass.services.async_remove(DOMAIN, SERVICE_CLEAR_STORED_XML)
     _LOGGER.info("Green Button services unloaded")

@@ -64,7 +64,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if "xml" in data_updates and "stored_xmls" not in data_updates:
                 _LOGGER.info("Migrating legacy single XML storage to multi-XML format")
                 legacy_xml = data_updates.pop("xml")
-                data_updates["stored_xmls"] = [{"label": "imported_data", "xml": legacy_xml}]
+                data_updates["stored_xmls"] = [{"label": "imported_data", "xmls": [legacy_xml]}]
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=data_updates
                 )
@@ -81,20 +81,36 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 data_updates = dict(self.config_entry.data)
                 stored_xmls = data_updates.get("stored_xmls", [])
                 
-                # Check if an XML with this label already exists and update it, otherwise append
+                # Migrate old format entries (single "xml" key) to new format ("xmls" list)
+                for entry in stored_xmls:
+                    if "xml" in entry and "xmls" not in entry:
+                        entry["xmls"] = [entry.pop("xml")]
+                
+                # Check if an entry with this label already exists
                 existing_index = next((i for i, entry in enumerate(stored_xmls) if entry.get("label") == label), None)
                 if existing_index is not None:
-                    _LOGGER.info("Updating existing stored XML with label '%s'", label)
-                    stored_xmls[existing_index] = {"label": label, "xml": xml_data}
+                    # Merge with existing: append new XML to the list for this label
+                    existing_entry = stored_xmls[existing_index]
+                    existing_xmls = existing_entry.get("xmls", [])
+                    # Also handle old format
+                    if "xml" in existing_entry and not existing_xmls:
+                        existing_xmls = [existing_entry["xml"]]
+                    existing_xmls.append(xml_data)
+                    stored_xmls[existing_index] = {"label": label, "xmls": existing_xmls}
+                    _LOGGER.info(
+                        "Merged new XML into existing label '%s' (now %d XMLs stored for this label)",
+                        label,
+                        len(existing_xmls),
+                    )
                 else:
                     _LOGGER.info("Adding new stored XML with label '%s'", label)
-                    stored_xmls.append({"label": label, "xml": xml_data})
+                    stored_xmls.append({"label": label, "xmls": [xml_data]})
                 
                 data_updates["stored_xmls"] = stored_xmls
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=data_updates
                 )
-                _LOGGER.info("Stored %d XML(s) in config entry", len(stored_xmls))
+                _LOGGER.info("Stored %d label(s) in config entry", len(stored_xmls))
 
             # Parse and update immediately
             usage_points = await self.hass.async_add_executor_job(
@@ -237,39 +253,77 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         try:
-            _LOGGER.info("[RESTART] Loading %d stored XML(s) from config entry", len(stored_xmls))
+            _LOGGER.info("[RESTART] Loading %d stored label(s) from config entry", len(stored_xmls))
+            
+            # Log labels of stored XMLs for debugging
+            stored_labels = [
+                f"{entry.get('label', f'xml_{i}')} ({len(entry.get('xmls', [entry.get('xml', '')]))} XMLs)"
+                for i, entry in enumerate(stored_xmls)
+            ]
+            _LOGGER.info("[RESTART] Stored XML labels: %s", stored_labels)
             
             # Parse and merge all stored XMLs
+            xml_count = 0
             for idx, xml_entry in enumerate(stored_xmls):
                 label = xml_entry.get("label", f"xml_{idx}")
-                xml_data = xml_entry.get("xml")
                 
-                if not xml_data:
+                # Handle both old format (single "xml") and new format ("xmls" list)
+                xml_list = xml_entry.get("xmls", [])
+                if not xml_list and "xml" in xml_entry:
+                    xml_list = [xml_entry["xml"]]
+                
+                if not xml_list:
                     _LOGGER.warning("[RESTART] Skipping empty XML entry with label '%s'", label)
                     continue
                 
-                _LOGGER.debug("[RESTART] Parsing stored XML with label '%s'", label)
-                usage_points = await self.hass.async_add_executor_job(
-                    espi.parse_xml, xml_data
-                )
-                
-                if usage_points:
-                    # Merge with existing data (if any from previous XMLs)
-                    if idx == 0:
-                        self.usage_points = usage_points
-                    else:
-                        self._merge_usage_points(usage_points)
-                    _LOGGER.debug(
-                        "[RESTART] Loaded %d usage points from XML '%s'",
-                        len(usage_points),
-                        label,
+                for xml_idx, xml_data in enumerate(xml_list):
+                    if not xml_data:
+                        continue
+                    
+                    xml_count += 1
+                    _LOGGER.debug("[RESTART] Parsing stored XML '%s' [%d/%d]", label, xml_idx + 1, len(xml_list))
+                    usage_points = await self.hass.async_add_executor_job(
+                        espi.parse_xml, xml_data
                     )
+                    
+                    if usage_points:
+                        # Log date range of data in this XML
+                        for up in usage_points:
+                            for mr in up.meter_readings:
+                                all_readings = [
+                                    ir for ib in mr.interval_blocks for ir in ib.interval_readings
+                                ]
+                                if all_readings:
+                                    min_start = min(ir.start for ir in all_readings)
+                                    max_end = max(ir.end for ir in all_readings)
+                                    _LOGGER.info(
+                                        "[RESTART] XML '%s'[%d] MeterReading %s: data range %s to %s (%d readings)",
+                                        label,
+                                        xml_idx,
+                                        mr.id.split("/")[-1] if "/" in mr.id else mr.id,
+                                        min_start.isoformat(),
+                                        max_end.isoformat(),
+                                        len(all_readings),
+                                    )
+                        
+                        # Merge with existing data (if any from previous XMLs)
+                        if not self.usage_points:
+                            self.usage_points = usage_points
+                        else:
+                            self._merge_usage_points(usage_points)
+                        _LOGGER.debug(
+                            "[RESTART] Loaded %d usage points from XML '%s'[%d]",
+                            len(usage_points),
+                            label,
+                            xml_idx,
+                        )
             
             self.async_set_updated_data({"usage_points": self.usage_points})
             self.last_update_success = True
             _LOGGER.info(
-                "[RESTART] Successfully loaded %d total usage points from %d stored XML(s). last_update_success set to True.",
+                "[RESTART] Successfully loaded %d total usage points from %d XML(s) across %d label(s). last_update_success set to True.",
                 len(self.usage_points),
+                xml_count,
                 len(stored_xmls),
             )
         except (ValueError, OSError) as err:

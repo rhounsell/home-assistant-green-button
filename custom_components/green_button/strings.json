@@ -12,11 +12,13 @@
           "gas_cost_allocation": "Gas cost allocation",
           "gas_usage_allocation": "Gas usage allocation",
           "xml": "XML",
-          "xml_file_path": "XML File Path"
+          "xml_file_path": "XML File Path",
+          "xml_label": "XML Storage Label"
         },
         "data_description": {
           "xml_file_path": "Relative paths resolve against the Home Assistant config directory (e.g., /config).",
-          "xml": "Paste ESPI XML content directly. For large files, using a file path is recommended."
+          "xml": "Paste ESPI XML content directly. For large files, using a file path is recommended.",
+          "xml_label": "Label for this data (e.g., 'electricity' or 'gas'). Using the same label later will merge data."
         }
       }
     },
