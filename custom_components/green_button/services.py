@@ -28,7 +28,6 @@ IMPORT_ESPI_XML_SCHEMA = vol.Schema(
     {
         vol.Optional("xml_file_path"): cv.string,
         vol.Optional("xml"): cv.string,
-        vol.Optional("label"): cv.string,
     }
 )
 
@@ -40,7 +39,7 @@ DELETE_STATISTICS_SCHEMA = vol.Schema(
 
 CLEAR_STORED_XML_SCHEMA = vol.Schema(
     {
-        vol.Optional("label"): cv.string,
+        vol.Optional("commodity"): vol.In(["electricity", "gas"]),
     }
 )
 
@@ -168,7 +167,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         """Handle the import_espi_xml service call."""
         xml_path = call.data.get("xml_file_path", "").strip()
         xml_content = call.data.get("xml", "").strip()
-        label = call.data.get("label")  # Optional label for multi-XML storage
         
         # Validate that at least one is provided
         if not xml_path and not xml_content:
@@ -239,8 +237,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     continue
 
                 # Let the coordinator handle all data parsing and updates
+                # Label is auto-detected from XML content (electricity or gas)
                 # Always store in config entry for persistence across restarts
-                await coordinator.async_add_xml_data(xml_data, store_in_config=True, label=label)
+                await coordinator.async_add_xml_data(xml_data, store_in_config=True)
 
                 _LOGGER.info(
                     "Updated coordinator and refreshed entities for entry %s",
@@ -249,7 +248,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
                 # No direct entity lookup or warning needed; coordinator update will notify all entities
 
-            _LOGGER.info("ESPI XML import completed successfully and stored with label '%s'", label or "auto-generated")
+            _LOGGER.info("ESPI XML import completed successfully (label auto-detected from commodity type)")
 
         except Exception as err:
             _LOGGER.error("Failed to import ESPI XML: %s", err)
@@ -289,7 +288,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         """Handle the clear_stored_xml service call."""
         from .xml_storage import async_get_xml_storage
         
-        label_to_clear = call.data.get("label")
+        # commodity maps directly to label (electricity or gas)
+        label_to_clear = call.data.get("commodity")
         
         entries = list(hass.config_entries.async_entries(DOMAIN))
         

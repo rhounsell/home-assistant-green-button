@@ -71,14 +71,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                 ),
                 vol.Optional("xml_file_path", default=""): str,
                 vol.Optional(
-                    "xml_label",
-                    default=user_input_default.get("xml_label", ""),
-                ): selector.TextSelector(
-                    selector.TextSelectorConfig(
-                        type=selector.TextSelectorType.TEXT,
-                    )
-                ),
-                vol.Optional(
                     "gas_cost_allocation",
                     default=user_input_default.get("gas_cost_allocation", "pro_rate_daily"),
                 ): selector.SelectSelector(
@@ -176,11 +168,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
         _LOGGER.info("Created config with unique ID %r", config.unique_id)
         config_data = dict(config.to_mapping())
         
-        # Store the XML content using the new stored_xmls format with label
+        # Store XML content temporarily - it will be moved to proper storage
+        # with auto-detected label when the coordinator first processes it
         xml_content = user_input.get("xml", "")
-        xml_label = user_input.get("xml_label", "").strip() or "imported_data"
         if xml_content:
-            config_data["stored_xmls"] = [{"label": xml_label, "xmls": [xml_content]}]
+            config_data["initial_xml"] = xml_content
         
         # Store gas cost allocation toggle
         config_data["gas_cost_allocation"] = user_input.get(
