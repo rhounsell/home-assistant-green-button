@@ -16,14 +16,16 @@ The Green Button data needs to be in the ESPI XML Schema Definition, contained i
 
 This custom component has been developed to handle the Green Button data available from Hydro Ottawa and Enbridge Gas. It may or may not work with other sources of Green Button data.
 
-## Installation (HACS not verified yet)
+## Installation (HACS not set up yet)
 
 1. Copy the green_button folder under custom_components into your Home Assistant custom_components folder
 2. Restart Home Assistant
 3. In the HA UI go to "Configuration" -> "Integrations" click "+" and search for "Green Button"
-4. Follow the [Energy Dashboard Setup](ENERGY_DASHBOARD_SETUP.md) guide to add sensors to your Energy Dashboard
+4. Perform your inital Green Button XML import to complete the installation.
 
-**Note**: Sensors will show "unknown" state - this is intentional and doesn't affect functionality. See [RECORDER_CONFIG.md](RECORDER_CONFIG.md) for details.
+It may take a few minutes for all the associated statisitics to be generated. The related sensor may not be available to add into the Energy dashbord until the generation is completed.
+
+Follow the [Green Button Component Description](GREEN_BUTTON_COMPONENT_DESCRIPTION.md) for detail on how the Green Button custom component functions.
 
 ## Credits
 
