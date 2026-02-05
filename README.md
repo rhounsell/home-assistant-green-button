@@ -21,7 +21,7 @@ This custom component has been developed to handle the Green Button data availab
 1. Copy the green_button folder under custom_components into your Home Assistant custom_components folder
 2. Restart Home Assistant
 3. In the HA UI go to "Configuration" -> "Integrations" click "+" and search for "Green Button"
-4. Perform your inital Green Button XML import to complete the installation.
+4. Perform your inital Green Button XML (gas or electricity) import to complete the installation.
 
 It may take a few minutes for all the associated statisitics to be generated. The related sensor may not be available to add into the Energy dashbord until the generation is completed.
 
