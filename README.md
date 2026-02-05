@@ -21,9 +21,9 @@ This custom component has been developed to handle the Green Button data availab
 1. Copy the green_button folder under custom_components into your Home Assistant custom_components folder
 2. Restart Home Assistant
 3. In the HA UI go to "Configuration" -> "Integrations" click "+" and search for "Green Button"
-4. **IMPORTANT**: Add recorder exclusion to your `configuration.yaml` as described in [Recorder Configuration](RECORDER_CONFIG.md) - this prevents duplicate statistics
-5. Restart Home Assistant again to apply recorder configuration
-6. Follow the [Energy Dashboard Setup](ENERGY_DASHBOARD_SETUP.md) guide to add sensors to your Energy Dashboard
+4. Follow the [Energy Dashboard Setup](ENERGY_DASHBOARD_SETUP.md) guide to add sensors to your Energy Dashboard
+
+**Note**: Sensors will show "unknown" state - this is intentional and doesn't affect functionality. See [RECORDER_CONFIG.md](RECORDER_CONFIG.md) for details.
 
 ## Credits
 
