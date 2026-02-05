@@ -47,10 +47,11 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
     """A sensor for Green Button energy data."""
 
     _attr_device_class = SensorDeviceClass.ENERGY
-    # Set state_class to satisfy Energy Dashboard requirements
-    # BUT we disable recorder statistics for this entity (see _attr_should_poll)
-    # and manually manage statistics via async_import_statistics
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    # NOTE: We do NOT set state_class on this sensor!
+    # Setting state_class would trigger HA's automatic statistics compilation,
+    # which would create duplicate/corrupted statistics records.
+    # We manually import statistics via async_import_statistics() instead.
+    # The Energy Dashboard will use our manually imported statistics.
     _attr_native_unit_of_measurement = "kWh"
     _attr_has_entity_name = True
 
@@ -565,10 +566,11 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
     """Gas consumption sensor (m³, total increasing)."""
 
     _attr_device_class = SensorDeviceClass.GAS
-    # Set state_class to satisfy Energy Dashboard requirements
-    # BUT we disable recorder statistics for this entity
-    # and manually manage statistics via async_import_statistics
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    # NOTE: We do NOT set state_class on this sensor!
+    # Setting state_class would trigger HA's automatic statistics compilation,
+    # which would create duplicate/corrupted statistics records.
+    # We manually import statistics via async_import_statistics() instead.
+    # The Energy Dashboard will use our manually imported statistics.
     _attr_native_unit_of_measurement = "m³"
     _attr_has_entity_name = True
 
