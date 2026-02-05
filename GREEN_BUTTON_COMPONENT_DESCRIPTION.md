@@ -15,7 +15,9 @@ The Green Button integration is designed to work directly with the Energy Dashbo
 ### Quick Setup
 
 1. Install the Green Button integration
-2. Import your XML data using the `green_button.import_xml` service
+2. Import your XML data using **Developer Tools → Actions**:
+   - Action: `green_button.import_espi_xml`
+   - Provide either `xml_file_path` or paste XML content directly
 3. Configure sensors in Energy Dashboard
 4. Done! No additional configuration needed
 
@@ -41,23 +43,38 @@ See the services.yaml file for a list of other useful Green Button actions that 
 ### "Entity unavailable" or Shows Zero
 
 - No data has been imported yet
-- Import XML data using the `green_button.import_xml` service
-- Check integration logs for import errors
-- Verify the coordinator has successfully parsed the XML data
+- Import XML data using **Developer Tools → Actions**:
+  - Action: `green_button.import_espi_xml`
+  - Provide either `xml_file_path` (e.g., `/config/data.xml`) or paste XML content directly
+- Check integration logs for import errors using **Settings → System → Logs**
+- Use `green_button.log_meter_reading_intervals` action to verify the coordinator has parsed the XML data
 
 ### Duplicate or Corrupted Statistics
 
 If you upgraded from an older version that used recorder exclusions:
-1. Remove the old recorder exclusions from `configuration.yaml`
-2. Delete corrupted statistics via Developer Tools → Statistics
-3. Restart Home Assistant
-4. Reload the Green Button integration
-5. Re-import your XML data
+1. Remove the old recorder exclusions from `configuration.yaml` (search for `green_button` or sensor entity names)
+2. Restart Home Assistant (required for configuration changes to take effect)
+3. Delete corrupted statistics using **Developer Tools → Actions**:
+   - Action: `green_button.delete_statistics`
+   - Statistic ID: `sensor.your_sensor_name` (e.g., `sensor.home_electricity_usage`)
+   - Repeat for each Green Button sensor that has corrupted data
+4. Reload the Green Button integration:
+   - Go to **Settings → Devices & Services → Green Button**
+   - Click the three dots menu → **Reload**
+5. Re-import your XML data using **Developer Tools → Actions**:
+   - Action: `green_button.import_espi_xml`
+   - Provide either `xml_file_path` (e.g., `/config/data.xml`) or paste XML content directly
 
 ### Energy Dashboard Shows Wrong Data
 
-- Check that statistics exist using Developer Tools → Statistics
-- Verify the date range of i prevents automatic statistics compilation by:
+- Check that statistics exist using **Developer Tools → Statistics**
+- Verify the date range of imported statistics matches your XML data
+- Use `green_button.log_meter_reading_intervals` action to see what data was parsed
+- Look for import errors in **Settings → System → Logs**
+
+## Technical Details
+
+The Green Button integration prevents automatic statistics compilation by:
 
 1. **Overriding coordinator update behavior** - Does not call `async_write_ha_state()` on every coordinator data update
 2. **Writing state only after import** - State is written once after statistics are imported
