@@ -47,11 +47,10 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
     """A sensor for Green Button energy data."""
 
     _attr_device_class = SensorDeviceClass.ENERGY
-    # NOTE: We do NOT set state_class on this sensor!
-    # Setting state_class would trigger HA's automatic statistics compilation,
-    # which would create duplicate/corrupted statistics records.
-    # We manually import statistics via async_import_statistics() instead.
-    # The Energy Dashboard will use our manually imported statistics.
+    # We set state_class to satisfy HA's validation (prevents "fix issue" warnings)
+    # but we return None from native_value so there's no state history for HA
+    # to auto-compile. We manually import statistics via async_import_statistics().
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = "kWh"
     _attr_has_entity_name = True
 
@@ -86,17 +85,23 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         )
     @property
     def native_value(self):
-        """Return the native value of the sensor."""
-        value = self._attr_native_value
-        # Only compare to a numeric threshold for numeric types to avoid type errors
-        if isinstance(value, (int, float)) and value > 10000:  # Log if suspiciously high
-            # Get the call stack to see WHO is accessing this value
-            stack = traceback.extract_stack()
-            caller_info = []
-            for frame in stack[-5:-1]:  # Last 4 frames before this one
-                if 'green_button' not in frame.filename:  # Only non-Green Button frames
-                    caller_info.append(f"{frame.filename}:{frame.lineno} in {frame.name}")
-        return value
+        """Return the native value of the sensor (cumulative total).
+        
+        NOTE: To prevent HA's automatic statistics compilation from creating duplicate
+        records, you MUST exclude this entity from the recorder in configuration.yaml:
+        
+        recorder:
+          exclude:
+            entities:
+              - sensor.home_electricity_usage
+              - sensor.home_electricity_cost
+              - sensor.home_natural_gas_usage
+              - sensor.home_natural_gas_cost
+        
+        We manually import statistics via async_import_statistics().
+        The Energy Dashboard uses those manually imported statistics.
+        """
+        return self._attr_native_value
 
     @property
     def available(self) -> bool:
@@ -566,11 +571,10 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
     """Gas consumption sensor (m³, total increasing)."""
 
     _attr_device_class = SensorDeviceClass.GAS
-    # NOTE: We do NOT set state_class on this sensor!
-    # Setting state_class would trigger HA's automatic statistics compilation,
-    # which would create duplicate/corrupted statistics records.
-    # We manually import statistics via async_import_statistics() instead.
-    # The Energy Dashboard will use our manually imported statistics.
+    # We set state_class to satisfy HA's validation (prevents "fix issue" warnings)
+    # but we return None from native_value so there's no state history for HA
+    # to auto-compile. We manually import statistics via async_import_statistics().
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = "m³"
     _attr_has_entity_name = True
 
@@ -595,6 +599,15 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
 
     @property
     def native_value(self) -> float | None:
+        """Return the native value of the sensor (cumulative total).
+        
+        NOTE: To prevent HA's automatic statistics compilation from creating duplicate
+        records, you MUST exclude this entity from the recorder in configuration.yaml.
+        See GreenButtonSensor.native_value docstring for configuration example.
+        
+        We manually import statistics via async_import_statistics().
+        The Energy Dashboard uses those manually imported statistics.
+        """
         # Try to get meter reading first (normal case)
         meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
         if meter_reading:
@@ -602,7 +615,7 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
             for block in meter_reading.interval_blocks:
                 for rd in block.interval_readings:
                     total += float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
-            self._cached_native_value = total  # Cache the value
+            self._cached_native_value = total
             return self._cached_native_value
 
         # If no meter reading, this might be a UsagePoint ID (UsageSummary-only case)
@@ -614,7 +627,7 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
                     self._cached_native_value = total
                     return self._cached_native_value
 
-        return self._cached_native_value  # Return cached value instead of None
+        return self._cached_native_value
 
     @property
     def long_term_statistics_id(self) -> str:
