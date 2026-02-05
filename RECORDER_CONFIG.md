@@ -1,80 +1,77 @@
-# Required Recorder Configuration
+# No Recorder Configuration Required
 
-## Important: Prevent Duplicate Statistics
+## Energy Dashboard Compatibility
 
-This integration manually imports statistics using `async_import_statistics()` to properly handle historical data. To prevent Home Assistant's automatic statistics compilation from creating duplicate or corrupted records, **you must exclude the Green Button sensors from the recorder**.
+This integration is designed to work directly with the Energy Dashboard **without requiring any recorder configuration**.
 
-## Configuration
+## How It Works
 
-Add the following to your Home Assistant `configuration.yaml`:
+1. **Sensors show "unknown" state** - This is intentional and prevents duplicate statistics
+2. **Statistics are manually imported** - Using `async_import_statistics()` for proper historical data handling  
+3. **Energy Dashboard uses statistics** - Not sensor states, so "unknown" state doesn't affect functionality
 
-```yaml
-recorder:
-  exclude:
-    entities:
-      - sensor.home_electricity_usage
-      - sensor.home_electricity_cost
-      - sensor.home_natural_gas_usage
-      - sensor.home_natural_gas_cost
-```
+## Expected Behavior
 
-**Replace the entity IDs** with your actual entity IDs if they differ (e.g., if you named your integration something other than "Home").
+### Sensor States
+- **Entity Status**: Available (green checkmark)
+- **Entity State**: "unknown"
+- **Energy Dashboard**: Works perfectly with manually imported statistics
 
-### Alternative: Use Entity Globs
+### "Fix Issue" Warning (Can Be Ignored)
 
-If you have multiple Green Button integrations or want a more flexible approach:
+You may see a warning in **Developer Tools → Statistics**:
 
-```yaml
-recorder:
-  exclude:
-    entity_globs:
-      - sensor.*_electricity_usage
-      - sensor.*_electricity_cost
-      - sensor.*_natural_gas_usage
-      - sensor.*_natural_gas_cost
-```
+> The entity no longer has a state class  
+> We have generated statistics for 'Home Electricity Usage' (sensor.home_electricity_usage) in the past, but it no longer has a state class...
 
-## Why This Is Necessary
+**This warning can be safely ignored or dismissed:**
 
-1. **Green Button sensors have `state_class = TOTAL_INCREASING`** to satisfy Energy Dashboard requirements
-2. **Sensor state shows cumulative totals** (e.g., 24,597 kWh) for UI reference
-3. **Without recorder exclusion**, Home Assistant would:
-   - See state changes (e.g., when new data is imported or HA restarts)
-   - Automatically compile statistics from those state changes
-   - Create massive "spikes" showing fake consumption equal to the cumulative total
-   - Corrupt your Energy Dashboard data
+1. Click **"Fix Issue"** 
+2. Click **"IGNORE"** (not "Delete")
+3. The warning will be dismissed permanently
 
-4. **With recorder exclusion**:
-   - HA's recorder ignores state changes for these entities
-   - No automatic statistics compilation occurs
-   - Manually imported statistics (via `async_import_statistics()`) are unaffected
-   - Energy Dashboard uses the correct manually imported statistics
+### Why This Warning Appears
 
-## After Configuration
+- The sensor has `state_class = TOTAL_INCREASING` (required for Energy Dashboard)
+- But returns `None` for its state (prevents automatic statistics compilation)
+- HA's validation sees this mismatch and warns you
+- **The warning is cosmetic** - your statistics and Energy Dashboard work perfectly
 
-1. **Restart Home Assistant** after adding the recorder exclusion
-2. **Verify exclusion is working**: Check Developer Tools → Statistics
-   - There should be no "Fix Issue" warnings
-   - Statistics should match your imported data range
+## Why No Recorder Exclusion?
+
+Initially, we tried excluding these entities from the recorder to prevent automatic statistics compilation. However, this caused a worse problem:
+
+- **Energy Dashboard couldn't find the sensors** - Even though statistics existed in the database
+- The Energy Dashboard checks if entities are being recorded before listing them
+
+By returning `None` from `native_value`:
+- No state history is recorded
+- No automatic statistics compilation occurs  
+- But the entity is still "known" to the recorder
+- Energy Dashboard can find and use the statistics
 
 ## What You'll See
 
-- **Entity State**: Shows cumulative total (e.g., "24597.72 kWh")
-- **Entity Status**: Available (green checkmark)
-- **State History**: Not recorded (due to exclusion)
-- **Statistics**: Manually imported data only (no auto-compilation)
-- **Energy Dashboard**: Uses manually imported statistics
+✅ Sensors appear in Energy Dashboard configuration  
+✅ Energy Dashboard displays your imported usage data correctly  
+✅ Statistics match your imported XML data range  
+✅ No duplicate statistics or spikes  
+⚠️ "Fix issue" warning (can be ignored/dismissed)
 
 ## Troubleshooting
+
+**Problem**: Sensors not appearing in Energy Dashboard
+
+**Solution**:
+1. Verify sensors exist in **Settings → Devices & Services → Green Button**
+2. Check that statistics exist using **Developer Tools → Statistics → Get Statistics**
+3. Restart Home Assistant
+4. Try removing and re-adding the integration
 
 **Problem**: Still seeing spikes in Energy Dashboard
 
 **Solution**: 
-1. Verify the recorder exclusion is in `configuration.yaml`
-2. Restart Home Assistant
-3. Delete the corrupted statistics using Developer Tools → Statistics → "Fix Issue" → Delete
+1. Make sure you're running the latest version of the integration
+2. Delete corrupted statistics using **Developer Tools → Statistics**
+3. Restart Home Assistant
 4. Re-import your XML data
-
-**Problem**: "Fix Issue" warning about missing state_class
-
-**Solution**: You removed the recorder exclusion. Add it back and restart HA.

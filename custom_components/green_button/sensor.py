@@ -85,23 +85,16 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         )
     @property
     def native_value(self):
-        """Return the native value of the sensor (cumulative total).
+        """Return the native value of the sensor.
         
-        NOTE: To prevent HA's automatic statistics compilation from creating duplicate
-        records, you MUST exclude this entity from the recorder in configuration.yaml:
+        We return None to prevent any state history from being recorded.
+        Without state history, HA's automatic statistics compilation has nothing to process.
         
-        recorder:
-          exclude:
-            entities:
-              - sensor.home_electricity_usage
-              - sensor.home_electricity_cost
-              - sensor.home_natural_gas_usage
-              - sensor.home_natural_gas_cost
-        
-        We manually import statistics via async_import_statistics().
-        The Energy Dashboard uses those manually imported statistics.
+        Note: This will cause a "fix issue" warning in Developer Tools -> Statistics,
+        but this can be safely ignored/dismissed. The Energy Dashboard uses our
+        manually imported statistics (via async_import_statistics()), not the sensor state.
         """
-        return self._attr_native_value
+        return None
 
     @property
     def available(self) -> bool:
@@ -599,35 +592,16 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
 
     @property
     def native_value(self) -> float | None:
-        """Return the native value of the sensor (cumulative total).
+        """Return the native value of the sensor.
         
-        NOTE: To prevent HA's automatic statistics compilation from creating duplicate
-        records, you MUST exclude this entity from the recorder in configuration.yaml.
-        See GreenButtonSensor.native_value docstring for configuration example.
+        We return None to prevent any state history from being recorded.
+        Without state history, HA's automatic statistics compilation has nothing to process.
         
-        We manually import statistics via async_import_statistics().
-        The Energy Dashboard uses those manually imported statistics.
+        Note: This will cause a "fix issue" warning in Developer Tools -> Statistics,
+        but this can be safely ignored/dismissed. The Energy Dashboard uses our
+        manually imported statistics (via async_import_statistics()), not the sensor state.
         """
-        # Try to get meter reading first (normal case)
-        meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
-        if meter_reading:
-            total = 0.0
-            for block in meter_reading.interval_blocks:
-                for rd in block.interval_readings:
-                    total += float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
-            self._cached_native_value = total
-            return self._cached_native_value
-
-        # If no meter reading, this might be a UsagePoint ID (UsageSummary-only case)
-        # In this case, return the sum of all UsageSummary consumption values
-        for usage_point in self.coordinator.usage_points:
-            if usage_point.id == self._meter_reading_id and usage_point.usage_summaries:
-                total = sum(us.consumption_m3 or 0.0 for us in usage_point.usage_summaries)
-                if total > 0:
-                    self._cached_native_value = total
-                    return self._cached_native_value
-
-        return self._cached_native_value
+        return None
 
     @property
     def long_term_statistics_id(self) -> str:
