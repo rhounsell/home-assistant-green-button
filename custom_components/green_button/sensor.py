@@ -62,6 +62,7 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         """Initialize the sensor."""
         super().__init__(coordinator)
         self._meter_reading_id = meter_reading_id
+        self._cached_native_value: float = 0.0  # Cache last imported statistics value
 
         # Create a cleaner unique ID from the meter reading ID
         # Extract the last part after the final slash for a shorter identifier
@@ -84,17 +85,16 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
             model="Electricity",
         )
     @property
-    def native_value(self):
-        """Return the native value of the sensor.
+    def native_value(self) -> float:
+        """Return the last imported statistics sum value.
         
-        We return None to prevent any state history from being recorded.
-        Without state history, HA's automatic statistics compilation has nothing to process.
+        Returns the cached value from the last statistics import. This prevents
+        Energy Dashboard from showing "Entity unavailable" warnings while still
+        avoiding automatic statistics compilation (since we don't write states on updates).
         
-        Note: This will cause a "fix issue" warning in Developer Tools -> Statistics,
-        but this can be safely ignored/dismissed. The Energy Dashboard uses our
-        manually imported statistics (via async_import_statistics()), not the sensor state.
+        The state only updates when statistics are manually imported.
         """
-        return None
+        return self._cached_native_value
 
     @property
     def available(self) -> bool:
@@ -310,9 +310,24 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
                 statistics.DefaultDataExtractor(),
                 meter_reading,
             )
+            
+            # Cache the last statistics sum value for display as sensor state
+            # This prevents Energy Dashboard "unavailable" warnings
+            total_energy = sum(
+                interval_reading.value * (10 ** interval_reading.reading_type.power_of_ten_multiplier) / 1000.0
+                for interval_block in meter_reading.interval_blocks
+                for interval_reading in interval_block.interval_readings
+                if interval_reading.value is not None
+            )
+            self._cached_native_value = total_energy
+            
+            # Write the state once after statistics import to update the sensor display
+            self.async_write_ha_state()
+            
             _LOGGER.info(
-                "%s: Statistics update completed.",
+                "%s: Statistics update completed, state set to %.2f kWh.",
                 self.entity_id,
+                self._cached_native_value,
             )
         except Exception:
             _LOGGER.exception(
@@ -591,17 +606,16 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
         )
 
     @property
-    def native_value(self) -> float | None:
-        """Return the native value of the sensor.
+    def native_value(self) -> float:
+        """Return the last imported statistics sum value.
         
-        We return None to prevent any state history from being recorded.
-        Without state history, HA's automatic statistics compilation has nothing to process.
+        Returns the cached value from the last statistics import. This prevents
+        Energy Dashboard from showing "Entity unavailable" warnings while still
+        avoiding automatic statistics compilation (since we don't write states on updates).
         
-        Note: This will cause a "fix issue" warning in Developer Tools -> Statistics,
-        but this can be safely ignored/dismissed. The Energy Dashboard uses our
-        manually imported statistics (via async_import_statistics()), not the sensor state.
+        The state only updates when statistics are manually imported.
         """
-        return None
+        return self._cached_native_value
 
     @property
     def long_term_statistics_id(self) -> str:
@@ -754,9 +768,22 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
                 usage_summaries=summaries,
                 allocation_mode=usage_allocation_mode,
             )
+            
+            # Cache the total value for display as sensor state
+            total = sum(
+                float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
+                for block in meter_reading.interval_blocks
+                for rd in block.interval_readings
+            )
+            self._cached_native_value = total
+            
+            # Write the state once after statistics import to update the sensor display
+            self.async_write_ha_state()
+            
             _LOGGER.info(
-                "%s: Gas statistics update completed.",
+                "%s: Gas statistics update completed, state set to %.2f m³.",
                 self.entity_id,
+                self._cached_native_value,
             )
         except Exception:
             _LOGGER.exception(
@@ -815,9 +842,18 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
                 usage_summaries=list(usage_point.usage_summaries),
                 allocation_mode=usage_allocation_mode,
             )
+            
+            # Cache the total consumption for display as sensor state
+            total = sum(us.consumption_m3 or 0.0 for us in usage_point.usage_summaries)
+            self._cached_native_value = total if total > 0 else 0.0
+            
+            # Write the state once after statistics import to update the sensor display
+            self.async_write_ha_state()
+            
             _LOGGER.info(
-                "%s: Gas statistics update (from summaries) completed.",
+                "%s: Gas statistics update (from summaries) completed, state set to %.2f m³.",
                 self.entity_id,
+                self._cached_native_value,
             )
         except Exception:
             _LOGGER.exception(
