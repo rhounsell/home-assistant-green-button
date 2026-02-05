@@ -2,7 +2,7 @@
 
 ## No Recorder Configuration Required
 
-The Green Button integration is designed to work directly with the Energy Dashboard **without requiring any recorder exclusions**.
+The Green Button integration is designed to work directly with the Energy Dashboard **without requiring any recorder exclusions**. The component calculates its own statistics without using the Home Assistant recorder, which doesn't work well with historical data.
 
 ### How It Works
 
@@ -28,6 +28,8 @@ After setup, check that:
 4. ✅ **No warnings** about "Entity not tracked" or "Fix issue"
 5. ✅ **Data appears in Energy Dashboard graphs** (the important part!)
 6. ✅ No duplicate statistics in Developer Tools → Statistics
+
+See the services.yaml file for a list of other useful Green Button actions that can be called from the Home Assistant UI.
 
 ## Troubleshooting
 
