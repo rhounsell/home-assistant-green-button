@@ -11,7 +11,8 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from homeassistant.exceptions import HomeAssistantError
-
+from .parsers import espi
+from .xml_storage import async_get_xml_storage
 from . import statistics
 from .const import DOMAIN
 from .coordinator import GreenButtonCoordinator
@@ -85,50 +86,48 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def log_stored_xmls_service(call: ServiceCall) -> None:
         """Log information about stored XMLs in storage files."""
-        from .parsers import espi
-        from .xml_storage import async_get_xml_storage
-        
+
         entries = list(hass.config_entries.async_entries(DOMAIN))
         for entry in entries:
             _LOGGER.info("=" * 60)
             _LOGGER.info("Config Entry: %s (entry_id: %s)", entry.title, entry.entry_id)
-            
+
             # Load from new separate storage file
             xml_storage = await async_get_xml_storage(hass, entry.entry_id)
             stored_xmls = xml_storage.get_stored_xmls()
-            
+
             # Fall back to config entry for backwards compatibility
             if not stored_xmls:
                 stored_xmls = entry.data.get("stored_xmls", [])
                 legacy_xml = entry.data.get("xml")
-                
+
                 if legacy_xml and not stored_xmls:
                     _LOGGER.info("  Found legacy single XML storage (not yet migrated)")
                     stored_xmls = [{"label": "legacy", "xmls": [legacy_xml]}]
-            
+
             if not stored_xmls:
                 _LOGGER.info("  No stored XMLs found")
                 continue
-            
+
             _LOGGER.info("  Found %d label(s)", len(stored_xmls))
-            
+
             for idx, xml_entry in enumerate(stored_xmls):
                 label = xml_entry.get("label", f"xml_{idx}")
-                
+
                 # Handle both old format (single "xml") and new format ("xmls" list)
                 xml_list = xml_entry.get("xmls", [])
                 if not xml_list and "xml" in xml_entry:
                     xml_list = [xml_entry["xml"]]
-                
+
                 total_size = sum(len(x) for x in xml_list if x)
                 _LOGGER.info("  [%d] Label: '%s', %d XML(s), Total size: %d bytes", idx, label, len(xml_list), total_size)
-                
+
                 for xml_idx, xml_data in enumerate(xml_list):
                     if not xml_data:
                         continue
-                    
+
                     _LOGGER.info("      XML[%d]: %d bytes", xml_idx, len(xml_data))
-                    
+
                     try:
                         # Parse XML to get date ranges
                         usage_points = await hass.async_add_executor_job(
@@ -159,7 +158,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                                 _LOGGER.info("        UsageSummaries: %d", len(up.usage_summaries))
                     except Exception as e:
                         _LOGGER.error("        Failed to parse XML: %s", e)
-            
+
             _LOGGER.info("=" * 60)
 
 
@@ -167,19 +166,19 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         """Handle the import_espi_xml service call."""
         xml_path = call.data.get("xml_file_path", "").strip()
         xml_content = call.data.get("xml", "").strip()
-        
+
         # Validate that at least one is provided
         if not xml_path and not xml_content:
             msg = "No XML data provided. Please provide either xml_file_path or xml content."
             _LOGGER.error(msg)
             raise HomeAssistantError(msg)
-        
+
         # Validate that both are not provided
         if xml_path and xml_content:
             msg = "Both xml_file_path and xml content provided. Please provide only one."
             _LOGGER.error(msg)
             raise HomeAssistantError(msg)
-        
+
         # If file path is provided, read the file
         if xml_path:
             # Debug logging
@@ -266,12 +265,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         # Validate that the entity exists and is a Green Button entity
         entity_registry = async_get_entity_registry(hass)
         entity_entry = entity_registry.async_get(statistic_id)
-        
+
         if entity_entry is None:
             msg = f"Entity {statistic_id} not found"
             _LOGGER.error(msg)
             raise HomeAssistantError(msg)
-        
+
         if entity_entry.platform != DOMAIN:
             msg = f"Entity {statistic_id} is not a Green Button entity (platform: {entity_entry.platform})"
             _LOGGER.warning(msg)
@@ -286,22 +285,21 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def clear_stored_xml_service(call: ServiceCall) -> None:
         """Handle the clear_stored_xml service call."""
-        from .xml_storage import async_get_xml_storage
-        
+
         # commodity maps directly to label (electricity or gas)
         label_to_clear = call.data.get("commodity")
-        
+
         entries = list(hass.config_entries.async_entries(DOMAIN))
-        
+
         if not entries:
             _LOGGER.warning("No Green Button integrations found")
             return
-        
+
         for entry in entries:
             # Use new separate storage file
             xml_storage = await async_get_xml_storage(hass, entry.entry_id)
             removed_count, remaining_count = await xml_storage.async_clear_label(label_to_clear)
-            
+
             if label_to_clear:
                 if removed_count > 0:
                     _LOGGER.info(

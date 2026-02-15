@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 from homeassistant import config_entries
-import voluptuous as vol
 from homeassistant.helpers import selector
+import voluptuous as vol
 
-from . import configs
-from . import const
+from . import configs, const
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,7 +33,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
     ) -> config_entries.ConfigFlowResult:
         """Handle the initial step."""
         step_id = "user"
-        
+
         # Build a custom schema where XML field is optional
         if user_input is None:
             user_input_default = {
@@ -45,7 +44,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
             }
         else:
             user_input_default = user_input
-            
+
         schema = vol.Schema(
             {
                 vol.Required(
@@ -100,14 +99,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                 ),
             }
         )
-        
+
         errors = {}
-        
+
         if user_input is not None:
             input_type = user_input.get("input_type")
             xml_path = user_input.get("xml_file_path", "").strip()
             xml_content = user_input.get("xml", "").strip()
-            
+
             # Validate selection
             if input_type not in ("file", "xml", "none"):
                 errors["input_type"] = "input_type_required"
@@ -174,13 +173,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
 
         _LOGGER.info("Created config with unique ID %r", config.unique_id)
         config_data = dict(config.to_mapping())
-        
+
         # Store XML content temporarily - it will be moved to proper storage
         # with auto-detected label when the coordinator first processes it
         xml_content = user_input.get("xml", "")
         if xml_content:
             config_data["initial_xml"] = xml_content
-        
+
         # Store gas cost allocation toggle
         config_data["gas_cost_allocation"] = user_input.get(
             "gas_cost_allocation", "pro_rate_daily"

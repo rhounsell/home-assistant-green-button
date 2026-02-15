@@ -310,7 +310,7 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
                 statistics.DefaultDataExtractor(),
                 meter_reading,
             )
-            
+
             # Cache the last statistics sum value for display as sensor state
             # This prevents Energy Dashboard "unavailable" warnings
             total_energy = sum(
@@ -320,10 +320,10 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
                 if interval_reading.value is not None
             )
             self._cached_native_value = total_energy
-            
+
             # Write the state once after statistics import to update the sensor display
             self.async_write_ha_state()
-            
+
             _LOGGER.info(
                 "%s: Statistics update completed, state set to %.2f kWh.",
                 self.entity_id,
@@ -455,7 +455,7 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
 
     async def async_added_to_hass(self) -> None:
         """When entity is added to hass, trigger statistics generation without updating sensor state.
-        
+
         See GreenButtonSensor.async_added_to_hass() for detailed explanation.
         We avoid calling async_write_ha_state() to prevent HA's automatic statistics
         compilation from generating corrupted records.
@@ -768,7 +768,7 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
                 usage_summaries=summaries,
                 allocation_mode=usage_allocation_mode,
             )
-            
+
             # Cache the total value for display as sensor state
             total = sum(
                 float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
@@ -776,10 +776,10 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
                 for rd in block.interval_readings
             )
             self._cached_native_value = total
-            
+
             # Write the state once after statistics import to update the sensor display
             self.async_write_ha_state()
-            
+
             _LOGGER.info(
                 "%s: Gas statistics update completed, state set to %.2f m³.",
                 self.entity_id,
@@ -842,14 +842,14 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
                 usage_summaries=list(usage_point.usage_summaries),
                 allocation_mode=usage_allocation_mode,
             )
-            
+
             # Cache the total consumption for display as sensor state
             total = sum(us.consumption_m3 or 0.0 for us in usage_point.usage_summaries)
             self._cached_native_value = total if total > 0 else 0.0
-            
+
             # Write the state once after statistics import to update the sensor display
             self.async_write_ha_state()
-            
+
             _LOGGER.info(
                 "%s: Gas statistics update (from summaries) completed, state set to %.2f m³.",
                 self.entity_id,
@@ -951,7 +951,7 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
                         break
                 if found_meter_reading:
                     break
-            
+
             # If not found as meter reading, check if it's a UsagePoint ID (UsageSummary-only case)
             if not found_meter_reading:
                 for usage_point in self.coordinator.data["usage_points"]:
@@ -1181,7 +1181,7 @@ async def async_setup_entry(
                             entities.append(gas_cost_sensor)
                         else:
                             _LOGGER.warning("Gas cost sensor has no unique_id, skipping creation")
-                        
+
                         # Skip to next usage point since we handled this gas data with monthly mode
                         continue
 
