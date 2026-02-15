@@ -428,19 +428,49 @@ class EspiEntry:
         """Create an IntervalBlock parser for the ReadingType."""
 
         def parser(entry: EspiEntry) -> model.IntervalBlock:
+            readings = entry.parse_child_elems(
+                "espi:IntervalReading",
+                entry.create_interval_reading_parser(reading_type),
+            )
+
+            # parse interval relative to the IntervalBlock element, not the whole entry
+            ib = entry.elem.find("./atom:content/espi:IntervalBlock", _NAMESPACE_MAP)
+            if ib is None:
+                raise EspiXmlParseError(
+                    f"Missing IntervalBlock payload in entry:\n{entry._pretty_print()}"
+                )
+
+            start = _parse_optional_child_text(
+                ib,
+                "./espi:interval/espi:start",
+                _to_utc_datetime,
+                None,
+            )
+            duration = _parse_optional_child_text(
+                ib,
+                "./espi:interval/espi:duration",
+                _to_timedelta,
+                None,
+            )
+
+            # Fallback: derive from readings
+            if start is None and readings:
+                start = readings[0].start
+            if duration is None and readings and start is not None:
+                end = readings[-1].start + readings[-1].duration
+                duration = end - start
+
+            if start is None or duration is None:
+                raise EspiXmlParseError(
+                    f"IntervalBlock missing interval and no readings to derive it:\n{entry._pretty_print()}"
+                )
+
             return model.IntervalBlock(
                 id=entry.find_self_href(),
                 reading_type=reading_type,
-                start=entry.parse_child_text(
-                    "espi:interval/espi:start", _to_utc_datetime
-                ),
-                duration=entry.parse_child_text(
-                    "espi:interval/espi:duration", _to_timedelta
-                ),
-                interval_readings=entry.parse_child_elems(
-                    "espi:IntervalReading",
-                    entry.create_interval_reading_parser(reading_type),
-                ),
+                start=start,
+                duration=duration,
+                interval_readings=readings,
             )
 
         return parser
