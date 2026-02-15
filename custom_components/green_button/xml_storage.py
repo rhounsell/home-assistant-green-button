@@ -92,7 +92,7 @@ class GreenButtonXmlStorage:
             (i for i, entry in enumerate(stored_xmls) if entry.get("label") == label),
             None
         )
-        
+
         if existing_index is not None:
             # Merge with existing: append new XML to the list for this label
             existing_entry = stored_xmls[existing_index]
@@ -112,7 +112,7 @@ class GreenButtonXmlStorage:
             stored_xmls.append({"label": label, "xmls": [xml_data]})
 
         data["stored_xmls"] = stored_xmls
-        
+
         # Use immediate save for reliability
         await self.async_save(data)
         _LOGGER.info("Stored %d label(s) in XML storage", len(stored_xmls))
@@ -124,7 +124,7 @@ class GreenButtonXmlStorage:
         """
         data = await self.async_load()
         stored_xmls = data.get("stored_xmls", [])
-        
+
         if not stored_xmls:
             return (0, 0)
 
@@ -139,21 +139,21 @@ class GreenButtonXmlStorage:
             original_count = len(stored_xmls)
             stored_xmls = [x for x in stored_xmls if x.get("label") != label]
             removed_count = original_count - len(stored_xmls)
-            
+
             if removed_count > 0:
                 data["stored_xmls"] = stored_xmls
                 await self.async_save(data)
-            
+
             return (removed_count, len(stored_xmls))
 
 
 async def async_get_xml_storage(hass: HomeAssistant, entry_id: str) -> GreenButtonXmlStorage:
     """Get or create an XML storage instance for a config entry."""
     storage_key = f"{DOMAIN}_xml_storage_{entry_id}"
-    
+
     if storage_key not in hass.data.setdefault(DOMAIN, {}):
         storage = GreenButtonXmlStorage(hass, entry_id)
         await storage.async_load()  # Pre-load the data
         hass.data[DOMAIN][storage_key] = storage
-    
+
     return hass.data[DOMAIN][storage_key]

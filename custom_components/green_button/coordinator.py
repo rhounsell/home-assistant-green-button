@@ -6,9 +6,11 @@ import dataclasses
 import logging
 from typing import Any
 
+from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from .xml_storage import async_get_xml_storage
 
 from . import model
 from .const import DOMAIN
@@ -67,17 +69,15 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 espi.parse_xml, xml_data
             )
             new_usage_points = usage_points or []
-            
+
             # Auto-detect label from commodity type
             label = self._detect_label_from_usage_points(new_usage_points)
             _LOGGER.info("Auto-detected label '%s' from XML content", label)
-            
+
             # Store XML in separate storage file if requested (for persistence across restarts)
             # NOTE: We use a separate Store instance instead of config entry data because
             # config entries use delayed writes and are not designed for multi-MB data storage.
             if store_in_config:
-                from .xml_storage import async_get_xml_storage
-                
                 # Use dedicated XML storage (immediate save for reliability)
                 xml_storage = await async_get_xml_storage(self.hass, self.config_entry.entry_id)
                 await xml_storage.async_add_xml(xml_data, label)
@@ -143,7 +143,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.async_set_updated_data({"usage_points": self.usage_points})
 
             _LOGGER.info("Successfully updated coordinator with new data")
-            
+
             # Trigger statistics generation for all meter readings after import
             await self._trigger_statistics_update_for_all_readings()
 
@@ -159,14 +159,13 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             'gas' if any usage point is GAS type
             'imported_data' if no usage points or unknown type
         """
-        from homeassistant.components.sensor import SensorDeviceClass
-        
+
         for up in usage_points:
             if up.sensor_device_class == SensorDeviceClass.ENERGY:
                 return "electricity"
             elif up.sensor_device_class == SensorDeviceClass.GAS:
                 return "gas"
-        
+
         return "imported_data"
 
     async def _trigger_statistics_update_for_all_readings(self) -> None:
@@ -177,11 +176,11 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         (entity sensors) will be notified and will generate statistics automatically.
         """
         _LOGGER.info("Starting statistics update for all meter readings")
-        
+
         if not self.data or not self.data.get("usage_points"):
             _LOGGER.info("No coordinator data available for statistics update")
             return
-        
+
         if _LOGGER.isEnabledFor(logging.DEBUG):
             # Log all meter readings that need statistics generated
             total_meter_readings = 0
@@ -208,7 +207,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 )
                             else:
                                 _LOGGER.debug("  IntervalBlock: No readings")
-        
+
             _LOGGER.info("Statistics update scheduled for %d meter readings", total_meter_readings)
 
     def has_existing_entities(self) -> bool:
@@ -222,15 +221,14 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         config entries use delayed writes and are not designed for multi-MB data.
         Falls back to config entry data for backwards compatibility.
         """
-        from .xml_storage import async_get_xml_storage
-        
+
         # Check for initial_xml from config flow (first setup)
         initial_xml = self.config_entry.data.get("initial_xml")
         if initial_xml:
             _LOGGER.info("Processing initial XML from config flow setup")
             # Process through normal flow which auto-detects label and stores properly
             await self.async_add_xml_data(initial_xml, store_in_config=True)
-            
+
             # Remove initial_xml from config entry data (it's now in proper storage)
             data_updates = dict(self.config_entry.data)
             data_updates.pop("initial_xml", None)
@@ -239,22 +237,22 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             _LOGGER.info("Migrated initial_xml to proper storage and removed from config entry")
             return  # Data already processed
-        
+
         # Try to load from new separate storage file first
         xml_storage = await async_get_xml_storage(self.hass, self.config_entry.entry_id)
         stored_xmls = xml_storage.get_stored_xmls()
-        
+
         # Fall back to config entry storage for backwards compatibility
         if not stored_xmls:
             stored_xmls = self.config_entry.data.get("stored_xmls", [])
-            
+
             # Fall back to legacy single XML storage if multi-XML not found
             if not stored_xmls:
                 xml_data = self.config_entry.data.get("xml")
                 if xml_data:
                     _LOGGER.debug("Found legacy single XML storage, will migrate on next save")
                     stored_xmls = [{"label": "imported_data", "xml": xml_data}]
-        
+
         if not stored_xmls:
             _LOGGER.debug("No stored XML data found in storage or config entry")
             return
@@ -265,38 +263,38 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         try:
             _LOGGER.info("[RESTART] Loading %d stored label(s) from XML storage", len(stored_xmls))
-            
+
             # Log labels of stored XMLs for debugging
             stored_labels = [
                 f"{entry.get('label', f'xml_{i}')} ({len(entry.get('xmls', [entry.get('xml', '')]))} XMLs)"
                 for i, entry in enumerate(stored_xmls)
             ]
             _LOGGER.info("[RESTART] Stored XML labels: %s", stored_labels)
-            
+
             # Parse and merge all stored XMLs
             xml_count = 0
             for idx, xml_entry in enumerate(stored_xmls):
                 label = xml_entry.get("label", f"xml_{idx}")
-                
+
                 # Handle both old format (single "xml") and new format ("xmls" list)
                 xml_list = xml_entry.get("xmls", [])
                 if not xml_list and "xml" in xml_entry:
                     xml_list = [xml_entry["xml"]]
-                
+
                 if not xml_list:
                     _LOGGER.warning("[RESTART] Skipping empty XML entry with label '%s'", label)
                     continue
-                
+
                 for xml_idx, xml_data in enumerate(xml_list):
                     if not xml_data:
                         continue
-                    
+
                     xml_count += 1
                     _LOGGER.debug("[RESTART] Parsing stored XML '%s' [%d/%d]", label, xml_idx + 1, len(xml_list))
                     usage_points = await self.hass.async_add_executor_job(
                         espi.parse_xml, xml_data
                     )
-                    
+
                     if usage_points:
                         # Log date range of data in this XML
                         for up in usage_points:
@@ -316,7 +314,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                         max_end.isoformat(),
                                         len(all_readings),
                                     )
-                        
+
                         # Merge with existing data (if any from previous XMLs)
                         if not self.usage_points:
                             self.usage_points = usage_points
@@ -328,7 +326,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             label,
                             xml_idx,
                         )
-            
+
             self.async_set_updated_data({"usage_points": self.usage_points})
             self.last_update_success = True
             _LOGGER.info(

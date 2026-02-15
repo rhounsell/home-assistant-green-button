@@ -304,7 +304,7 @@ async def _get_all_existing_statistics(
     """
     try:
         rec = recorder_helper.get_instance(hass)
-        
+
         # Define a wrapper to call with keyword arguments
         # Use a very wide date range to get all statistics
         def _get_stats() -> dict[str, list[Any]]:
@@ -317,14 +317,14 @@ async def _get_all_existing_statistics(
                 types={"sum", "state"},
                 units=None,
             )
-        
+
         # Get all statistics
         raw_stats = await rec.async_add_executor_job(_get_stats)
-        
+
         stats_list = raw_stats.get(statistic_id, [])
         if not stats_list:
             return []
-        
+
         # Convert to StatisticData format
         result: list[StatisticData] = []
         for stat in stats_list:
@@ -336,14 +336,14 @@ async def _get_all_existing_statistics(
             else:
                 # It's a Unix timestamp (float)
                 start_dt = datetime.datetime.fromtimestamp(start_val, tz=datetime.timezone.utc)
-            
+
             stat_data: StatisticData = {
                 "start": start_dt,
                 "state": float(stat_dict.get("state", 0.0)),
                 "sum": float(stat_dict.get("sum", 0.0)),
             }
             result.append(stat_data)
-        
+
         # Sort by start time
         result.sort(key=lambda s: s["start"])
         return result
@@ -398,7 +398,7 @@ def _merge_statistics_with_out_of_order_support(
     """
     if not new_stats:
         return []
-    
+
     if not existing_stats:
         # No existing data, just return new stats with cumulative sums starting from 0
         result: list[StatisticData] = []
@@ -412,34 +412,34 @@ def _merge_statistics_with_out_of_order_support(
             }
             result.append(stat_data)
         return result
-    
+
     # Find the range of new data
     first_new_start = new_stats[0]["start"]
     last_new_start = new_stats[-1]["start"]
-    
+
     _LOGGER.debug(
         "Merging statistics for %s: new data range %s to %s",
         statistic_id,
         first_new_start,
         last_new_start,
     )
-    
+
     # Find the baseline: last existing statistic before the new data
     baseline_stat = _find_last_statistic_before(existing_stats, first_new_start)
     baseline_sum = baseline_stat.get("sum", 0.0) if baseline_stat else 0.0
-    
+
     _LOGGER.debug(
         "Baseline sum before new data for %s: %.3f (from %s)",
         statistic_id,
         baseline_sum,
         baseline_stat["start"] if baseline_stat else "start",
     )
-    
+
     # Count stats that will be discarded (for logging)
     stats_before_count = sum(1 for s in existing_stats if s["start"] < first_new_start)
     stats_overlap_count = sum(1 for s in existing_stats if first_new_start <= s["start"] <= last_new_start)
     stats_after_count = sum(1 for s in existing_stats if s["start"] > last_new_start)
-    
+
     _LOGGER.debug(
         "Existing statistics for %s: %d before (kept), %d overlapping (replaced), %d after (discarded)",
         statistic_id,
@@ -447,7 +447,7 @@ def _merge_statistics_with_out_of_order_support(
         stats_overlap_count,
         stats_after_count,
     )
-    
+
     if stats_after_count > 0:
         _LOGGER.info(
             "Discarding %d existing statistics for %s that are after the imported data range (after %s). "
@@ -456,15 +456,15 @@ def _merge_statistics_with_out_of_order_support(
             statistic_id,
             last_new_start,
         )
-    
+
     # Build the result list
     result = []
-    
+
     # 1. Add all stats before the new data (unchanged)
     for stat in existing_stats:
         if stat["start"] < first_new_start:
             result.append(stat)
-    
+
     # 2. Add new statistics with cumulative sums starting from baseline
     cumulative = baseline_sum
     for stat in new_stats:
@@ -475,10 +475,10 @@ def _merge_statistics_with_out_of_order_support(
             "sum": cumulative,
         }
         result.append(stat_data)
-    
+
     # NOTE: Stats after the new data range are intentionally NOT preserved.
     # The stored XML is the source of truth for this integration.
-    
+
     return result
 
 
@@ -1384,7 +1384,7 @@ async def _generate_statistics_data_cost(
     last_end: datetime.datetime = max(r.end for r in all_readings)
     cutoff_end: datetime.datetime = last_end.replace(minute=0, second=0, microsecond=0)
     include_trailing_hour = last_end == cutoff_end
-    
+
     _LOGGER.debug(
         "Cost statistics: Last end time = %s, cutoff_end = %s, include_trailing_hour = %s",
         last_end,
@@ -1996,7 +1996,7 @@ async def update_gas_cost_statistics(
     to daily consumption in m³. Emit one hourly record per day at 00:00.
     """
     metadata = create_metadata(entity)
-    
+
     if allocation_mode == "monthly_increment":
         # One increment per usage summary at the period end (00:00 of end day)
         if not usage_summaries:
