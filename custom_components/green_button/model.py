@@ -27,6 +27,7 @@ class IntervalReading:
     start: datetime.datetime
     duration: datetime.timedelta
     value: int
+    powerOfTenMultiplier: int
 
     def __lt__(self, other: "IntervalBlock") -> bool:
         """Return whether or not this reading's start time is before the other's."""
