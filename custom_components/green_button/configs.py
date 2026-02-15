@@ -151,8 +151,26 @@ class ComponentConfig:
         The mapping should conform to the expected schema from
         `make_config_entry_step_schema`.
         """
+        xml_content = user_input.get(_ComponentConfigField.XML, "").strip()
+        
+        # If no XML is provided, create a minimal config
+        if not xml_content:
+            name = user_input[_ComponentConfigField.NAME]
+            # Generate a unique ID from the name by slugifying it
+            unique_id = name.lower().replace(" ", "_").replace("-", "_")
+            # Remove any non-alphanumeric characters except underscores
+            unique_id = "".join(c for c in unique_id if c.isalnum() or c == "_")
+            
+            return ComponentConfig(
+                name=name,
+                unique_id=unique_id,
+                meter_reading_configs=[],
+                initial_usage_point=None,
+            )
+        
+        # Parse XML if provided
         try:
-            usage_points = espi.parse_xml(user_input[_ComponentConfigField.XML])
+            usage_points = espi.parse_xml(xml_content)
         except espi.EspiXmlParseError as ex:
             raise InvalidUserInputError(
                 {_ComponentConfigField.XML: "invalid_espi_xml"}
