@@ -10,7 +10,7 @@
 [![hacs][hacsbadge]][hacs]
 [![Project Maintenance][maintenance-shield]][user_profile]
 
-A custom component for Home Assistant that will import Green Button Usage and Cost data, which can then be added to the Energy dashboard.
+A custom component for Home Assistant that will import Green Button Usage and Cost data, and then generate statistics which can be added to the Energy dashboard.
 
 The Green Button data needs to be in the ESPI XML Schema Definition, contained in an Atom Syndication format. 
 
@@ -46,6 +46,10 @@ There are several actions (services) related to the Green Button custom componen
 - Delete Green Button Statistics
 - Import Green Button ESPI XML
 - Clear Stored Green Button XML Data
+
+## Notes
+
+None of the original tests or development support files such as .pre-commit-config.yaml have been updated or, for that matter, used when updating this component.
 
 ## Credits
 
