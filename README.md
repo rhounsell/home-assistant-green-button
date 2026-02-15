@@ -20,13 +20,16 @@ This custom component has been developed to handle the Green Button data availab
 
 1. Copy the green_button folder under custom_components into your Home Assistant custom_components folder
 2. Restart Home Assistant
-3. In the HA UI go to "Configuration" -> "Integrations" click "+" and search for "Green Button"
+3. In the HA UI go to "Configuration" -> "Integrations". Click "+" and search for "Green Button"
 4. Complete the installation with or without providing Green Button XML data
    - If you skip the XML import during setup, you can import it later using the ** Add Entry** button on the Green Button integration or via **Developer Tools → Actions → 'Import Green Button ESPI XML'**
 
+By default, importing electricity usage and billing data will create a "Home Electricity" Green Button device, with entities named "sensor.home_electricity_cost" and "sensor.home_electricity_usage". Importing Natural Gas data will create by default a "Home Natural Gas" device, with "sensor.home_natural_gas_cost" and "sensor.home_natural_gas_usage" sensors. Statistics will be generated for these sensors and can be imported into the Energy dashboard. The "usage" sensors have a state_class of "total_increasing", and the "cost" sensors have a state_class of "total". It's the statistics that you'll want to examine for periodic
+usage rather than the raw data in the sensors themselves.
+
 It may take a few minutes for all the associated statisitics to be generated. The related sensor may not be available to add into the Energy dashbord until the generation is completed.
 
-Follow the [Green Button Component Description](GREEN_BUTTON_COMPONENT_DESCRIPTION.md) for detail on how the Green Button custom component functions.
+Review the [Green Button Component Description](GREEN_BUTTON_COMPONENT_DESCRIPTION.md) for detail on how the Green Button custom component functions.
 
 ## Credits
 
