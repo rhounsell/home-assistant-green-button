@@ -10,24 +10,28 @@ import logging
 from collections.abc import Callable
 from collections.abc import Sequence
 from typing import Any
+from typing import cast
 from typing import final
 from typing import Literal
 from typing import Protocol
 from typing import TypeVar
+from typing import TYPE_CHECKING
 
 from homeassistant import exceptions
-from homeassistant.components import recorder
 from homeassistant.components.recorder import db_schema as recorder_db_schema
 from homeassistant.components.recorder import statistics
 from homeassistant.components.recorder.statistics import async_import_statistics
-from homeassistant.components.recorder.models import StatisticData
+from homeassistant.components.recorder.models import StatisticData, StatisticMeanType
+from homeassistant.components.recorder.models.statistics import StatisticMetaData
 from homeassistant.components.recorder import tasks
-from homeassistant.components.recorder import util as recorder_util
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import recorder as recorder_helper
 
 from . import model
 
+if TYPE_CHECKING:
+    from homeassistant.components.recorder.core import Recorder
 
 class GreenButtonEntity(Protocol):
     """Protocol for Green Button entities that support statistics."""
@@ -140,9 +144,9 @@ class _SensorStatRecord:
 
     def to_statistics_data(
         self, period: Literal["5minute", "hour"]
-    ) -> statistics.StatisticData:
+    ) -> StatisticData:
         """Create a StatisticData from this record."""
-        return statistics.StatisticData(
+        return StatisticData(
             start=self.timestamp - _to_time_delta(period),
             last_reset=self.last_reset,
             state=float(self.state),
@@ -281,12 +285,201 @@ def _queue_task(
     hass: HomeAssistant, task_ctor: Callable[[asyncio.Future[T]], tasks.RecorderTask]
 ) -> asyncio.Future[T]:
     future = asyncio.get_event_loop().create_future()
-    recorder_util.get_instance(hass).queue_task(task_ctor(future))
+    recorder_helper.get_instance(hass).queue_task(task_ctor(future))
+#   RDH recorder_util.get_instance(hass).queue_task(task_ctor(future))
     return future
 
 
 def _complete_future(future: asyncio.Future[T], value: T) -> None:
     future.get_loop().call_soon_threadsafe(future.set_result, value)
+
+
+async def _get_all_existing_statistics(
+    hass: HomeAssistant,
+    statistic_id: str,
+) -> list[StatisticData]:
+    """Retrieve all existing hourly statistics for a statistic_id.
+    
+    Returns a list of StatisticData dictionaries sorted by start time.
+    """
+    try:
+        rec = recorder_helper.get_instance(hass)
+
+        # Define a wrapper to call with keyword arguments
+        # Use a very wide date range to get all statistics
+        def _get_stats() -> dict[str, list[Any]]:
+            return statistics.statistics_during_period(
+                hass=hass,
+                start_time=datetime.datetime(2000, 1, 1, tzinfo=datetime.timezone.utc),  # earliest possible date
+                end_time=datetime.datetime(2100, 1, 1, tzinfo=datetime.timezone.utc),  # far future date
+                statistic_ids={statistic_id},
+                period="hour",
+                types={"sum", "state"},
+                units=None,
+            )
+
+        # Get all statistics
+        raw_stats = await rec.async_add_executor_job(_get_stats)
+
+        stats_list = raw_stats.get(statistic_id, [])
+        if not stats_list:
+            return []
+
+        # Convert to StatisticData format
+        result: list[StatisticData] = []
+        for stat in stats_list:
+            stat_dict = cast(dict[str, Any], stat)
+            # Convert start time - it may be a datetime or a timestamp float
+            start_val = stat_dict["start"]
+            if isinstance(start_val, datetime.datetime):
+                start_dt = start_val
+            else:
+                # It's a Unix timestamp (float)
+                start_dt = datetime.datetime.fromtimestamp(start_val, tz=datetime.timezone.utc)
+
+            stat_data: StatisticData = {
+                "start": start_dt,
+                "state": float(stat_dict.get("state", 0.0)),
+                "sum": float(stat_dict.get("sum", 0.0)),
+            }
+            result.append(stat_data)
+
+        # Sort by start time
+        result.sort(key=lambda s: s["start"])
+        return result
+    except Exception:
+        _LOGGER.warning(
+            "Could not retrieve existing statistics for %s",
+            statistic_id,
+            exc_info=True,
+        )
+        return []
+
+
+def _find_last_statistic_before(
+    existing_stats: list[StatisticData],
+    target_time: datetime.datetime,
+) -> StatisticData | None:
+    """Find the last statistic with start time before target_time.
+    
+    Returns None if no such statistic exists.
+    """
+    for stat in reversed(existing_stats):
+        if stat["start"] < target_time:
+            return stat
+    return None
+
+
+def _merge_statistics_with_out_of_order_support(
+    existing_stats: list[StatisticData],
+    new_stats: list[StatisticData],
+    statistic_id: str,
+) -> list[StatisticData]:
+    """Merge new statistics into existing statistics, handling out-of-order imports.
+    
+    Algorithm:
+    1. Determine the date range of new data
+    2. Find the last existing statistic before the new data (baseline)
+    3. Remove existing statistics that overlap with OR are after the new data range
+    4. Add new data with cumulative sums starting from baseline
+    
+    NOTE: We do NOT preserve statistics after the new data range. The stored XML
+    is the source of truth for this integration. Any statistics not covered by the
+    XML data (including corrupted records auto-generated by HA's recorder) should
+    be discarded.
+    
+    Args:
+        existing_stats: List of existing StatisticData sorted by start time
+        new_stats: List of new StatisticData to merge, sorted by start time
+        statistic_id: The ID of the statistic being merged
+        
+    Returns:
+        Complete list of StatisticData that should be imported
+    """
+    if not new_stats:
+        return []
+
+    if not existing_stats:
+        # No existing data, just return new stats with cumulative sums starting from 0
+        result: list[StatisticData] = []
+        cumulative = 0.0
+        for stat in new_stats:
+            cumulative += stat.get("state", 0.0)
+            stat_data: StatisticData = {
+                "start": stat["start"],
+                "state": float(stat.get("state", 0.0)),
+                "sum": cumulative,
+            }
+            result.append(stat_data)
+        return result
+
+    # Find the range of new data
+    first_new_start = new_stats[0]["start"]
+    last_new_start = new_stats[-1]["start"]
+
+    _LOGGER.debug(
+        "Merging statistics for %s: new data range %s to %s",
+        statistic_id,
+        first_new_start,
+        last_new_start,
+    )
+
+    # Find the baseline: last existing statistic before the new data
+    baseline_stat = _find_last_statistic_before(existing_stats, first_new_start)
+    baseline_sum = baseline_stat.get("sum", 0.0) if baseline_stat else 0.0
+
+    _LOGGER.debug(
+        "Baseline sum before new data for %s: %.3f (from %s)",
+        statistic_id,
+        baseline_sum,
+        baseline_stat["start"] if baseline_stat else "start",
+    )
+
+    # Count stats that will be discarded (for logging)
+    stats_before_count = sum(1 for s in existing_stats if s["start"] < first_new_start)
+    stats_overlap_count = sum(1 for s in existing_stats if first_new_start <= s["start"] <= last_new_start)
+    stats_after_count = sum(1 for s in existing_stats if s["start"] > last_new_start)
+
+    _LOGGER.debug(
+        "Existing statistics for %s: %d before (kept), %d overlapping (replaced), %d after (discarded)",
+        statistic_id,
+        stats_before_count,
+        stats_overlap_count,
+        stats_after_count,
+    )
+
+    if stats_after_count > 0:
+        _LOGGER.info(
+            "Discarding %d existing statistics for %s that are after the imported data range (after %s). "
+            "These may have been auto-generated by HA's recorder and are not in the source XML.",
+            stats_after_count,
+            statistic_id,
+            last_new_start,
+        )
+
+    # Build the result list
+    result = []
+
+    # 1. Add all stats before the new data (unchanged)
+    for stat in existing_stats:
+        if stat["start"] < first_new_start:
+            result.append(stat)
+
+    # 2. Add new statistics with cumulative sums starting from baseline
+    cumulative = baseline_sum
+    for stat in new_stats:
+        cumulative += stat.get("state", 0.0)
+        stat_data: StatisticData = {
+            "start": stat["start"],
+            "state": float(stat.get("state", 0.0)),
+            "sum": cumulative,
+        }
+        result.append(stat_data)
+
+    # NOTE: Stats after the new data range are intentionally NOT preserved.
+    # The stored XML is the source of truth for this integration.
+
+    return result
 
 
 def _convert_to_kwh(value: float, source_unit: Any) -> float:
@@ -351,13 +544,15 @@ class _StatsDao:
             hass=self._hass,
             start_time=_adjust_for_end_time(start, period),
             end_time=_adjust_for_end_time(end, period),
-            statistic_ids=[self._statistic_id],
+            statistic_ids={self._statistic_id},
             period=period,
+            types={"sum", "state"},
+            units=None,
         ).get(self._statistic_id, [])
         if not raw_data:
             return []
 
-        data = [_SensorStatRecord.from_dict(record) for record in raw_data]
+        data = [_SensorStatRecord.from_dict(cast(dict[str, Any], record)) for record in raw_data]
         # Remove the head if the stat is before the requested range. This can
         # happen because `statistics_during_period` will attempt always attempt
         # to append the most recent stat record that starts before the requested
@@ -408,7 +603,7 @@ class _ComputeUpdatedPeriodStatisticsTask(tasks.RecorderTask):
         self._statistic_id = statistic_id
         self._data_extractor = data_extractor
         self._interval_block = interval_block
-        self._period = period
+        self._period: Literal["5minute", "hour"] = period
         self._future = future
 
     def _statistics_during_period_from_end_time(
@@ -424,13 +619,15 @@ class _ComputeUpdatedPeriodStatisticsTask(tasks.RecorderTask):
             hass=self._hass,
             start_time=_adjust_for_end_time(start, self._period),
             end_time=_adjust_for_end_time(end, self._period),
-            statistic_ids=[self._statistic_id],
+            statistic_ids={self._statistic_id},
             period=self._period,
+            types={"sum", "state"},
+            units=None,
         ).get(self._statistic_id, [])
         if not raw_data:
             return []
 
-        data = [_SensorStatRecord.from_dict(record) for record in raw_data]
+        data = [_SensorStatRecord.from_dict(cast(dict[str, Any], record)) for record in raw_data]
         # Remove the head if the stat is before the requested range. This can
         # happen because `statistics_during_period` will attempt always attempt
         # to append the most recent stat record that starts before the requested
@@ -481,7 +678,7 @@ class _ComputeUpdatedPeriodStatisticsTask(tasks.RecorderTask):
             units=None,
         ).get("change")
         if sum_before is None:
-            sum_before = 0
+            sum_before = 0.0
         return sum_before
 
     def _read_stats_and_generate_samples(
@@ -501,6 +698,8 @@ class _ComputeUpdatedPeriodStatisticsTask(tasks.RecorderTask):
         if self._period == "5minute":
             data = self._statistics_during_period_from_end_time(start, end)
             return (sample_period, [sample.timestamp for sample in data])
+        # Fallback for unexpected period values
+        return (sample_period, [])
 
     def _compute_samples(
         self,
@@ -585,7 +784,7 @@ class _ComputeUpdatedPeriodStatisticsTask(tasks.RecorderTask):
             )
         return stat_samples
 
-    def run(self, instance: recorder.Recorder) -> None:
+    def run(self, instance: Recorder) -> None:
         start = self._interval_block.start
         end = self._interval_block.end
         samples = self._compute_samples(start=start, end=end)
@@ -622,11 +821,11 @@ class _ComputeUpdatedPeriodStatisticsTask(tasks.RecorderTask):
 class _ImportStatisticsTask(tasks.RecorderTask):
     hass: HomeAssistant
     entity: GreenButtonEntity
-    samples: list[statistics.StatisticData]
+    samples: list[StatisticData]
     table: type[recorder_db_schema.StatisticsShortTerm | recorder_db_schema.Statistics]
     future: asyncio.Future[None]
 
-    def run(self, instance: recorder.Recorder) -> None:
+    def run(self, instance: Recorder) -> None:
         statistic_id = self.entity.long_term_statistics_id
         _LOGGER.debug(
             "[%s] Importing %d statistics samples to table '%s'",
@@ -634,7 +833,7 @@ class _ImportStatisticsTask(tasks.RecorderTask):
             len(self.samples),
             self.table.__tablename__,
         )
-        metadata = statistics.get_metadata(self.hass, statistic_ids=[statistic_id]).get(
+        metadata = statistics.get_metadata(self.hass, statistic_ids={statistic_id}).get(
             statistic_id, (0, None)
         )[1]
         if metadata is None:
@@ -643,7 +842,8 @@ class _ImportStatisticsTask(tasks.RecorderTask):
             instance, metadata, self.samples, self.table
         )
         if not success:
-            recorder_util.get_instance(self.hass).queue_task(self)
+            recorder_helper.get_instance(self.hass).queue_task(self)
+            #  RDH recorder_util.get_instance(self.hass).queue_task(self)
             return
         _complete_future(self.future, None)
 
@@ -652,8 +852,8 @@ class _ImportStatisticsTask(tasks.RecorderTask):
         cls,
         hass: HomeAssistant,
         entity: GreenButtonEntity,
-        samples: list[statistics.StatisticData],
-        table: type[statistics.Statistics | statistics.StatisticsShortTerm],
+        samples: list[StatisticData],
+        table: type[recorder_db_schema.Statistics | recorder_db_schema.StatisticsShortTerm],
     ) -> asyncio.Future[None]:
         """Queue the task and return a future that completes when the task completes."""
 
@@ -681,7 +881,7 @@ class _AdjustStatisticsTask(tasks.RecorderTask):
     sum_adjustment: float
     future: asyncio.Future[None]
 
-    def run(self, instance: recorder.Recorder) -> None:
+    def run(self, instance: Recorder) -> None:
         _LOGGER.debug(
             "[%s] Adjusting statistics after '%s' by %s %s",
             self.statistic_id,
@@ -697,7 +897,8 @@ class _AdjustStatisticsTask(tasks.RecorderTask):
             self.unit_of_measurement,
         )
         if not success:
-            recorder_util.get_instance(self.hass).queue_task(self)
+            recorder_helper.get_instance(self.hass).queue_task(self)
+            #  RDH recorder_util.get_instance(self.hass).queue_task(self)
             return
         _complete_future(self.future, None)
 
@@ -732,7 +933,7 @@ class _ClearStatisticsTask(tasks.RecorderTask):
     statistic_id: str
     future: asyncio.Future[None]
 
-    def run(self, instance: recorder.Recorder) -> None:
+    def run(self, instance: Recorder) -> None:
         _LOGGER.debug("[%s] Clearing statistics", self.statistic_id)
         statistics.clear_statistics(
             instance=instance, statistic_ids=[self.statistic_id]
@@ -768,7 +969,7 @@ class _TruncateStatisticsAfterTask(tasks.RecorderTask):
     table: type[recorder_db_schema.StatisticsShortTerm | recorder_db_schema.Statistics]
     future: asyncio.Future[None]
 
-    def run(self, instance: recorder.Recorder) -> None:
+    def run(self, instance: Recorder) -> None:
         _LOGGER.info(
             "[%s] Truncating statistics in table '%s' at and after %s",
             self.statistic_id,
@@ -777,7 +978,7 @@ class _TruncateStatisticsAfterTask(tasks.RecorderTask):
         )
         try:
             # Use recorder session to delete rows at and after the cutoff
-            with recorder_util.session_scope(session=instance.get_session()) as session:
+            with recorder_helper.session_scope(session=instance.get_session()) as session:
                 # Find metadata_id for the statistic_id
                 meta = (
                     session.query(recorder_db_schema.StatisticsMeta)
@@ -801,7 +1002,7 @@ class _TruncateStatisticsAfterTask(tasks.RecorderTask):
                     )
         except Exception:
             # Re-queue if recorder is not ready
-            recorder_util.get_instance(self.hass).queue_task(self)
+            recorder_helper.get_instance(self.hass).queue_task(self)
             return
         _complete_future(self.future, None)
 
@@ -862,14 +1063,9 @@ class _UpdateStatisticsTask:
             samples=[sample.to_statistics_data(period) for sample in samples.samples],
             table=_to_table(period),
         )
-        if samples.samples and samples.get_total_change() != 0:
-            await _AdjustStatisticsTask.queue_task(
-                hass=self._hass,
-                statistic_id=self._statistic_id,
-                start_time=samples.samples[-1].timestamp,
-                unit_of_measurement=self._entity.native_unit_of_measurement,
-                sum_adjustment=samples.get_total_change(),
-            )
+        # NOTE: Removed _AdjustStatisticsTask call - it was causing corruption by applying
+        # adjustments to ALL future statistics, including non-existent dates.
+        # The async_import_statistics API handles proper merging without needing manual adjustments.
         return samples
 
     async def _update_for_interval_block(
@@ -930,6 +1126,7 @@ class DataExtractor(Protocol):
         self, interval_reading: model.IntervalReading
     ) -> decimal.Decimal:
         """Get the native value from the IntervalReading."""
+        ...
 
 
 class DefaultDataExtractor:
@@ -945,7 +1142,6 @@ class DefaultDataExtractor:
         # Apply power of ten multiplier
         power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
         value = interval_reading.value * (10**power_multiplier)
-
         return decimal.Decimal(value)
 
 
@@ -959,20 +1155,30 @@ class CostDataExtractor:
     def get_native_value(
         self, interval_reading: model.IntervalReading
     ) -> decimal.Decimal:
-        cost = interval_reading.cost or 0
+        """
+        Calculates the native value for a given interval reading by applying the power of ten multiplier to the cost.
+
+        Args:
+            interval_reading (model.IntervalReading): The interval reading object containing cost and reading type information.
+
+        Returns:
+            decimal.Decimal: The calculated native value as a decimal, representing the cost adjusted by the power of ten multiplier.
+        """
+        cost = interval_reading.cost if interval_reading.cost is not None else 0
         power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
         return decimal.Decimal(cost * (10**power_multiplier))
 
 
-def create_metadata(entity: GreenButtonEntity) -> statistics.StatisticMetaData:
+def create_metadata(entity: GreenButtonEntity) -> StatisticMetaData:
     """Create the statistic metadata for the entity."""
     return {
-        "has_mean": False,
+        "mean_type": StatisticMeanType.NONE,
         "has_sum": True,
         "name": entity.name,
-        "source": "recorder",
+        "source": "recorder",  # Must be "recorder" - HA validates this
         "statistic_id": entity.long_term_statistics_id,
         "unit_of_measurement": entity.native_unit_of_measurement,
+        "unit_class": None,
     }
 
 
@@ -982,13 +1188,13 @@ async def _generate_statistics_data(
     data_extractor: DataExtractor,
     meter_reading: model.MeterReading,
 ) -> list[StatisticData]:
-    """Generate statistics data aggregated to full hours, skipping trailing partial hour.
+    """Generate statistics data aggregated to full hours with out-of-order import support.
 
-    We import hourly statistics aligned to hour boundaries and exclude the last
-    partial hour to avoid an oversized last bar on the Energy dashboard.
+    This function handles imports in any order by:
+    1. Getting all existing statistics
+    2. Generating new statistics from the meter reading
+    3. Merging them intelligently, recalculating sums as needed
     """
-    statistics_data: list[StatisticData] = []
-
     # Collect all readings first
     all_readings = [
         interval_reading
@@ -997,7 +1203,7 @@ async def _generate_statistics_data(
     ]
 
     if not all_readings:
-        return statistics_data
+        return []
 
     # Sort readings by start time to ensure chronological order
     all_readings.sort(key=lambda r: r.start)
@@ -1038,7 +1244,7 @@ async def _generate_statistics_data(
                 value_kwh = decimal.Decimal(
                     _convert_to_kwh(float(base_value), source_unit)
                 )
-                kept_kwh = (value_kwh * proportion)
+                kept_kwh = value_kwh * proportion
                 # Bucket kept portion into hour of cutoff_end - 1 hour
                 hour_start = (cutoff_end - datetime.timedelta(hours=1)).replace(
                     minute=0, second=0, microsecond=0
@@ -1073,41 +1279,13 @@ async def _generate_statistics_data(
 
             curr_start = segment_end
 
-    # Compute existing sum before the first hour we will insert
+    # Build new statistics for FULLY covered hours only (3600s)
     hour_keys_sorted = sorted(hourly_kwh.keys())
     if not hour_keys_sorted:
-        return statistics_data
+        return []
 
-    first_hour_start = hour_keys_sorted[0]
-    existing_sum = 0.0
-    try:
-        rec = recorder.get_instance(hass)
-        existing_stats = await rec.async_add_executor_job(
-            statistics.statistic_during_period,
-            hass,
-            None,  # start_time (beginning of time)
-            first_hour_start,  # end_time
-            entity.long_term_statistics_id,
-            {"change"},
-            None,  # units
-        )
-        if existing_stats and "change" in existing_stats and existing_stats["change"] is not None:
-            existing_sum = float(existing_stats["change"])  # type: ignore[assignment]
-            _LOGGER.info(
-                "Found existing sum of %s kWh before %s for entity %s",
-                existing_sum,
-                first_hour_start,
-                entity.entity_id,
-            )
-    except Exception:
-        _LOGGER.warning(
-            "Could not query existing statistics for entity %s, starting from 0",
-            entity.entity_id,
-            exc_info=True,
-        )
-
-    # Emit hourly statistics for FULLY covered hours only (3600s)
-    cumulative_sum = existing_sum
+    new_statistics_data: list[StatisticData] = []
+    skipped_count = 0
     for hour_start in hour_keys_sorted:
         coverage = hourly_coverage_seconds.get(hour_start, 0)
         if coverage < 3600:
@@ -1116,32 +1294,56 @@ async def _generate_statistics_data(
                 hour_start,
                 coverage,
             )
+            skipped_count += 1
             continue
         hour_kwh = float(hourly_kwh.get(hour_start, decimal.Decimal(0)))
-        cumulative_sum += hour_kwh
         stat_record: StatisticData = {
             "start": hour_start,
             "state": hour_kwh,
-            "sum": cumulative_sum,
+            "sum": 0.0,  # Will be calculated during merge
         }
-        statistics_data.append(stat_record)
-        _LOGGER.debug(
-            "Generated hourly statistic: start=%s, state=%.3f kWh, sum=%.3f kWh",
-            hour_start,
-            hour_kwh,
-            cumulative_sum,
+        new_statistics_data.append(stat_record)
+
+    if not new_statistics_data:
+        _LOGGER.info(
+            "No complete hourly statistics generated for entity %s (skipped %d partial hours)",
+            entity.entity_id,
+            skipped_count,
+        )
+        return []
+
+    # Get all existing statistics for this entity
+    existing_stats = await _get_all_existing_statistics(
+        hass,
+        entity.long_term_statistics_id,
+    )
+
+    # Merge new statistics with existing ones, handling out-of-order imports
+    merged_stats = _merge_statistics_with_out_of_order_support(
+        existing_stats,
+        new_statistics_data,
+        entity.long_term_statistics_id,
+    )
+
+    # Log summary of what was processed
+    _LOGGER.debug(
+        "Generated %d hourly statistics for entity %s (skipped %d partial hours, existing: %d, merged result: %d)",
+        len(new_statistics_data),
+        entity.entity_id,
+        skipped_count,
+        len(existing_stats),
+        len(merged_stats),
+    )
+    if merged_stats:
+        _LOGGER.info(
+            "Statistics range: %s (sum=%.3f) to %s (sum=%.3f)",
+            merged_stats[0]["start"],
+            merged_stats[0].get("sum", 0.0),
+            merged_stats[-1]["start"],
+            merged_stats[-1].get("sum", 0.0),
         )
 
-    # Log if we purposely skipped the trailing partial hour
-    if statistics_data:
-        last_emitted = statistics_data[-1]["start"]
-        if not include_trailing_hour and last_emitted >= cutoff_end - datetime.timedelta(hours=1):
-            _LOGGER.info(
-                "Skipped trailing partial hour ending at %s to avoid oversized last bar",
-                cutoff_end,
-            )
-
-    return statistics_data
+    return merged_stats
 
 
 async def _generate_statistics_data_cost(
@@ -1150,13 +1352,11 @@ async def _generate_statistics_data_cost(
     data_extractor: DataExtractor,
     meter_reading: model.MeterReading,
 ) -> list[StatisticData]:
-    """Generate hourly cost statistics aggregated to full hours.
+    """Generate hourly cost statistics with out-of-order import support.
 
     Mirrors the energy statistics generation but uses monetary cost per interval
     without applying energy unit conversions.
     """
-    statistics_data: list[StatisticData] = []
-
     # Collect all readings first
     all_readings = [
         interval_reading
@@ -1165,7 +1365,17 @@ async def _generate_statistics_data_cost(
     ]
 
     if not all_readings:
-        return statistics_data
+        _LOGGER.warning(
+            "No interval readings found in meter reading %s for cost statistics",
+            meter_reading.id,
+        )
+        return []
+
+    _LOGGER.debug(
+        "Cost statistics: Collected %d interval readings for meter reading %s",
+        len(all_readings),
+        meter_reading.id,
+    )
 
     # Sort readings by start time
     all_readings.sort(key=lambda r: r.start)
@@ -1174,6 +1384,13 @@ async def _generate_statistics_data_cost(
     last_end: datetime.datetime = max(r.end for r in all_readings)
     cutoff_end: datetime.datetime = last_end.replace(minute=0, second=0, microsecond=0)
     include_trailing_hour = last_end == cutoff_end
+
+    _LOGGER.debug(
+        "Cost statistics: Last end time = %s, cutoff_end = %s, include_trailing_hour = %s",
+        last_end,
+        cutoff_end,
+        include_trailing_hour,
+    )
 
     # Build hourly buckets with coverage tracking
     hourly_cost: dict[datetime.datetime, decimal.Decimal] = {}
@@ -1191,7 +1408,7 @@ async def _generate_statistics_data_cost(
                 else:
                     proportion = decimal.Decimal(0)
                 base_value = data_extractor.get_native_value(reading)
-                kept_val = (base_value * proportion)
+                kept_val = base_value * proportion
                 hour_start = (cutoff_end - datetime.timedelta(hours=1)).replace(
                     minute=0, second=0, microsecond=0
                 )
@@ -1228,77 +1445,87 @@ async def _generate_statistics_data_cost(
 
             curr_start = segment_end
 
-    # Compute existing sum before the first hour we will insert
+    # Build new statistics for FULLY covered hours only (3600s)
     hour_keys_sorted = sorted(hourly_cost.keys())
     if not hour_keys_sorted:
-        return statistics_data
-
-    first_hour_start = hour_keys_sorted[0]
-    existing_sum = 0.0
-    try:
-        rec = recorder.get_instance(hass)
-        existing_stats = await rec.async_add_executor_job(
-            statistics.statistic_during_period,
-            hass,
-            None,  # start_time
-            first_hour_start,  # end_time
-            entity.long_term_statistics_id,
-            {"change"},
-            None,  # units
-        )
-        if existing_stats and "change" in existing_stats and existing_stats["change"] is not None:
-            existing_sum = float(existing_stats["change"])  # type: ignore[assignment]
-            _LOGGER.info(
-                "Found existing sum of %s %s before %s for entity %s",
-                existing_sum,
-                entity.native_unit_of_measurement,
-                first_hour_start,
-                entity.entity_id,
-            )
-    except Exception:
         _LOGGER.warning(
-            "Could not query existing statistics for entity %s, starting from 0",
+            "Cost statistics: No hourly buckets created for entity %s",
             entity.entity_id,
-            exc_info=True,
         )
+        return []
 
-    # Emit hourly statistics for FULLY covered hours only (3600s)
-    cumulative_sum = existing_sum
+    _LOGGER.debug(
+        "Cost statistics: Created %d hourly cost buckets before filtering",
+        len(hour_keys_sorted),
+    )
+
+    new_statistics_data: list[StatisticData] = []
+    skipped_count = 0
     for hour_start in hour_keys_sorted:
         coverage = hourly_coverage_seconds.get(hour_start, 0)
         if coverage < 3600:
             _LOGGER.debug(
-                "Skipping partial hour starting %s (covered %ds)",
+                "Cost statistics: Skipping partial hour starting %s (covered %ds)",
                 hour_start,
                 coverage,
             )
+            skipped_count += 1
             continue
         hour_val = float(hourly_cost.get(hour_start, decimal.Decimal(0)))
-        cumulative_sum += hour_val
         stat_record: StatisticData = {
             "start": hour_start,
             "state": hour_val,
-            "sum": cumulative_sum,
+            "sum": 0.0,  # Will be calculated during merge
         }
-        statistics_data.append(stat_record)
-        _LOGGER.debug(
-            "Generated hourly cost statistic: start=%s, state=%.4f %s, sum=%.4f %s",
-            hour_start,
-            hour_val,
-            entity.native_unit_of_measurement,
-            cumulative_sum,
-            entity.native_unit_of_measurement,
+        new_statistics_data.append(stat_record)
+
+    _LOGGER.info(
+        "Cost statistics: Generated %d complete hourly records (skipped %d partial hours) for entity %s",
+        len(new_statistics_data),
+        skipped_count,
+        entity.entity_id,
+    )
+
+    if not new_statistics_data:
+        _LOGGER.info(
+            "No complete hourly cost statistics generated for entity %s (skipped %d partial hours)",
+            entity.entity_id,
+            skipped_count,
+        )
+        return []
+
+    # Get all existing statistics for this entity
+    existing_stats = await _get_all_existing_statistics(
+        hass,
+        entity.long_term_statistics_id,
+    )
+
+    # Merge new statistics with existing ones, handling out-of-order imports
+    merged_stats = _merge_statistics_with_out_of_order_support(
+        existing_stats,
+        new_statistics_data,
+        entity.long_term_statistics_id,
+    )
+
+    # Log summary of what was processed
+    _LOGGER.info(
+        "Generated %d hourly cost statistics for entity %s (skipped %d partial hours, existing: %d, merged result: %d)",
+        len(new_statistics_data),
+        entity.entity_id,
+        skipped_count,
+        len(existing_stats),
+        len(merged_stats),
+    )
+    if merged_stats:
+        _LOGGER.info(
+            "Cost statistics range: %s (sum=%.2f) to %s (sum=%.2f)",
+            merged_stats[0]["start"],
+            merged_stats[0].get("sum", 0.0),
+            merged_stats[-1]["start"],
+            merged_stats[-1].get("sum", 0.0),
         )
 
-    if statistics_data:
-        last_emitted = statistics_data[-1]["start"]
-        if not include_trailing_hour and last_emitted >= cutoff_end - datetime.timedelta(hours=1):
-            _LOGGER.info(
-                "Skipped trailing partial hour ending at %s for cost series",
-                cutoff_end,
-            )
-
-    return statistics_data
+    return merged_stats
 
 
 async def update_cost_statistics(
@@ -1325,21 +1552,35 @@ async def update_cost_statistics(
     )
 
     if statistics_data:
-        # Before importing, truncate any existing hourly stats at and after the first new hour
-        first_start = statistics_data[0]["start"]
+        # Log first and last records for debugging
+        first_record = statistics_data[0]
+        last_record = statistics_data[-1]
+        _LOGGER.info(
+            "Cost statistics range: %s (sum=%s) to %s (sum=%s)",
+            first_record["start"],
+            first_record.get("sum"),
+            last_record["start"],
+            last_record.get("sum"),
+        )
+
+        # Clear all existing statistics and reimport with the merged data
+        # This ensures the database is consistent with our calculated sums
         try:
-            await _TruncateStatisticsAfterTask.queue_task(
+            await _ClearStatisticsTask.queue_task(
                 hass=hass,
                 statistic_id=entity.long_term_statistics_id,
-                cutoff_start=first_start,
-                table=recorder_db_schema.Statistics,
+            )
+            _LOGGER.info(
+                "Cleared existing cost statistics for entity %s before reimporting",
+                entity.entity_id,
             )
         except Exception:
             _LOGGER.exception(
-                "Failed to truncate existing cost statistics at %s for %s",
-                first_start,
+                "Failed to clear cost statistics for entity %s",
                 entity.entity_id,
             )
+
+        # Import cost statistics using the proper Home Assistant API
         try:
             async_import_statistics(hass, metadata, statistics_data)
             _LOGGER.info(
@@ -1362,13 +1603,13 @@ async def update_statistics(
 ) -> None:
     """Update the statistics for an entry to match the MeterReading.
 
-    This method imports historical statistics data properly.
+    This method imports historical statistics data properly with out-of-order support.
     """
     # Create metadata for the statistics
     metadata = create_metadata(entity)
 
     # Generate statistics data from meter reading
-    _LOGGER.info(
+    _LOGGER.debug(
         "Starting statistics generation for entity %s, meter reading %s",
         entity.entity_id,
         meter_reading.id,
@@ -1384,36 +1625,38 @@ async def update_statistics(
     )
 
     if statistics_data:
-        # Truncate existing hourly statistics at and after the first generated hour
-        first_start = statistics_data[0]["start"]
-        try:
-            await _TruncateStatisticsAfterTask.queue_task(
-                hass=hass,
-                statistic_id=entity.long_term_statistics_id,
-                cutoff_start=first_start,
-                table=recorder_db_schema.Statistics,
-            )
-        except Exception:
-            _LOGGER.exception(
-                "Failed to truncate existing energy statistics at %s for %s",
-                first_start,
-                entity.entity_id,
-            )
         # Log first and last records for debugging
         first_record = statistics_data[0]
         last_record = statistics_data[-1]
         _LOGGER.info(
             "Statistics range: %s (sum=%s) to %s (sum=%s)",
             first_record["start"],
-            first_record["sum"],
+            first_record.get("sum"),
             last_record["start"],
-            last_record["sum"],
+            last_record.get("sum"),
         )
+
+        # Clear all existing statistics and reimport with the merged data
+        # This ensures the database is consistent with our calculated sums
+        try:
+            await _ClearStatisticsTask.queue_task(
+                hass=hass,
+                statistic_id=entity.long_term_statistics_id,
+            )
+            _LOGGER.info(
+                "Cleared existing statistics for entity %s before reimporting",
+                entity.entity_id,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "Failed to clear statistics for entity %s",
+                entity.entity_id,
+            )
 
         # Import historical statistics using the proper Home Assistant API
         try:
             async_import_statistics(hass, metadata, statistics_data)
-            _LOGGER.info(
+            _LOGGER.debug(
                 "✅ Successfully called async_import_statistics with %d records for entity %s",
                 len(statistics_data),
                 entity.entity_id,
@@ -1426,11 +1669,11 @@ async def update_statistics(
                 _LOGGER.info(
                     "📊 Statistics range: %s (state=%.3f, sum=%.3f) → %s (state=%.3f, sum=%.3f)",
                     first["start"].isoformat(),
-                    first["state"],
-                    first["sum"],
+                    first.get("state", 0.0),
+                    first.get("sum", 0.0),
                     last["start"].isoformat(),
-                    last["state"],
-                    last["sum"],
+                    last.get("state", 0.0),
+                    last.get("sum", 0.0),
                 )
         except Exception:
             _LOGGER.exception(
@@ -1456,12 +1699,10 @@ async def _generate_daily_m3_statistics(
     entity: GreenButtonEntity,
     meter_reading: model.MeterReading,
 ) -> list[StatisticData]:
-    """Generate daily statistics for gas consumption (m³).
+    """Generate daily statistics for gas consumption (m³) with out-of-order import support.
 
     We emit one hourly record per day at 00:00 with the day's total m³ as state.
     """
-    stats: list[StatisticData] = []
-
     # Flatten all interval readings
     readings = [
         r
@@ -1469,7 +1710,7 @@ async def _generate_daily_m3_statistics(
         for r in block.interval_readings
     ]
     if not readings:
-        return stats
+        return []
 
     # Sort readings by start
     readings.sort(key=lambda r: r.start)
@@ -1482,37 +1723,36 @@ async def _generate_daily_m3_statistics(
         daily_totals[day] = daily_totals.get(day, 0.0) + val
 
     if not daily_totals:
-        return stats
+        return []
 
-    # Find existing cumulative sum before first day
-    first_day = min(daily_totals.keys())
-    first_start = datetime.datetime.combine(first_day, datetime.time.min, tzinfo=readings[0].start.tzinfo)
-    existing_sum = 0.0
-    try:
-        rec = recorder.get_instance(hass)
-        existing_stats = await rec.async_add_executor_job(
-            statistics.statistic_during_period,
-            hass,
-            None,
-            first_start,
-            entity.long_term_statistics_id,
-            {"change"},
-            None,
-        )
-        if existing_stats and existing_stats.get("change") is not None:
-            existing_sum = float(existing_stats["change"])  # type: ignore[assignment]
-    except Exception:
-        _LOGGER.debug("Unable to query existing sum for gas %s", entity.entity_id, exc_info=True)
-
-    # Build stats in day order
-    cumulative = existing_sum
+    # Build new statistics data
+    new_statistics_data: list[StatisticData] = []
     for day in sorted(daily_totals.keys()):
         day_val = daily_totals[day]
-        cumulative += day_val
         start = datetime.datetime.combine(day, datetime.time.min, tzinfo=readings[0].start.tzinfo)
-        stats.append({"start": start, "state": day_val, "sum": cumulative})
+        new_statistics_data.append({
+            "start": start,
+            "state": day_val,
+            "sum": 0.0,  # Will be calculated during merge
+        })
 
-    return stats
+    if not new_statistics_data:
+        return []
+
+    # Get all existing statistics for this entity
+    existing_stats = await _get_all_existing_statistics(
+        hass,
+        entity.long_term_statistics_id,
+    )
+
+    # Merge new statistics with existing ones, handling out-of-order imports
+    merged_stats = _merge_statistics_with_out_of_order_support(
+        existing_stats,
+        new_statistics_data,
+        entity.long_term_statistics_id,
+    )
+
+    return merged_stats
 
 
 async def update_gas_statistics(
@@ -1540,12 +1780,17 @@ async def update_gas_statistics(
 
     if allocation_mode == "monthly_increment":
         summaries = usage_summaries or []
+        _LOGGER.info(
+            "Gas %s: monthly_increment mode - processing %d usage summaries",
+            entity.entity_id,
+            len(summaries),
+        )
         # Clear existing statistics to avoid residual daily bars or negative corrections
         try:
             await clear_statistic(hass, entity.long_term_statistics_id)
         except Exception:
             _LOGGER.exception("Failed to clear existing gas usage stats for %s", entity.entity_id)
-        
+
         # Determine tzinfo from readings if present
         if meter_reading and meter_reading.interval_blocks:
             readings = [r for b in meter_reading.interval_blocks for r in b.interval_readings]
@@ -1560,7 +1805,7 @@ async def update_gas_statistics(
         # - UsageSummary for previous finalized billing period
         # - IntervalReading for current billing period (not yet finalized)
         periods_to_process: list[tuple[datetime.datetime, datetime.datetime, float | None, str]] = []
-        
+
         # Add all UsageSummaries
         for us in summaries:
             period_start = us.start
@@ -1568,7 +1813,7 @@ async def update_gas_statistics(
             consumption_m3 = float(us.consumption_m3) if (hasattr(us, "consumption_m3") and us.consumption_m3 is not None) else None
             source = f"UsageSummary:{us.id}"
             periods_to_process.append((period_start, period_end, consumption_m3, source))
-        
+
         # Check for long IntervalReadings (>7 days) that might represent billing periods
         # not yet in UsageSummary
         MIN_BILLING_PERIOD_DAYS = 7
@@ -1590,7 +1835,7 @@ async def update_gas_statistics(
                         if overlap_days > min(duration_days, (us_end - us_start).total_seconds() / 86400) * 0.5:
                             overlaps = True
                             break
-                
+
                 if not overlaps:
                     # This is a billing-period-length reading not covered by UsageSummary
                     consumption_m3 = float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
@@ -1600,7 +1845,7 @@ async def update_gas_statistics(
                         "Found billing period from IntervalReading not in UsageSummary: %s to %s (%.1f m³)",
                         rd_start.date(), rd_end.date(), consumption_m3
                     )
-        
+
         if not periods_to_process:
             _LOGGER.info("No billing periods available for monthly gas usage on %s", entity.entity_id)
             return
@@ -1618,7 +1863,7 @@ async def update_gas_statistics(
                 first_start = rec_start
                 # Existing cumulative before first record
                 try:
-                    rec = recorder.get_instance(hass)
+                    rec = recorder_helper.get_instance(hass)
                     existing_stats = await rec.async_add_executor_job(
                         statistics.statistic_during_period,
                         hass,
@@ -1655,30 +1900,21 @@ async def update_gas_statistics(
                 period_m3 = total if total > 0 else None
 
             if period_m3 is None or period_m3 <= 0:
-                _LOGGER.info(
-                    "Skipping billing period %s for %s: no consumption available",
-                    source,
-                    entity.entity_id,
-                )
                 continue
 
-            _LOGGER.info(
-                "Adding billing period from %s: %s to %s = %.1f m³",
-                source,
-                period_start.date(),
-                period_end.date(),
-                period_m3,
-            )
             records.append({"start": rec_start, "state": period_m3, "sum": 0.0})
 
         if not records:
-            _LOGGER.info("No gas usage records generated for %s (monthly_increment)", entity.entity_id)
+            _LOGGER.warning(
+                "Gas %s: No gas usage records generated - all periods had no consumption data",
+                entity.entity_id,
+            )
             return
 
         # Apply cumulative
         cumulative = existing_sum
         for recd in records:
-            cumulative += recd["state"]
+            cumulative += recd.get("state", 0.0)
             recd["sum"] = cumulative
 
         # Truncate and import: choose earliest cutoff between our first record and
@@ -1702,7 +1938,12 @@ async def update_gas_statistics(
 
         try:
             async_import_statistics(hass, metadata, records)
-            _LOGGER.info("Imported %d gas usage records (monthly_increment) for %s", len(records), entity.entity_id)
+            _LOGGER.info(
+                "Imported %d gas usage records for %s (total: %.1f m³)",
+                len(records),
+                entity.entity_id,
+                records[-1].get("sum", 0.0),
+            )
         except Exception:
             _LOGGER.exception("Failed to import gas stats for %s", entity.entity_id)
 
@@ -1716,22 +1957,24 @@ async def update_gas_statistics(
             entity.entity_id,
         )
         return
-    
+
     data = await _generate_daily_m3_statistics(hass, entity, meter_reading)
     if not data:
         _LOGGER.info("No gas statistics to import for %s", entity.entity_id)
         return
 
-    first_start = data[0]["start"]
+    # Clear all existing statistics and reimport with the merged data
     try:
-        await _TruncateStatisticsAfterTask.queue_task(
+        await _ClearStatisticsTask.queue_task(
             hass=hass,
             statistic_id=entity.long_term_statistics_id,
-            cutoff_start=first_start,
-            table=recorder_db_schema.Statistics,
+        )
+        _LOGGER.info(
+            "Cleared existing gas statistics for entity %s before reimporting",
+            entity.entity_id,
         )
     except Exception:
-        _LOGGER.exception("Failed truncating gas stats for %s", entity.entity_id)
+        _LOGGER.exception("Failed to clear gas stats for %s", entity.entity_id)
 
     try:
         async_import_statistics(hass, metadata, data)
@@ -1752,6 +1995,8 @@ async def update_gas_cost_statistics(
     For each billing period, distribute total_cost across days proportionally
     to daily consumption in m³. Emit one hourly record per day at 00:00.
     """
+    metadata = create_metadata(entity)
+
     if allocation_mode == "monthly_increment":
         # One increment per usage summary at the period end (00:00 of end day)
         if not usage_summaries:
@@ -1765,42 +2010,32 @@ async def update_gas_cost_statistics(
 
         # Build records sorted by period end
         summaries_sorted = sorted(usage_summaries, key=lambda s: s.start + s.duration)
-        records: list[StatisticData] = []
-        first_start = None
-        # Existing cumulative before first record
-        existing_sum = 0.0
+        new_statistics_data: list[StatisticData] = []
         for us in summaries_sorted:
             period_end = us.start + us.duration
             # Place the increment at 00:00 of the period end date (the day the period ends)
             rec_start = datetime.datetime.combine(period_end.date(), datetime.time.min, tzinfo=tzinfo)
-            if first_start is None:
-                first_start = rec_start
-                try:
-                    rec = recorder.get_instance(hass)
-                    existing_stats = await rec.async_add_executor_job(
-                        statistics.statistic_during_period,
-                        hass,
-                        None,
-                        first_start,
-                        entity.long_term_statistics_id,
-                        {"change"},
-                        None,
-                    )
-                    if existing_stats and existing_stats.get("change") is not None:
-                        existing_sum = float(existing_stats["change"])  # type: ignore[assignment]
-                except Exception:
-                    _LOGGER.debug("Unable to query existing sum for gas cost %s", entity.entity_id, exc_info=True)
-            # We'll accumulate below after we know existing_sum
-            records.append({"start": rec_start, "state": float(us.total_cost), "sum": 0.0})
+            new_statistics_data.append({
+                "start": rec_start,
+                "state": float(us.total_cost),
+                "sum": 0.0,  # Will be calculated during merge
+            })
 
-        if not records:
+        if not new_statistics_data:
             return
 
-        # Apply cumulative sums
-        cumulative = existing_sum
-        for rec in records:
-            cumulative += rec["state"]
-            rec["sum"] = cumulative
+        # Get all existing statistics for this entity
+        existing_stats = await _get_all_existing_statistics(
+            hass,
+            entity.long_term_statistics_id,
+        )
+
+        # Merge new statistics with existing ones, handling out-of-order imports
+        records = _merge_statistics_with_out_of_order_support(
+            existing_stats,
+            new_statistics_data,
+            entity.long_term_statistics_id,
+        )
 
     else:
         # Pro-rate daily across billing period days proportional to m³
@@ -1860,53 +2095,48 @@ async def update_gas_cost_statistics(
             _LOGGER.info("No daily cost allocations computed for %s", entity.entity_id)
             return
 
-        # Prepare statistics data sorted by day
-        first_day = min(daily_cost.keys())
-        first_start = datetime.datetime.combine(first_day, datetime.time.min, tzinfo=tzinfo)
-
-        # Existing cumulative cost before first day
-        existing_sum = 0.0
-        try:
-            rec = recorder.get_instance(hass)
-            existing_stats = await rec.async_add_executor_job(
-                statistics.statistic_during_period,
-                hass,
-                None,
-                first_start,
-                entity.long_term_statistics_id,
-                {"change"},
-                None,
-            )
-            if existing_stats and existing_stats.get("change") is not None:
-                existing_sum = float(existing_stats["change"])  # type: ignore[assignment]
-        except Exception:
-            _LOGGER.debug("Unable to query existing sum for gas cost %s", entity.entity_id, exc_info=True)
-
-        records = []
-        cumulative = existing_sum
+        # Build new statistics data
+        new_statistics_data = []
         for d in sorted(daily_cost.keys()):
             val = daily_cost[d]
-            cumulative += val
             start = datetime.datetime.combine(d, datetime.time.min, tzinfo=tzinfo)
-            records.append({"start": start, "state": val, "sum": cumulative})
+            new_statistics_data.append({
+                "start": start,
+                "state": val,
+                "sum": 0.0,  # Will be calculated during merge
+            })
+
+        # Get all existing statistics for this entity
+        existing_stats = await _get_all_existing_statistics(
+            hass,
+            entity.long_term_statistics_id,
+        )
+
+        # Merge new statistics with existing ones, handling out-of-order imports
+        records = _merge_statistics_with_out_of_order_support(
+            existing_stats,
+            new_statistics_data,
+            entity.long_term_statistics_id,
+        )
 
     if not records:
         return
 
-    # Truncate and import
+    # Clear all existing statistics and reimport with the merged data
     try:
-        await _TruncateStatisticsAfterTask.queue_task(
+        await _ClearStatisticsTask.queue_task(
             hass=hass,
             statistic_id=entity.long_term_statistics_id,
-            cutoff_start=records[0]["start"],
-            table=recorder_db_schema.Statistics,
+        )
+        _LOGGER.info(
+            "Cleared existing gas cost statistics for entity %s before reimporting",
+            entity.entity_id,
         )
     except Exception:
-        _LOGGER.exception("Failed truncating gas cost stats for %s", entity.entity_id)
+        _LOGGER.exception("Failed to clear gas cost stats for %s", entity.entity_id)
 
-    metadata = create_metadata(entity)
     try:
         async_import_statistics(hass, metadata, records)
-        _LOGGER.info("Imported %d gas daily cost records for %s", len(records), entity.entity_id)
+        _LOGGER.info("Imported %d gas cost records for %s", len(records), entity.entity_id)
     except Exception:
         _LOGGER.exception("Failed to import gas cost stats for %s", entity.entity_id)

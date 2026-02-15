@@ -3,3 +3,5 @@ pythonenv*
 .python-version
 .coverage
 **/.venv/
+.env
+pyrightconfig.json

@@ -18,7 +18,12 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Set up the Green Button component."""
+    """Set up the Green Button component.
+    
+    Args:
+        hass: Home Assistant instance
+        config: Configuration dict (not used - this is a config-entry-based integration)
+    """
     _LOGGER.info("Setting up Green Button component services")
     try:
         # Set up services

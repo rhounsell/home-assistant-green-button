@@ -1,18 +1,33 @@
+log_meter_reading_intervals:
+  name: Log Green Button Meter Reading Intervals
+  description: >
+    Log all Green Button meter readings, their interval block date ranges, and mapped sensor entities for all Green Button usage points. This diagnostic service writes detailed information to the Home Assistant log to help debug data import and entity mapping issues. No fields are required.
+
+log_stored_xmls:
+  name: Log Stored Green Button XML Info
+  description: >
+    Log information about stored XML data in the config entry, including labels and date ranges. 
+    This helps diagnose why data might be missing after restart.
+
 delete_statistics:
   name: Delete Green Button Statistics
-  description: Delete statistics
+  description: Delete all historical statistics for a Green Button sensor. This will clear the data from the Energy Dashboard. You will need to re-import your XML data after deletion.
   fields:
     statistic_id:
       name: Statistic ID
-      description: The ID of the statistics to clear.
+      description: "The statistic ID to delete (e.g., sensor.home_electricity_usage). Check Developer Tools → Statistics to find the ID."
       required: true
-      example: "sensor.home_gas_consumption"
+      example: "sensor.home_electricity_usage"
       selector:
         text:
 
 import_espi_xml:
   name: Import Green Button ESPI XML
-  description: Import usage data from an XML file or XML content in the ESPI atom format. Provide either xml_file_path OR xml, not both.
+  description: >
+    Import usage data from an XML file or XML content in the ESPI atom format.
+    Provide either xml_file_path OR xml, not both.
+    The commodity type (electricity or gas) is auto-detected from the XML content.
+    Importing additional data of the same type accumulates with existing data.
   fields:
     xml_file_path:
       name: XML File Path
@@ -28,31 +43,24 @@ import_espi_xml:
         text:
           multiline: true
 
-log_statistics:
-  name: Log Statistics
-  description: Log Statistics
-  target:
-    entity:
-      domain: number
-      integration: green_button
+clear_stored_xml:
+  name: Clear Stored Green Button XML Data
+  description: >
+    Clear stored Green Button XML data. Labels are auto-assigned based on commodity type:
+    'electricity' for electric data, 'gas' for gas data.
+    Use this to reset saved storage if it grows too large from multiple imports.
+    You will need to re-import your XML data after clearing.
+    This service does not delete statistics from the recorder database. The energy dashboard
+    history remains intact. Use Delete Green Button Statistics to clear database statistics.
   fields:
-    start:
-      name: Start
-      description: Start
-      required: true
+    commodity:
+      name: Commodity Type
+      description: "Select which data to clear, or leave empty to clear all."
+      required: false
       selector:
-        datetime:
-    end:
-      name: End
-      description: End
-      required: true
-      selector:
-        datetime:
-
-reset:
-  name: Reset
-  description: Reset
-  target:
-    entity:
-      domain: number
-      integration: green_button
+        select:
+          options:
+            - label: "Electricity"
+              value: "electricity"
+            - label: "Gas"
+              value: "gas"

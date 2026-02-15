@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 from homeassistant import config_entries
-import voluptuous as vol
 from homeassistant.helpers import selector
+import voluptuous as vol
 
-from . import configs
-from . import const
+from . import configs, const
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,18 +33,18 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
     ) -> config_entries.ConfigFlowResult:
         """Handle the initial step."""
         step_id = "user"
-        
+
         # Build a custom schema where XML field is optional
         if user_input is None:
             user_input_default = {
                 "name": "Home",
                 "input_type": "file",
-                "gas_cost_allocation": "pro_rate_daily",
-                "gas_usage_allocation": "daily_readings",
+                "gas_cost_allocation": "monthly_increment",
+                "gas_usage_allocation": "monthly_increment",
             }
         else:
             user_input_default = user_input
-            
+
         schema = vol.Schema(
             {
                 vol.Required(
@@ -54,10 +53,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                 ): str,
                 vol.Required(
                     "input_type",
-                    default=user_input_default.get("input_type", "file"),
+                    default=user_input_default.get("input_type", "none"),
                 ): selector.SelectSelector(
                     selector.SelectSelectorConfig(
-                        options=["file", "xml"],
+                        options=[
+                            {"value": "none", "label": "None (import XML later)"},
+                            {"value": "file", "label": "File path"},
+                            {"value": "xml", "label": "XML content"},
+                        ],
                         mode="list",
                     )
                 ),
@@ -96,18 +99,21 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                 ),
             }
         )
-        
+
         errors = {}
-        
+
         if user_input is not None:
             input_type = user_input.get("input_type")
             xml_path = user_input.get("xml_file_path", "").strip()
             xml_content = user_input.get("xml", "").strip()
-            
+
             # Validate selection
-            if input_type not in ("file", "xml"):
+            if input_type not in ("file", "xml", "none"):
                 errors["input_type"] = "input_type_required"
                 errors.setdefault("base", "input_type_required")
+            elif input_type == "none":
+                # No XML required - clear any content that might have been provided
+                user_input["xml"] = ""
             elif input_type == "file":
                 # Require a file path; ignore xml content if provided
                 if not xml_path:
@@ -167,8 +173,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
 
         _LOGGER.info("Created config with unique ID %r", config.unique_id)
         config_data = dict(config.to_mapping())
-        # Store the XML content from user_input (which now has the file content if path was provided)
-        config_data["xml"] = user_input.get("xml", "")
+
+        # Store XML content temporarily - it will be moved to proper storage
+        # with auto-detected label when the coordinator first processes it
+        xml_content = user_input.get("xml", "")
+        if xml_content:
+            config_data["initial_xml"] = xml_content
+
         # Store gas cost allocation toggle
         config_data["gas_cost_allocation"] = user_input.get(
             "gas_cost_allocation", "pro_rate_daily"
@@ -188,7 +199,12 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     """Handle Green Button options flow."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
+        self._config_entry = config_entry
+
+    @property
+    def config_entry(self) -> config_entries.ConfigEntry:
+        """Return the config entry."""
+        return self._config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
