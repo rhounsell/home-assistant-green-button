@@ -54,10 +54,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                 ): str,
                 vol.Required(
                     "input_type",
-                    default=user_input_default.get("input_type", "file"),
+                    default=user_input_default.get("input_type", "none"),
                 ): selector.SelectSelector(
                     selector.SelectSelectorConfig(
-                        options=["file", "xml"],
+                        options=[
+                            {"value": "none", "label": "None (import XML later)"},
+                            {"value": "file", "label": "File path"},
+                            {"value": "xml", "label": "XML content"},
+                        ],
                         mode="list",
                     )
                 ),
@@ -105,9 +109,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
             xml_content = user_input.get("xml", "").strip()
             
             # Validate selection
-            if input_type not in ("file", "xml"):
+            if input_type not in ("file", "xml", "none"):
                 errors["input_type"] = "input_type_required"
                 errors.setdefault("base", "input_type_required")
+            elif input_type == "none":
+                # No XML required - clear any content that might have been provided
+                user_input["xml"] = ""
             elif input_type == "file":
                 # Require a file path; ignore xml content if provided
                 if not xml_path:

@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "description": "Configure the Green Button integration. Provide either XML content or an XML file path (not both). Relative paths are resolved against the Home Assistant config directory.",
+        "description": "Configure the Green Button integration. Green Button XML data import is optional during setup. You can import XML now or later using **Developer Tools → Actions → 'Import Green Button ESPI XML'**. If providing XML now, use either XML content or an XML file path (not both). Relative paths are resolved against the Home Assistant config directory.",
         "data": {
           "name": "[%key:common::config_flow::data::name%]",
           "input_type": "Input Type",
