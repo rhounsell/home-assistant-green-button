@@ -32,6 +32,21 @@ It may take a few minutes for all the associated statisitics to be generated. Th
 
 Review the [Green Button Component Description](GREEN_BUTTON_COMPONENT_DESCRIPTION.md) for detail on how the Green Button custom component functions.
 
+## Data Imports
+
+Green Button XML blocks do not need to be imported in chronological order, and can have gaps between the dates for imported blocks of data. Any data that is imported that overlaps pre-existing data will be merged with that data. If there is overlapping data, the statistics generation will resolve them. The drawback to overlapping data will be a larger than necessary green_button_xml file in /config/.storage
+
+When importing xml files, it's probably easiest to locate the file to be imported in Home Assistant's **share** folder, which appears under the config folder, and can be referenced in the file path using **/share/**/<green_button_xml_file.xml>
+
+## Services/Actions
+
+There are several actions (services) related to the Green Button custom component available under **Developer Tools → Actions**. As of this writing, they are:
+- Log Green Button Meter Reading Intervals
+- Log Stored Green Button XML Info
+- Delete Green Button Statistics
+- Import Green Button ESPI XML
+- Clear Stored Green Button XML Data
+
 ## Credits
 
 This project was originally generated from [@oncleben31](https://github.com/oncleben31)'s [Home Assistant Custom Component Cookiecutter](https://github.com/oncleben31/cookiecutter-homeassistant-custom-component) template.
