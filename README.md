@@ -22,7 +22,7 @@ This custom component has been developed to handle the Green Button data availab
 2. Restart Home Assistant
 3. In the HA UI go to "Configuration" -> "Integrations" click "+" and search for "Green Button"
 4. Complete the installation with or without providing Green Button XML data
-   - If you skip the XML import during setup, you can import it later using **Developer Tools → Actions → 'Import Green Button ESPI XML'**
+   - If you skip the XML import during setup, you can import it later using the ** Add Entry** button on the Green Button integration or via **Developer Tools → Actions → 'Import Green Button ESPI XML'**
 
 It may take a few minutes for all the associated statisitics to be generated. The related sensor may not be available to add into the Energy dashbord until the generation is completed.
 

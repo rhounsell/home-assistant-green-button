@@ -20,7 +20,7 @@
     },
     "step": {
       "user": {
-        "description": "Configure the Green Button integration. Green Button XML data is optional during setup. You can import XML now or later using **Developer Tools → Actions → 'Import Green Button ESPI XML'**. If providing XML now, use either XML content or an XML file path (not both). Relative paths are resolved against the Home Assistant config directory.",
+        "description": "Configure the Green Button integration. Green Button XML data is optional during setup. You can import XML now, or later using the ** Add Entry** button on the Green Button integration or via **Developer Tools → Actions → 'Import Green Button ESPI XML'**. If providing XML now, use either XML content or an XML file path (not both). Relative paths are resolved against the Home Assistant config directory.",
         "data": {
           "cost_currency": "Cost Currency",
           "energy_unit": "Energy Unit",
