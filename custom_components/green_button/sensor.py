@@ -397,7 +397,7 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
         for interval_block in meter_reading.interval_blocks:
             for interval_reading in interval_block.interval_readings:
                 cost_raw = getattr(interval_reading, "cost", 0) or 0
-                power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
+                power_multiplier = getattr(interval_reading.power_of_ten_multiplier, "power_of_ten_multiplier", -5) or -5
                 total_cost += cost_raw * (10 ** power_multiplier)
 
         self._cached_native_value = float(total_cost)  # Cache the value
@@ -501,7 +501,8 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
         Behavior:
         - Iterates all interval_blocks and their interval_readings in meter_reading.
         - For each interval_reading, reads the "cost" attribute (treating missing or None as 0)
-            and scales it by the reading_type.power_of_ten_multiplier (10 ** power_of_ten_multiplier).
+            and scales it by the power_of_ten_multiplier (10 ** power_of_ten_multiplier) when provided.
+            When power_of_ten_multiplier is not provided, a value of -5 is used.
         - Sums the scaled costs to produce total_cost.
         - If meter_reading.reading_type.currency is present, sets the sensor's
             _attr_native_unit_of_measurement to that currency.
@@ -513,7 +514,7 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
 
         Parameters:
         - meter_reading (model.MeterReading): Meter reading data containing interval_blocks,
-            interval_readings, and reading_type metadata (including currency and power_of_ten_multiplier).
+            interval_readings, and reading_type metadata (including currency).
 
         Returns:
         - None
@@ -531,7 +532,7 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
         for interval_block in meter_reading.interval_blocks:
             for interval_reading in interval_block.interval_readings:
                 cost_raw = getattr(interval_reading, "cost", 0) or 0
-                power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
+                power_multiplier = getattr(interval_reading.power_of_ten_multiplier, "power_of_ten_multiplier", -5) or -5
                 total_cost += cost_raw * (10 ** power_multiplier)
 
         # Set currency

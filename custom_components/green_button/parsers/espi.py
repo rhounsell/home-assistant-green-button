@@ -418,6 +418,9 @@ class EspiEntry:
                     elem, "./espi:timePeriod/espi:duration", _to_timedelta
                 ),
                 value=_parse_child_text(elem, "./espi:value", int),
+                power_of_ten_multiplier=_parse_optional_child_text(
+                    elem, "./espi:timePeriod/espi:powerOfTenMultiplier", int, -5
+                ),
             )
 
         return parser
@@ -581,9 +584,9 @@ class EspiEntry:
                                 if amt is not None and meas is not None:
                                     p10 = meas.find("espi:powerOfTenMultiplier", _NAMESPACE_MAP)
                                     try:
-                                        power = int(p10.text) if p10 is not None and p10.text else -3
+                                        power = int(p10.text) if p10 is not None and p10.text else -5
                                     except ValueError:
-                                        power = -3
+                                        power = -5
                                     val = float(amt.text or 0)
                                     return val * (10 ** power)
                         return None
@@ -601,9 +604,9 @@ class EspiEntry:
                             val_el = meas.find("espi:value", _NAMESPACE_MAP)
                             if val_el is not None and val_el.text is not None:
                                 try:
-                                    power = int(p10.text) if p10 is not None and p10.text else -3
+                                    power = int(p10.text) if p10 is not None and p10.text else -5
                                 except ValueError:
-                                    power = -3
+                                    power = -5
                                 # Only accept m³ (uom 42)
                                 is_m3 = (uom is not None and (uom.text or "").strip() == "42")
                                 raw_val = float(val_el.text)
@@ -612,10 +615,10 @@ class EspiEntry:
                     except Exception:
                         consumption_m3 = None
                     if total_cost is None:
-                        # Fallback to billLastPeriod with implicit -3 scaling
+                        # Fallback to billLastPeriod with implicit -5 scaling
                         try:
                             raw = us_entry.parse_child_text("espi:billLastPeriod", float)
-                            total_cost = raw * (10 ** -3)
+                            total_cost = raw * (10 ** -5)
                         except Exception:
                             total_cost = 0.0
                     usage_summaries.append(

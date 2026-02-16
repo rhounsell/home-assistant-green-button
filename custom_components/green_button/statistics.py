@@ -1148,7 +1148,7 @@ class DefaultDataExtractor:
 class CostDataExtractor:
     """DataExtractor that pulls monetary cost from IntervalReading.
 
-    Applies the ReadingType power_of_ten_multiplier to the cost value.
+    Applies the power_of_ten_multiplier to the cost value. Defaults to -5 when not provided.
     For example, with multiplier -3, a cost of 90 becomes 0.09 (in major currency units).
     """
 
@@ -1165,7 +1165,7 @@ class CostDataExtractor:
             decimal.Decimal: The calculated native value as a decimal, representing the cost adjusted by the power of ten multiplier.
         """
         cost = interval_reading.cost if interval_reading.cost is not None else 0
-        power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
+        power_multiplier = interval_reading.power_of_ten_multiplier if interval_reading.power_of_ten_multiplier is not None else -5
         return decimal.Decimal(cost * (10**power_multiplier))
 
 
