@@ -26,7 +26,7 @@ def test_interval_reading_properties():
         start=start,
         duration=duration,
         value=42,
-        powerOfTenMultiplier=-3,
+        power_of_ten_multiplier=-3,
     )
     assert reading.end == start + duration
     assert reading.value == 42

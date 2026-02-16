@@ -418,7 +418,7 @@ class EspiEntry:
                     elem, "./espi:timePeriod/espi:duration", _to_timedelta
                 ),
                 value=_parse_child_text(elem, "./espi:value", int),
-                powerOfTenMultiplier=_parse_optional_child_text(
+                power_of_ten_multiplier=_parse_optional_child_text(
                     elem, "./espi:timePeriod/espi:powerOfTenMultiplier", int, -5
                 ),
             )
