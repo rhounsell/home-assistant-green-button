@@ -29,6 +29,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import recorder as recorder_helper
 
 from . import model
+from .const import DEFAULT_COST_POWER_OF_TEN_MULTIPLIER
 
 if TYPE_CHECKING:
     from homeassistant.components.recorder.core import Recorder
@@ -1148,25 +1149,25 @@ class DefaultDataExtractor:
 class CostDataExtractor:
     """DataExtractor that pulls monetary cost from IntervalReading.
 
-    Applies the ReadingType power_of_ten_multiplier to the cost value.
-    For example, with multiplier -3, a cost of 90 becomes 0.09 (in major currency units).
+    Applies a default cost power_of_ten_multiplier to the cost value.
+    Uses -5 as the default multiplier (e.g., a cost of 12345 becomes $0.12345).
+    Note: Future work will include deriving a non-default multiplier from the UsageSummary in billing data xml.
     """
 
     def get_native_value(
         self, interval_reading: model.IntervalReading
     ) -> decimal.Decimal:
         """
-        Calculates the native value for a given interval reading by applying the power of ten multiplier to the cost.
+        Calculates the native value for a given interval reading by applying the default cost power of ten multiplier.
 
         Args:
-            interval_reading (model.IntervalReading): The interval reading object containing cost and reading type information.
+            interval_reading (model.IntervalReading): The interval reading object containing cost information.
 
         Returns:
             decimal.Decimal: The calculated native value as a decimal, representing the cost adjusted by the power of ten multiplier.
         """
         cost = interval_reading.cost if interval_reading.cost is not None else 0
-        power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
-        return decimal.Decimal(cost * (10**power_multiplier))
+        return decimal.Decimal(cost * (10**DEFAULT_COST_POWER_OF_TEN_MULTIPLIER))
 
 
 def create_metadata(entity: GreenButtonEntity) -> StatisticMetaData:
