@@ -49,7 +49,13 @@ There are several actions (services) related to the Green Button custom componen
 
 ## Notes
 
+This component has been developed using Hydro Ottawa's version of Green Button XML. There are a number of optional elements in the Green Buttton XML format which may or not be used in the Green Button XML downloaded from other providers. For example, some providers may specify a non-standard power-of-ten multiplier for usage costs instead of using the default value of -5 (10^-5). This componnent is a work in progress, and will probably continue to evolve to handle a wider set of Green Button XML element options.
+
 None of the original tests or development support files such as .pre-commit-config.yaml have been updated or, for that matter, used when updating this component.
+
+## Known Issues
+
+Non-standard power of ten multipliers for usage costs are not currently handled. The multiplier for energy usage data is incorrectly used instead.
 
 ## Credits
 
