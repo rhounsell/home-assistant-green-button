@@ -5,3 +5,4 @@ pythonenv*
 **/.venv/
 .env
 pyrightconfig.json
+**/*.txt
