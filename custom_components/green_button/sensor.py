@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import traceback
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -22,7 +21,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from . import model
 from . import statistics
 from .coordinator import GreenButtonCoordinator
-from .const import DOMAIN
+from .const import DOMAIN, DEFAULT_COST_POWER_OF_TEN_MULTIPLIER, CONF_COST_POWER_OF_TEN_MULTIPLIER
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -558,10 +557,19 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
     async def _update_cost_statistics_async(self, meter_reading: model.MeterReading) -> None:
         """Update cost statistics in background without blocking."""
         try:
+            multiplier = int(
+                self.coordinator.config_entry.options.get(CONF_COST_POWER_OF_TEN_MULTIPLIER)
+                if self.coordinator.config_entry.options.get(CONF_COST_POWER_OF_TEN_MULTIPLIER) is not None
+                else (
+                    self.coordinator.config_entry.data.get(CONF_COST_POWER_OF_TEN_MULTIPLIER)
+                    if self.coordinator.config_entry.data.get(CONF_COST_POWER_OF_TEN_MULTIPLIER) is not None
+                    else DEFAULT_COST_POWER_OF_TEN_MULTIPLIER
+                )
+            )
             await statistics.update_cost_statistics(
                 self.hass,
                 self,
-                statistics.CostDataExtractor(),
+                statistics.CostDataExtractor(multiplier),
                 meter_reading,
             )
             _LOGGER.info(

@@ -29,12 +29,14 @@
           "usage_point_href": "UsagePoint HREF",
           "gas_cost_allocation": "Gas cost allocation",
           "gas_usage_allocation": "Gas usage allocation",
+          "cost_power_of_ten_multiplier": "Cost power-of-ten multiplier",
           "xml": "XML",
           "xml_file_path": "XML File Path"
         },
         "data_description": {
           "xml_file_path": "Relative paths resolve against the Home Assistant config directory (e.g., /config).",
-          "xml": "Paste ESPI XML content directly. For large files, using a file path is recommended."
+          "xml": "Paste ESPI XML content directly. For large files, using a file path is recommended.",
+          "cost_power_of_ten_multiplier": "Scales raw cost values from the XML: cost × 10^N. The default (-5) converts hundredths-of-cents to dollars (e.g., 12345 → $0.12345). Change only if your utility uses a different scale."
         }
       }
     }
@@ -74,7 +76,11 @@
           "name": "Name",
           "usage_point_href": "UsagePoint HREF",
           "gas_cost_allocation": "Gas cost allocation",
-          "gas_usage_allocation": "Gas usage allocation"
+          "gas_usage_allocation": "Gas usage allocation",
+          "cost_power_of_ten_multiplier": "Cost power-of-ten multiplier"
+        },
+        "data_description": {
+          "cost_power_of_ten_multiplier": "Scales raw cost values from the XML: cost × 10^N. The default (-5) converts hundredths-of-cents to dollars (e.g., 12345 → $0.12345). Change only if your utility uses a different scale."
         },
         "description": ""
       }
