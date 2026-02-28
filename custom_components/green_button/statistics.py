@@ -1149,16 +1149,20 @@ class DefaultDataExtractor:
 class CostDataExtractor:
     """DataExtractor that pulls monetary cost from IntervalReading.
 
-    Applies a default cost power_of_ten_multiplier to the cost value.
-    Uses -5 as the default multiplier (e.g., a cost of 12345 becomes $0.12345).
-    Note: Future work will include deriving a non-default multiplier from the UsageSummary in billing data xml.
+    Applies a configurable cost power_of_ten_multiplier to the cost value.
+    Defaults to DEFAULT_COST_POWER_OF_TEN_MULTIPLIER (-5) when no override is provided
+    (e.g., a cost of 12345 becomes $0.12345).
     """
+
+    def __init__(self, cost_power_of_ten_multiplier: int = DEFAULT_COST_POWER_OF_TEN_MULTIPLIER) -> None:
+        """Initialise the extractor with the given multiplier."""
+        self._multiplier = cost_power_of_ten_multiplier
 
     def get_native_value(
         self, interval_reading: model.IntervalReading
     ) -> decimal.Decimal:
         """
-        Calculates the native value for a given interval reading by applying the default cost power of ten multiplier.
+        Calculates the native value for a given interval reading by applying the cost power of ten multiplier.
 
         Args:
             interval_reading (model.IntervalReading): The interval reading object containing cost information.
@@ -1167,7 +1171,7 @@ class CostDataExtractor:
             decimal.Decimal: The calculated native value as a decimal, representing the cost adjusted by the power of ten multiplier.
         """
         cost = interval_reading.cost if interval_reading.cost is not None else 0
-        return decimal.Decimal(cost * (10**DEFAULT_COST_POWER_OF_TEN_MULTIPLIER))
+        return decimal.Decimal(cost * (10**self._multiplier))
 
 
 def create_metadata(entity: GreenButtonEntity) -> StatisticMetaData:

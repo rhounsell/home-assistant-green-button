@@ -8,3 +8,6 @@ DOMAIN: Final = "green_button"
 # Cost values in Green Button XML are typically in hundredths of cents,
 # so -5 converts them to dollars (e.g., 12345 * 10^-5 = $0.12345)
 DEFAULT_COST_POWER_OF_TEN_MULTIPLIER: Final = -5
+
+# Config/options key for the user-specified cost power of ten multiplier
+CONF_COST_POWER_OF_TEN_MULTIPLIER: Final = "cost_power_of_ten_multiplier"

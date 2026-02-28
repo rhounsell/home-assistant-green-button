@@ -11,6 +11,7 @@ from homeassistant.helpers import selector
 import voluptuous as vol
 
 from . import configs, const
+from .const import DEFAULT_COST_POWER_OF_TEN_MULTIPLIER, CONF_COST_POWER_OF_TEN_MULTIPLIER
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                 "input_type": "file",
                 "gas_cost_allocation": "monthly_increment",
                 "gas_usage_allocation": "monthly_increment",
+                CONF_COST_POWER_OF_TEN_MULTIPLIER: DEFAULT_COST_POWER_OF_TEN_MULTIPLIER,
             }
         else:
             user_input_default = user_input
@@ -95,6 +97,17 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                             {"value": "monthly_increment", "label": "Single billing-period usage increment (m³)"},
                         ],
                         mode="list",
+                    )
+                ),
+                vol.Optional(
+                    CONF_COST_POWER_OF_TEN_MULTIPLIER,
+                    default=int(user_input_default.get(CONF_COST_POWER_OF_TEN_MULTIPLIER, DEFAULT_COST_POWER_OF_TEN_MULTIPLIER)),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=-10,
+                        max=0,
+                        step=1,
+                        mode=selector.NumberSelectorMode.BOX,
                     )
                 ),
             }
@@ -188,6 +201,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
         config_data["gas_usage_allocation"] = user_input.get(
             "gas_usage_allocation", "daily_readings"
         )
+        # Store cost power of ten multiplier (NumberSelector returns float; store as int)
+        config_data[CONF_COST_POWER_OF_TEN_MULTIPLIER] = int(
+            user_input.get(CONF_COST_POWER_OF_TEN_MULTIPLIER, DEFAULT_COST_POWER_OF_TEN_MULTIPLIER)
+        )
 
         return self.async_create_entry(
             title=config.name,
@@ -222,6 +239,13 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             or "daily_readings"
         )
 
+        raw_multiplier = (
+            self.config_entry.options.get(CONF_COST_POWER_OF_TEN_MULTIPLIER)
+            if self.config_entry.options.get(CONF_COST_POWER_OF_TEN_MULTIPLIER) is not None
+            else self.config_entry.data.get(CONF_COST_POWER_OF_TEN_MULTIPLIER)
+        )
+        current_multiplier = int(raw_multiplier) if raw_multiplier is not None else DEFAULT_COST_POWER_OF_TEN_MULTIPLIER.
+
         schema = vol.Schema(
             {
                 vol.Optional(
@@ -248,6 +272,17 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         mode="list",
                     )
                 ),
+                vol.Optional(
+                    CONF_COST_POWER_OF_TEN_MULTIPLIER,
+                    default=current_multiplier,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=-10,
+                        max=0,
+                        step=1,
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
             }
         )
 
@@ -256,6 +291,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data={
                 "gas_cost_allocation": user_input.get("gas_cost_allocation", current_mode),
                 "gas_usage_allocation": user_input.get("gas_usage_allocation", current_usage_mode),
+                CONF_COST_POWER_OF_TEN_MULTIPLIER: int(
+                    user_input.get(CONF_COST_POWER_OF_TEN_MULTIPLIER, current_multiplier)
+                ),
             })
 
         return self.async_show_form(step_id="init", data_schema=schema)
