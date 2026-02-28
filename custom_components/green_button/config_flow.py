@@ -63,7 +63,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                             {"value": "file", "label": "File path"},
                             {"value": "xml", "label": "XML content"},
                         ],
-                        mode="list",
+                        mode=selector.SelectSelectorMode.LIST,
                     )
                 ),
                 vol.Optional(
@@ -84,7 +84,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                             {"value": "pro_rate_daily", "label": "Pro-rate gas costs daily"},
                             {"value": "monthly_increment", "label": "Single monthly cost increment"},
                         ],
-                        mode="list",
+                        mode=selector.SelectSelectorMode.LIST,
                     )
                 ),
                 vol.Optional(
@@ -96,7 +96,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                             {"value": "daily_readings", "label": "Use daily readings (m³)"},
                             {"value": "monthly_increment", "label": "Single billing-period usage increment (m³)"},
                         ],
-                        mode="list",
+                        mode=selector.SelectSelectorMode.LIST,
                     )
                 ),
                 vol.Optional(
@@ -244,7 +244,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             if self.config_entry.options.get(CONF_COST_POWER_OF_TEN_MULTIPLIER) is not None
             else self.config_entry.data.get(CONF_COST_POWER_OF_TEN_MULTIPLIER)
         )
-        current_multiplier = int(raw_multiplier) if raw_multiplier is not None else DEFAULT_COST_POWER_OF_TEN_MULTIPLIER.
+        current_multiplier = int(raw_multiplier) if raw_multiplier is not None else DEFAULT_COST_POWER_OF_TEN_MULTIPLIER
 
         schema = vol.Schema(
             {
@@ -257,7 +257,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             {"value": "pro_rate_daily", "label": "Pro-rate gas costs daily"},
                             {"value": "monthly_increment", "label": "Single monthly cost increment"},
                         ],
-                        mode="list",
+                        mode=selector.SelectSelectorMode.LIST,
                     )
                 ),
                 vol.Optional(
@@ -269,7 +269,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             {"value": "daily_readings", "label": "Use daily readings (m³)"},
                             {"value": "monthly_increment", "label": "Single billing-period usage increment (m³)"},
                         ],
-                        mode="list",
+                        mode=selector.SelectSelectorMode.LIST,
                     )
                 ),
                 vol.Optional(
