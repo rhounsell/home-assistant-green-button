@@ -83,8 +83,8 @@
           "gas_cost_power_of_ten_multiplier": "Gas cost power-of-ten multiplier"
         },
         "data_description": {
-          "electricity_cost_power_of_ten_multiplier": "Scales raw electricity cost values from the XML: cost × 10^N. The default (-5) converts hundredths-of-cents to dollars (e.g., 12345 → $0.12345). Change only if your utility uses a different scale.",
-          "gas_cost_power_of_ten_multiplier": "Scales raw gas cost values from the XML: cost × 10^N. The default (-5) applies additional scaling to the parsed value. Change only if your utility uses a different scale."
+          "electricity_cost_power_of_ten_multiplier": "Scales raw electricity cost values from the XML: cost × 10^N. The default (-5) converts hundredths-of-cents to dollars (e.g., 12345 → $0.12345). Change only if your utility uses a different scale. Run the 'Recalculate Cost Statistics' service after changing this to update existing cost statistics with the new multiplier.",
+          "gas_cost_power_of_ten_multiplier": "Scales raw gas cost values from the XML: cost × 10^N. The default (-5) applies additional scaling to the parsed value. Change only if your utility uses a different scale. Run the 'Recalculate Cost Statistics' service after changing this to update existing cost statistics with the new multiplier."
         },
         "description": ""
       }
