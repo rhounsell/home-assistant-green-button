@@ -29,7 +29,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import recorder as recorder_helper
 
 from . import model
-from .const import DEFAULT_COST_POWER_OF_TEN_MULTIPLIER
+from .const import DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER, DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER
 
 if TYPE_CHECKING:
     from homeassistant.components.recorder.core import Recorder
@@ -1150,11 +1150,11 @@ class CostDataExtractor:
     """DataExtractor that pulls monetary cost from IntervalReading.
 
     Applies a configurable cost power_of_ten_multiplier to the cost value.
-    Defaults to DEFAULT_COST_POWER_OF_TEN_MULTIPLIER (-5) when no override is provided
+    Defaults to DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER (-5) when no override is provided
     (e.g., a cost of 12345 becomes $0.12345).
     """
 
-    def __init__(self, cost_power_of_ten_multiplier: int = DEFAULT_COST_POWER_OF_TEN_MULTIPLIER) -> None:
+    def __init__(self, cost_power_of_ten_multiplier: int = DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER) -> None:
         """Initialise the extractor with the given multiplier."""
         self._multiplier = cost_power_of_ten_multiplier
 
@@ -1994,13 +1994,29 @@ async def update_gas_cost_statistics(
     meter_reading: model.MeterReading | None,
     usage_summaries: list[model.UsageSummary],
     allocation_mode: str = "pro_rate_daily",
+    gas_cost_multiplier: int = DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER,
 ) -> None:
     """Import pro-rated daily gas costs based on UsageSummary totals and daily m³.
 
     For each billing period, distribute total_cost across days proportionally
     to daily consumption in m³. Emit one hourly record per day at 00:00.
+    
+    Args:
+        hass: Home Assistant instance
+        entity: The gas cost sensor entity
+        meter_reading: MeterReading containing interval data (optional for monthly mode)
+        usage_summaries: List of UsageSummary with billing totals
+        allocation_mode: Either "pro_rate_daily" or "monthly_increment"
+        gas_cost_multiplier: Power of ten multiplier for gas costs (default -5)
+            Note: UsageSummary.total_cost is parsed with 10^-3, so we apply
+            10^(gas_cost_multiplier + 3) to get the final scaling.
     """
     metadata = create_metadata(entity)
+    
+    # Calculate the adjustment multiplier
+    # Parser applies 10^-3, user wants 10^gas_cost_multiplier
+    # So we apply 10^(gas_cost_multiplier - (-3)) = 10^(gas_cost_multiplier + 3)
+    adjustment_multiplier = 10 ** (gas_cost_multiplier + 3)
 
     if allocation_mode == "monthly_increment":
         # One increment per usage summary at the period end (00:00 of end day)
@@ -2022,7 +2038,7 @@ async def update_gas_cost_statistics(
             rec_start = datetime.datetime.combine(period_end.date(), datetime.time.min, tzinfo=tzinfo)
             new_statistics_data.append({
                 "start": rec_start,
-                "state": float(us.total_cost),
+                "state": float(us.total_cost * adjustment_multiplier),
                 "sum": 0.0,  # Will be calculated during merge
             })
 
@@ -2088,13 +2104,13 @@ async def update_gas_cost_statistics(
             total_m3 = sum(daily_m3.get(d, 0.0) for d in period_days)
             if total_m3 <= 0:
                 # Even split if no consumption data
-                per_day = float(us.total_cost) / max(1, len(period_days))
+                per_day = float(us.total_cost * adjustment_multiplier) / max(1, len(period_days))
                 for d in period_days:
                     daily_cost[d] = daily_cost.get(d, 0.0) + per_day
             else:
                 for d in period_days:
                     frac = daily_m3.get(d, 0.0) / total_m3
-                    daily_cost[d] = daily_cost.get(d, 0.0) + (float(us.total_cost) * frac)
+                    daily_cost[d] = daily_cost.get(d, 0.0) + (float(us.total_cost * adjustment_multiplier) * frac)
 
         if not daily_cost:
             _LOGGER.info("No daily cost allocations computed for %s", entity.entity_id)
