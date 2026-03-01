@@ -38,6 +38,9 @@ Green Button XML blocks do not need to be imported in chronological order, and c
 
 When importing xml files, it's probably easiest to locate the file to be imported in Home Assistant's **share** folder, which appears under the config folder, and can be referenced in the file path using **/share/**/<green_button_xml_file.xml>
 
+### Power Of Ten Multiplier for Cost
+The Green Button spec says that the [default power-of-ten-multiplier for cost](https://www.greenbuttonalliance.org/costandcurrency) is "-5", but that providers may choose to use a different value. The Green Button component allows the default multipliers for cost for gas and for electricity to be overridden if your provider uses a non-standard cost power-of-ten-multiplier.
+
 ## Services/Actions
 
 There are several actions (services) related to the Green Button custom component available under **Developer Tools → Actions**. As of this writing, they are:
