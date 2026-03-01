@@ -64,3 +64,27 @@ clear_stored_xml:
               value: "electricity"
             - label: "Gas"
               value: "gas"
+
+recalculate_cost_statistics:
+  name: Recalculate Green Button Cost Statistics
+  description: >
+    Recalculate cost statistics for electricity and/or gas sensors using the current
+    power-of-ten multiplier settings. Use this after changing the cost multiplier values
+    in the integration options to update all historical cost data with the new multipliers.
+    The recalculation uses the stored usage data and applies the new multiplier values
+    to regenerate cost statistics for the Energy Dashboard.
+  fields:
+    commodity:
+      name: Commodity Type
+      description: "Select which cost statistics to recalculate."
+      required: false
+      default: "both"
+      selector:
+        select:
+          options:
+            - label: "Both Electricity and Gas"
+              value: "both"
+            - label: "Electricity Only"
+              value: "electricity"
+            - label: "Gas Only"
+              value: "gas"
