@@ -17,6 +17,7 @@ from .const import (
     CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
     CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER,
 )
+from .parsers import espi
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -204,11 +205,53 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
         _LOGGER.info("Created config with unique ID %r", config.unique_id)
         config_data = dict(config.to_mapping())
 
-        # Store XML content temporarily - it will be moved to proper storage
-        # with auto-detected label when the coordinator first processes it
+        # If XML content is provided, write it directly to dedicated temporary storage
+        # instead of storing in config entry data (config entries are not designed
+        # for multi-MB data). We use a temporary storage key based on unique_id since we
+        # don't have the entry_id yet. The coordinator will migrate it during setup.
         xml_content = user_input.get("xml", "")
         if xml_content:
-            config_data["initial_xml"] = xml_content
+            _LOGGER.info("[CONFIG FLOW] Saving XML (%d bytes) to temporary storage using unique_id: %s", 
+                        len(xml_content), config.unique_id)
+            # Create a temporary storage instance using the TEMP prefix
+            from .xml_storage import _get_temp_storage_key
+            from homeassistant.helpers.storage import Store
+            
+            temp_store = Store(
+                self.hass,
+                1,  # version
+                _get_temp_storage_key(config.unique_id),
+                private=True,
+            )
+            
+            try:
+                # Parse XML to detect commodity type for auto-labeling
+                usage_points = await self.hass.async_add_executor_job(
+                    espi.parse_xml, xml_content
+                )
+                # Auto-detect label (simplified version of coordinator's method)
+                label = "imported_data"
+                if usage_points:
+                    for up in usage_points:
+                        if hasattr(up, 'service_category') and up.service_category:
+                            if up.service_category.kind == 0:
+                                label = "electricity"
+                                break
+                            elif up.service_category.kind == 1:
+                                label = "gas"
+                                break
+                _LOGGER.info("[CONFIG FLOW] Auto-detected label '%s' from XML", label)
+                
+                # Save to temporary storage
+                temp_data = {"stored_xmls": [{"label": label, "xmls": [xml_content]}]}
+                await temp_store.async_save(temp_data)
+                
+                _LOGGER.info("[CONFIG FLOW] Successfully saved XML to temporary .storage/%s (will be migrated to permanent storage during setup)", 
+                            _get_temp_storage_key(config.unique_id))
+            except Exception as e:
+                _LOGGER.error("[CONFIG FLOW] Failed to save XML to temporary storage, falling back to config entry: %s", e)
+                # Fallback to old method if storage fails
+                config_data["initial_xml"] = xml_content
 
         # Store gas cost allocation toggle
         config_data["gas_cost_allocation"] = user_input.get(
