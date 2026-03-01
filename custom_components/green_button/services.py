@@ -15,7 +15,11 @@ from homeassistant.components.sensor import SensorDeviceClass
 from .parsers import espi
 from .xml_storage import async_get_xml_storage
 from . import statistics
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
+    CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER,
+)
 from .coordinator import GreenButtonCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -425,9 +429,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
                     # Get gas cost multiplier
                     raw_gas_multiplier = (
-                        entry.options.get("gas_cost_power_of_ten_multiplier")
-                        if entry.options.get("gas_cost_power_of_ten_multiplier") is not None
-                        else entry.data.get("gas_cost_power_of_ten_multiplier")
+                        entry.options.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER)
+                        if entry.options.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER) is not None
+                        else entry.data.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER)
                     )
                     gas_multiplier = int(raw_gas_multiplier) if raw_gas_multiplier is not None else -5
 
@@ -501,9 +505,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
                         # Get electricity cost multiplier
                         raw_multiplier = (
-                            entry.options.get("electricity_cost_power_of_ten_multiplier")
-                            if entry.options.get("electricity_cost_power_of_ten_multiplier") is not None
-                            else entry.data.get("electricity_cost_power_of_ten_multiplier")
+                            entry.options.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER)
+                            if entry.options.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER) is not None
+                            else entry.data.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER)
                         )
                         multiplier = int(raw_multiplier) if raw_multiplier is not None else -5
 
