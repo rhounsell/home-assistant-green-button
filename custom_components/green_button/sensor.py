@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import traceback
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -22,7 +21,13 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from . import model
 from . import statistics
 from .coordinator import GreenButtonCoordinator
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
+    DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER,
+    CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
+    CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -558,10 +563,16 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
     async def _update_cost_statistics_async(self, meter_reading: model.MeterReading) -> None:
         """Update cost statistics in background without blocking."""
         try:
+            raw_multiplier = (
+                self.coordinator.config_entry.options.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER)
+                if self.coordinator.config_entry.options.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER) is not None
+                else self.coordinator.config_entry.data.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER)
+            )
+            multiplier = int(raw_multiplier) if raw_multiplier is not None else DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER
             await statistics.update_cost_statistics(
                 self.hass,
                 self,
-                statistics.CostDataExtractor(),
+                statistics.CostDataExtractor(multiplier),
                 meter_reading,
             )
             _LOGGER.info(
@@ -993,12 +1004,19 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
     ) -> None:
         """Update gas cost statistics in background without blocking."""
         try:
+            raw_gas_multiplier = (
+                self.coordinator.config_entry.options.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER)
+                if self.coordinator.config_entry.options.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER) is not None
+                else self.coordinator.config_entry.data.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER)
+            )
+            gas_multiplier = int(raw_gas_multiplier) if raw_gas_multiplier is not None else DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER
             await statistics.update_gas_cost_statistics(
                 self.hass,
                 self,
                 meter_reading,
                 summaries,
                 allocation_mode=allocation_mode,
+                gas_cost_multiplier=gas_multiplier,
             )
             _LOGGER.info(
                 "%s: Gas cost statistics update completed.",
@@ -1057,12 +1075,19 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
     ) -> None:
         """Update gas cost statistics from summaries in background without blocking."""
         try:
+            raw_gas_multiplier = (
+                self.coordinator.config_entry.options.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER)
+                if self.coordinator.config_entry.options.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER) is not None
+                else self.coordinator.config_entry.data.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER)
+            )
+            gas_multiplier = int(raw_gas_multiplier) if raw_gas_multiplier is not None else DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER
             await statistics.update_gas_cost_statistics(
                 self.hass,
                 self,
                 None,  # No meter reading available
                 list(usage_point.usage_summaries),
                 allocation_mode=allocation_mode,
+                gas_cost_multiplier=gas_multiplier,
             )
             _LOGGER.info(
                 "%s: Gas cost statistics update (from summaries) completed.",

@@ -4,43 +4,14 @@ from typing import Final
 DOMAIN: Final = "green_button"
 # INTEGRATION_SERVICE_DATA_KEY = "integration_service"
 
+# Default power of ten multiplier for electricity cost values
+# Cost values in Green Button XML are typically in hundredths of cents,
+# so -5 converts them to dollars (e.g., 12345 * 10^-5 = $0.12345)
+DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER: Final = -5
 
-# class _CustomEntitiesParams:
-#     NAME: Final = "name"
-#     USAGE_POINT_HREF: Final = "usage_point_href"
-#     ENERGY_UNIT: Final = "energy_unit"
-#     COST_CURRENCY: Final = "cost_currency"
+# Default power of ten multiplier for gas cost values
+DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER: Final = -5
 
-
-# @final
-# class ConfigParams(_CustomEntitiesParams):
-#     @classmethod
-#     def make_schema(cls, hass: HomeAssistant) -> vol.Schema:
-#         currency = hass.config.currency
-#         return vol.Schema(
-#             {
-#                 vol.Required(cls.NAME): str,
-#                 vol.Required(cls.USAGE_POINT_HREF): str,
-#                 vol.Required(
-#                     cls.ENERGY_UNIT, default=UnitOfEnergy.KILO_WATT_HOUR
-#                 ): vol.In([unit.value for unit in UnitOfEnergy]),
-#                 vol.Required(cls.COST_CURRENCY, default=currency): cv.currency,
-#             }
-#         )
-
-
-# @final
-# class OptionsParams(_CustomEntitiesParams):
-#     @classmethod
-#     def make_schema(cls) -> vol.Schema:
-#         return vol.Schema(
-#             {
-#                 vol.Required(
-#                     cls.USAGE_POINT_HREF,
-#                 ): str,
-#                 vol.Required(cls.ENERGY_UNIT): vol.In(
-#                     [unit.value for unit in UnitOfEnergy]
-#                 ),
-#                 vol.Required(cls.COST_CURRENCY): cv.currency,
-#             }
-#         )
+# Config/options keys for the user-specified cost power of ten multipliers
+CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER: Final = "electricity_cost_power_of_ten_multiplier"
+CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER: Final = "gas_cost_power_of_ten_multiplier"

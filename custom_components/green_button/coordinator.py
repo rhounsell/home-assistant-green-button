@@ -78,9 +78,13 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # NOTE: We use a separate Store instance instead of config entry data because
             # config entries use delayed writes and are not designed for multi-MB data storage.
             if store_in_config:
+                _LOGGER.info("Storing XML data to dedicated storage file for entry %s with label '%s'", 
+                            self.config_entry.entry_id, label)
                 # Use dedicated XML storage (immediate save for reliability)
                 xml_storage = await async_get_xml_storage(self.hass, self.config_entry.entry_id)
                 await xml_storage.async_add_xml(xml_data, label)
+                _LOGGER.info("Successfully stored XML data to .storage/green_button_xml_%s", 
+                            self.config_entry.entry_id)
 
             # Log what we're processing (usage_points already parsed above for label detection)
             total_readings = sum(len(up.meter_readings) for up in new_usage_points)
@@ -222,10 +226,31 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Falls back to config entry data for backwards compatibility.
         """
 
-        # Check for initial_xml from config flow (first setup)
+        # NEW: Check for and migrate temporary storage from config flow
+        # (Config flow writes to temp storage to avoid putting large XML in config entry data)
+        from .xml_storage import async_migrate_temp_storage
+        
+        unique_id = self.config_entry.unique_id
+        if unique_id:
+            try:
+                migrated = await async_migrate_temp_storage(
+                    self.hass, unique_id, self.config_entry.entry_id
+                )
+                if migrated:
+                    _LOGGER.info("[CONFIG FLOW IMPORT] Successfully migrated XML from temporary storage to permanent storage")
+                    # After migration, the data is already in permanent storage,
+                    # so we continue below to load and process it
+            except Exception as e:
+                _LOGGER.warning("[CONFIG FLOW IMPORT] Failed to migrate temporary storage: %s", e)
+        
+        # LEGACY FALLBACK: Check for initial_xml from config flow (old method, for backwards compatibility)
+        # New installations write directly to dedicated temp storage during config flow
         initial_xml = self.config_entry.data.get("initial_xml")
         if initial_xml:
-            _LOGGER.info("Processing initial XML from config flow setup")
+            _LOGGER.info("[CONFIG FLOW IMPORT - LEGACY] Processing initial XML from config flow setup for entry %s",
+                        self.config_entry.entry_id)
+            _LOGGER.info("[CONFIG FLOW IMPORT - LEGACY] XML size: %d bytes", len(initial_xml))
+            _LOGGER.warning("[CONFIG FLOW IMPORT - LEGACY] Using legacy migration path - XML should have been written to storage during config flow")
             # Process through normal flow which auto-detects label and stores properly
             await self.async_add_xml_data(initial_xml, store_in_config=True)
 
@@ -234,8 +259,13 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data_updates.pop("initial_xml", None)
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=data_updates
-            )
-            _LOGGER.info("Migrated initial_xml to proper storage and removed from config entry")
+            ) 
+            # Verify removal
+            if "initial_xml" not in self.config_entry.data:
+                _LOGGER.info("[CONFIG FLOW IMPORT - LEGACY] Successfully migrated initial_xml to .storage/green_button_xml_%s and removed from config entry",
+                            self.config_entry.entry_id)
+            else:
+                _LOGGER.warning("[CONFIG FLOW IMPORT - LEGACY] Failed to remove initial_xml from config entry data!")
             return  # Data already processed
 
         # Try to load from new separate storage file first
