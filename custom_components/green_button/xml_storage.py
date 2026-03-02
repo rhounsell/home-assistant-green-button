@@ -7,6 +7,7 @@ designed for multi-MB data storage.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -59,11 +60,14 @@ class GreenButtonXmlStorage:
         """Save XML data to disk immediately."""
         self._data = data
         storage_file = _get_storage_key(self.entry_id)
-        _LOGGER.info("Saving XML data to storage file: .storage/%s", storage_file) 
+        
+        # Calculate approximate size of data being saved
+        data_size_bytes = len(json.dumps(data))
+        data_size_mb = data_size_bytes / (1024 * 1024)
+        
+        _LOGGER.info("Saving XML data to .storage/%s (~%.2f MB)", storage_file, data_size_mb) 
         await self._store.async_save(data)
-        # Verify the file was created
-        storage_path = self._store.path
-        _LOGGER.info("Successfully saved XML data to %s (entry: %s)", storage_path, self.entry_id)
+        _LOGGER.info("✅ Saved XML data to .storage/%s", storage_file)
 
     def async_delay_save(self, data: dict[str, Any], delay: float = 1.0) -> None:
         """Schedule a delayed save of XML data."""
@@ -136,13 +140,16 @@ class GreenButtonXmlStorage:
         stored_xmls = data.get("stored_xmls", [])
 
         if not stored_xmls:
+            _LOGGER.info("No stored XMLs to clear")
             return (0, 0)
 
         if label is None:
             # Clear all
             removed_count = len(stored_xmls)
+            _LOGGER.info("Clearing all %d stored XML label(s)", removed_count)
             data["stored_xmls"] = []
             await self.async_save(data)
+            _LOGGER.info("✅ Cleared all stored XMLs, storage file now contains empty list")
             return (removed_count, 0)
         else:
             # Clear specific label
@@ -151,8 +158,14 @@ class GreenButtonXmlStorage:
             removed_count = original_count - len(stored_xmls)
 
             if removed_count > 0:
+                _LOGGER.info("Clearing label '%s': removing %d of %d total label(s)", 
+                           label, removed_count, original_count)
                 data["stored_xmls"] = stored_xmls
                 await self.async_save(data)
+                _LOGGER.info("✅ Cleared label '%s', %d label(s) remaining in storage", 
+                           label, len(stored_xmls))
+            else:
+                _LOGGER.warning("Label '%s' not found in stored XMLs", label)
 
             return (removed_count, len(stored_xmls))
 

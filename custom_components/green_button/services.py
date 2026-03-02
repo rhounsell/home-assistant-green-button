@@ -355,25 +355,116 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             coordinator_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
             coordinator: GreenButtonCoordinator | None = coordinator_data.get("coordinator")
 
-            if not coordinator or not coordinator.data:
-                _LOGGER.warning("No coordinator or data for entry %s", entry.title)
+            if not coordinator:
+                _LOGGER.warning("No coordinator for entry %s", entry.title)
                 continue
 
-            usage_points = coordinator.data.get("usage_points", [])
+            # Reload all data from XML storage to get complete historical data
+            # (coordinator.data only has cached/recent meter readings)
+            _LOGGER.info("Reloading all XML data from storage for entry %s", entry.title)
+            
+            from . import xml_storage as xml_storage_module
+            
+            xml_storage = await xml_storage_module.async_get_xml_storage(hass, entry.entry_id)
+            stored_xmls = xml_storage.get_stored_xmls()
+            
+            if not stored_xmls:
+                _LOGGER.warning("No stored XML data found for entry %s", entry.title)
+                continue
+            
+            # Parse all stored XMLs to get complete usage points
+            usage_points = []
+            _LOGGER.info("Loading %d stored label(s) from XML storage for recalculation", len(stored_xmls))
+            
+            xml_count = 0
+            for idx, xml_entry in enumerate(stored_xmls):
+                label = xml_entry.get("label", f"xml_{idx}")
+                
+                # Handle both old format (single "xml") and new format ("xmls" list)
+                xml_list = xml_entry.get("xmls", [])
+                if not xml_list and "xml" in xml_entry:
+                    xml_list = [xml_entry["xml"]]
+                
+                if not xml_list:
+                    _LOGGER.warning("Skipping empty XML entry with label '%s'", label)
+                    continue
+                
+                for xml_idx, xml_data in enumerate(xml_list):
+                    if not xml_data:
+                        continue
+                    
+                    xml_count += 1
+                    _LOGGER.debug("Parsing stored XML '%s' [%d/%d]", label, xml_idx + 1, len(xml_list))
+                    
+                    # Parse XML in executor to avoid blocking
+                    parsed_usage_points = await hass.async_add_executor_job(
+                        espi.parse_xml, xml_data
+                    )
+                    
+                    if parsed_usage_points:
+                        # Merge with existing usage points
+                        if not usage_points:
+                            usage_points = parsed_usage_points
+                        else:
+                            # Merge meter readings by usage point ID
+                            from dataclasses import replace
+                            
+                            for new_up in parsed_usage_points:
+                                existing_idx = next(
+                                    (i for i, up in enumerate(usage_points) if up.id == new_up.id),
+                                    None
+                                )
+                                if existing_idx is not None:
+                                    existing_up = usage_points[existing_idx]
+                                    # Combine meter readings and usage summaries (UsagePoint is frozen, must use replace)
+                                    combined_mrs = list(existing_up.meter_readings) + list(new_up.meter_readings)
+                                    combined_summaries = list(existing_up.usage_summaries) + list(new_up.usage_summaries)
+                                    
+                                    # Create new UsagePoint with combined data
+                                    merged_up = replace(
+                                        existing_up,
+                                        meter_readings=combined_mrs,
+                                        usage_summaries=combined_summaries
+                                    )
+                                    usage_points[existing_idx] = merged_up
+                                    
+                                    _LOGGER.debug(
+                                        "Merged UsagePoint %s: %d meter readings (%d + %d), %d summaries (%d + %d)",
+                                        new_up.id.split("/")[-1] if "/" in new_up.id else new_up.id,
+                                        len(combined_mrs), len(existing_up.meter_readings), len(new_up.meter_readings),
+                                        len(combined_summaries), len(existing_up.usage_summaries), len(new_up.usage_summaries)
+                                    )
+                                else:
+                                    # Add new usage point
+                                    usage_points.append(new_up)
+            
+            _LOGGER.info("Loaded %d usage point(s) from %d XML(s) for recalculation", 
+                        len(usage_points), xml_count)
+            
             if not usage_points:
-                _LOGGER.warning("No usage points found for entry %s", entry.title)
+                _LOGGER.warning("No usage points found after parsing XMLs for entry %s", entry.title)
                 continue
 
             # Get the entity registry to find sensor entities
             entity_registry = async_get_entity_registry(hass)
+            
+            # Log usage point types for debugging
+            gas_count = sum(1 for up in usage_points if up.sensor_device_class == SensorDeviceClass.GAS)
+            elec_count = sum(1 for up in usage_points if up.sensor_device_class != SensorDeviceClass.GAS)
+            _LOGGER.info("Found %d usage point(s): %d electricity, %d gas", 
+                        len(usage_points), elec_count, gas_count)
 
             for usage_point in usage_points:
                 is_gas = usage_point.sensor_device_class == SensorDeviceClass.GAS
 
                 # Skip if commodity filter doesn't match
                 if commodity == "electricity" and is_gas:
+                    _LOGGER.debug("Skipping gas usage point %s (filtering for electricity only)", 
+                                usage_point.id)
                     continue
                 if commodity == "gas" and not is_gas:
+                    _LOGGER.debug("Skipping electricity usage point %s (filtering for gas only)", 
+                                usage_point.id)
                     continue
 
                 # Find cost sensor entities for this usage point
@@ -428,12 +519,18 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     _LOGGER.info("Recalculating gas cost statistics for %s", entity_id)
 
                     # Get gas cost multiplier
+                    _LOGGER.debug("entry.options: %s", entry.options)
+                    _LOGGER.debug("entry.data: %s", entry.data)
+                    
                     raw_gas_multiplier = (
                         entry.options.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER)
                         if entry.options.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER) is not None
                         else entry.data.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER)
                     )
                     gas_multiplier = int(raw_gas_multiplier) if raw_gas_multiplier is not None else -5
+                    
+                    _LOGGER.info("Gas cost multiplier for %s: raw=%s, final=%s", 
+                                entity_id, raw_gas_multiplier, gas_multiplier)
 
                     # Get summaries
                     summaries = list(usage_point.usage_summaries)
@@ -477,6 +574,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                             summaries,
                             allocation_mode=cost_allocation_mode,
                             gas_cost_multiplier=gas_multiplier,
+                            merge_with_existing=False,  # Recalculate ALL from scratch
                         )
                         _LOGGER.info("✅ Recalculated gas cost statistics for %s", entity_id)
                         recalculated_count += 1
@@ -485,61 +583,110 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
                 else:
                     # Electricity cost sensor
-                    for meter_reading in usage_point.meter_readings:
-                        clean_id = meter_reading.id.split("/")[-1] if "/" in meter_reading.id else meter_reading.id
-                        unique_id = f"{entry.entry_id}_{clean_id}_cost"
-                        entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
-
-                        if not entity_id:
-                            _LOGGER.debug("Electricity cost sensor not found for %s", unique_id)
-                            continue
-
-                        # Get the entity state object
-                        entity_state = hass.states.get(entity_id)
-                        if not entity_state:
-                            _LOGGER.warning("Electricity cost sensor state not found for %s", entity_id)
-                            continue
-
-                        # Trigger statistics recalculation
-                        _LOGGER.info("Recalculating electricity cost statistics for %s", entity_id)
-
-                        # Get electricity cost multiplier
-                        raw_multiplier = (
-                            entry.options.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER)
-                            if entry.options.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER) is not None
-                            else entry.data.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER)
+                    _LOGGER.info("Examining electricity UsagePoint %s: found %d total meter readings", 
+                                usage_point.id, len(usage_point.meter_readings))
+                    
+                    # Log details about each meter reading for debugging
+                    for idx, mr in enumerate(usage_point.meter_readings, 1):
+                        num_blocks = len(mr.interval_blocks) if mr.interval_blocks else 0
+                        total_intervals = sum(len(blk.interval_readings) for blk in mr.interval_blocks) if mr.interval_blocks else 0
+                        has_cost_data = any(
+                            hasattr(ir, "cost") and ir.cost is not None
+                            for blk in mr.interval_blocks
+                            for ir in blk.interval_readings
+                        ) if mr.interval_blocks else False
+                        _LOGGER.info("  Meter reading %d/%d: ID=%s, blocks=%d, intervals=%d, has_cost=%s", 
+                                    idx, len(usage_point.meter_readings), 
+                                    mr.id.split("/")[-1] if "/" in mr.id else mr.id,
+                                    num_blocks, total_intervals, has_cost_data)
+                    
+                    # Find eligible meter readings (cost sensors check for 'cost' attribute, not 'value')
+                    eligible_electric_mrs = [
+                        mr
+                        for mr in usage_point.meter_readings
+                        if mr.interval_blocks
+                        and any(
+                            hasattr(ir, "cost") and ir.cost is not None
+                            for blk in mr.interval_blocks
+                            for ir in blk.interval_readings
                         )
-                        multiplier = int(raw_multiplier) if raw_multiplier is not None else -5
+                    ]
 
-                        # Create a mock entity object for statistics
-                        class MockElectricityCostEntity:
-                            """Mock entity for electricity cost statistics recalculation."""
-                            def __init__(self, entity_id: str, name: str, unit: str):
-                                self.entity_id = entity_id
-                                self.name = name
-                                self._attr_native_unit_of_measurement = unit
+                    if not eligible_electric_mrs:
+                        _LOGGER.info("Skipping electricity UsagePoint %s: no eligible meter readings with cost data", usage_point.id)
+                        continue
 
-                            @property
-                            def long_term_statistics_id(self) -> str:
-                                return self.entity_id
+                    # Pick the primary meter reading (matches sensor creation: sorted by ID, first one)
+                    primary_electric_mr = sorted(eligible_electric_mrs, key=lambda mr: mr.id)[0]
+                    
+                    # Get the cost sensor entity ID based on the primary meter reading
+                    clean_id = primary_electric_mr.id.split("/")[-1] if "/" in primary_electric_mr.id else primary_electric_mr.id
+                    unique_id = f"{entry.entry_id}_{clean_id}_cost"
+                    entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
 
-                            @property
-                            def native_unit_of_measurement(self) -> str:
-                                return self._attr_native_unit_of_measurement
+                    if not entity_id:
+                        _LOGGER.warning("Electricity cost sensor not found for %s", unique_id)
+                        continue
 
-                        mock_entity = MockElectricityCostEntity(entity_id, entity_state.name or "Electricity Cost", "CAD")
+                    # Get the entity state object
+                    entity_state = hass.states.get(entity_id)
+                    if not entity_state:
+                        _LOGGER.warning("Electricity cost sensor state not found for %s", entity_id)
+                        continue
 
-                        try:
+                    # Get electricity cost multiplier
+                    raw_multiplier = (
+                        entry.options.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER)
+                        if entry.options.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER) is not None
+                        else entry.data.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER)
+                    )
+                    multiplier = int(raw_multiplier) if raw_multiplier is not None else -5
+                    
+                    _LOGGER.info("Recalculating electricity cost statistics for %s", entity_id)
+                    _LOGGER.info("Electricity cost multiplier: raw=%s, final=%s", raw_multiplier, multiplier)
+                    _LOGGER.info("Processing %d meter reading(s) for entity %s", len(eligible_electric_mrs), entity_id)
+
+                    # Create a mock entity object for statistics
+                    class MockElectricityCostEntity:
+                        """Mock entity for electricity cost statistics recalculation."""
+                        def __init__(self, entity_id: str, name: str, unit: str):
+                            self.entity_id = entity_id
+                            self.name = name
+                            self._attr_native_unit_of_measurement = unit
+
+                        @property
+                        def long_term_statistics_id(self) -> str:
+                            return self.entity_id
+
+                        @property
+                        def native_unit_of_measurement(self) -> str:
+                            return self._attr_native_unit_of_measurement
+
+                    mock_entity = MockElectricityCostEntity(entity_id, entity_state.name or "Electricity Cost", "CAD")
+
+                    try:
+                        # Process all meter readings for this entity
+                        for idx, meter_reading in enumerate(eligible_electric_mrs, 1):
+                            is_first = (idx == 1)
+                            
+                            _LOGGER.info("Processing meter reading %d of %d for %s (merge_with_existing=%s)", 
+                                        idx, len(eligible_electric_mrs), entity_id, not is_first)
+                            
+                            # First meter reading: clear all and regenerate from scratch
+                            # Subsequent meter readings: merge with what we just calculated
                             await statistics.update_cost_statistics(
                                 hass,
                                 mock_entity,
                                 statistics.CostDataExtractor(multiplier),
                                 meter_reading,
+                                merge_with_existing=not is_first,
                             )
-                            _LOGGER.info("✅ Recalculated electricity cost statistics for %s", entity_id)
-                            recalculated_count += 1
-                        except Exception as e:
-                            _LOGGER.error("❌ Failed to recalculate electricity cost statistics for %s: %s", entity_id, e)
+                        
+                        _LOGGER.info("✅ Recalculated electricity cost statistics for %s (%d meter readings processed)", 
+                                    entity_id, len(eligible_electric_mrs))
+                        recalculated_count += 1
+                    except Exception as e:
+                        _LOGGER.error("❌ Failed to recalculate electricity cost statistics for %s: %s", entity_id, e)
 
         if recalculated_count > 0:
             _LOGGER.info("✅ Successfully recalculated %d cost statistic(s)", recalculated_count)
