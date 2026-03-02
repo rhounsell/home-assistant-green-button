@@ -371,6 +371,31 @@ def _find_last_statistic_before(
     return None
 
 
+def _calculate_running_sum(stats: list[StatisticData]) -> list[StatisticData]:
+    """Calculate running sums for statistics (for recalculation mode).
+    
+    Args:
+        stats: List of StatisticData with only 'start' and 'state' fields
+        
+    Returns:
+        List of StatisticData with 'sum' field calculated as running total
+    """
+    if not stats:
+        return []
+    
+    result: list[StatisticData] = []
+    cumulative = 0.0
+    for stat in stats:
+        cumulative += stat.get("state", 0.0)
+        stat_data: StatisticData = {
+            "start": stat["start"],
+            "state": float(stat.get("state", 0.0)),
+            "sum": cumulative,
+        }
+        result.append(stat_data)
+    return result
+
+
 def _merge_statistics_with_out_of_order_support(
     existing_stats: list[StatisticData],
     new_stats: list[StatisticData],
@@ -1157,6 +1182,8 @@ class CostDataExtractor:
     def __init__(self, cost_power_of_ten_multiplier: int = DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER) -> None:
         """Initialise the extractor with the given multiplier."""
         self._multiplier = cost_power_of_ten_multiplier
+        _LOGGER.info("CostDataExtractor initialized with multiplier: %d (10^%d)", 
+                    cost_power_of_ten_multiplier, cost_power_of_ten_multiplier)
 
     def get_native_value(
         self, interval_reading: model.IntervalReading
@@ -1356,11 +1383,19 @@ async def _generate_statistics_data_cost(
     entity: GreenButtonEntity,
     data_extractor: DataExtractor,
     meter_reading: model.MeterReading,
+    merge_with_existing: bool = True,
 ) -> list[StatisticData]:
     """Generate hourly cost statistics with out-of-order import support.
 
     Mirrors the energy statistics generation but uses monetary cost per interval
     without applying energy unit conversions.
+    
+    Args:
+        hass: Home Assistant instance
+        entity: The entity to generate statistics for
+        data_extractor: The data extractor to use
+        meter_reading: The meter reading to process
+        merge_with_existing: If True, merge with existing statistics. If False, regenerate all from scratch.
     """
     # Collect all readings first
     all_readings = [
@@ -1499,28 +1534,42 @@ async def _generate_statistics_data_cost(
         )
         return []
 
-    # Get all existing statistics for this entity
-    existing_stats = await _get_all_existing_statistics(
-        hass,
-        entity.long_term_statistics_id,
-    )
+    # Get all existing statistics for this entity (only if merging)
+    if merge_with_existing:
+        existing_stats = await _get_all_existing_statistics(
+            hass,
+            entity.long_term_statistics_id,
+        )
 
-    # Merge new statistics with existing ones, handling out-of-order imports
-    merged_stats = _merge_statistics_with_out_of_order_support(
-        existing_stats,
-        new_statistics_data,
-        entity.long_term_statistics_id,
-    )
+        # Merge new statistics with existing ones, handling out-of-order imports
+        merged_stats = _merge_statistics_with_out_of_order_support(
+            existing_stats,
+            new_statistics_data,
+            entity.long_term_statistics_id,
+        )
 
-    # Log summary of what was processed
-    _LOGGER.info(
-        "Generated %d hourly cost statistics for entity %s (skipped %d partial hours, existing: %d, merged result: %d)",
-        len(new_statistics_data),
-        entity.entity_id,
-        skipped_count,
-        len(existing_stats),
-        len(merged_stats),
-    )
+        # Log summary of what was processed
+        _LOGGER.info(
+            "Generated %d hourly cost statistics for entity %s (skipped %d partial hours, existing: %d, merged result: %d)",
+            len(new_statistics_data),
+            entity.entity_id,
+            skipped_count,
+            len(existing_stats),
+            len(merged_stats),
+        )
+    else:
+        # Recalculation mode: don't merge, just calculate running sum from scratch
+        _LOGGER.info(
+            "Recalculation mode: Regenerating ALL cost statistics from meter reading (not merging with existing)"
+        )
+        merged_stats = _calculate_running_sum(new_statistics_data)
+        _LOGGER.info(
+            "Generated %d hourly cost statistics for entity %s (skipped %d partial hours, recalculation mode)",
+            len(merged_stats),
+            entity.entity_id,
+            skipped_count,
+        )
+    
     if merged_stats:
         _LOGGER.info(
             "Cost statistics range: %s (sum=%.2f) to %s (sum=%.2f)",
@@ -1538,16 +1587,26 @@ async def update_cost_statistics(
     entity: GreenButtonEntity,
     data_extractor: DataExtractor,
     meter_reading: model.MeterReading,
+    merge_with_existing: bool = True,
 ) -> None:
-    """Update the cost statistics for an entry to match the MeterReading."""
+    """Update the cost statistics for an entry to match the MeterReading.
+    
+    Args:
+        hass: Home Assistant instance
+        entity: The entity to update
+        data_extractor: The data extractor to use
+        meter_reading: The meter reading to process
+        merge_with_existing: If True, merge with existing statistics. If False, regenerate all from scratch.
+    """
     metadata = create_metadata(entity)
     _LOGGER.info(
-        "Starting cost statistics generation for entity %s, meter reading %s",
+        "Starting cost statistics generation for entity %s, meter reading %s (merge_with_existing=%s)",
         entity.entity_id,
         meter_reading.id,
+        merge_with_existing,
     )
     statistics_data = await _generate_statistics_data_cost(
-        hass, entity, data_extractor, meter_reading
+        hass, entity, data_extractor, meter_reading, merge_with_existing
     )
 
     _LOGGER.info(
@@ -1995,6 +2054,7 @@ async def update_gas_cost_statistics(
     usage_summaries: list[model.UsageSummary],
     allocation_mode: str = "pro_rate_daily",
     gas_cost_multiplier: int = DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER,
+    merge_with_existing: bool = True,
 ) -> None:
     """Import pro-rated daily gas costs based on UsageSummary totals and daily m³.
 
@@ -2010,8 +2070,15 @@ async def update_gas_cost_statistics(
         gas_cost_multiplier: Power of ten multiplier for gas costs (default -5)
             Note: UsageSummary.total_cost is parsed with 10^-3, so we apply
             10^(gas_cost_multiplier + 3) to get the final scaling.
+        merge_with_existing: If True, merge with existing statistics. If False, regenerate all from scratch.
     """
     metadata = create_metadata(entity)
+    
+    _LOGGER.info(
+        "Starting gas cost statistics generation for entity %s (merge_with_existing=%s)",
+        entity.entity_id,
+        merge_with_existing,
+    )
     
     # Calculate the adjustment multiplier
     # Parser applies 10^-3, user wants 10^gas_cost_multiplier
@@ -2045,18 +2112,25 @@ async def update_gas_cost_statistics(
         if not new_statistics_data:
             return
 
-        # Get all existing statistics for this entity
-        existing_stats = await _get_all_existing_statistics(
-            hass,
-            entity.long_term_statistics_id,
-        )
+        # Get all existing statistics for this entity (only if merging)
+        if merge_with_existing:
+            existing_stats = await _get_all_existing_statistics(
+                hass,
+                entity.long_term_statistics_id,
+            )
 
-        # Merge new statistics with existing ones, handling out-of-order imports
-        records = _merge_statistics_with_out_of_order_support(
-            existing_stats,
-            new_statistics_data,
-            entity.long_term_statistics_id,
-        )
+            # Merge new statistics with existing ones, handling out-of-order imports
+            records = _merge_statistics_with_out_of_order_support(
+                existing_stats,
+                new_statistics_data,
+                entity.long_term_statistics_id,
+            )
+        else:
+            # Recalculation mode: don't merge, just calculate running sum from scratch
+            _LOGGER.info(
+                "Recalculation mode: Regenerating ALL gas cost statistics from usage summaries (not merging with existing)"
+            )
+            records = _calculate_running_sum(new_statistics_data)
 
     else:
         # Pro-rate daily across billing period days proportional to m³
@@ -2127,18 +2201,25 @@ async def update_gas_cost_statistics(
                 "sum": 0.0,  # Will be calculated during merge
             })
 
-        # Get all existing statistics for this entity
-        existing_stats = await _get_all_existing_statistics(
-            hass,
-            entity.long_term_statistics_id,
-        )
+        # Get all existing statistics for this entity (only if merging)
+        if merge_with_existing:
+            existing_stats = await _get_all_existing_statistics(
+                hass,
+                entity.long_term_statistics_id,
+            )
 
-        # Merge new statistics with existing ones, handling out-of-order imports
-        records = _merge_statistics_with_out_of_order_support(
-            existing_stats,
-            new_statistics_data,
-            entity.long_term_statistics_id,
-        )
+            # Merge new statistics with existing ones, handling out-of-order imports
+            records = _merge_statistics_with_out_of_order_support(
+                existing_stats,
+                new_statistics_data,
+                entity.long_term_statistics_id,
+            )
+        else:
+            # Recalculation mode: don't merge, just calculate running sum from scratch
+            _LOGGER.info(
+                "Recalculation mode: Regenerating ALL gas cost statistics from meter reading (not merging with existing)"
+            )
+            records = _calculate_running_sum(new_statistics_data)
 
     if not records:
         return
