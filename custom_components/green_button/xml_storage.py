@@ -7,6 +7,7 @@ designed for multi-MB data storage.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -19,11 +20,17 @@ _LOGGER = logging.getLogger(__name__)
 
 STORAGE_VERSION = 1
 STORAGE_KEY_PREFIX = f"{DOMAIN}_xml"
+TEMP_STORAGE_PREFIX = f"{DOMAIN}_xml_temp"
 
 
 def _get_storage_key(entry_id: str) -> str:
     """Get the storage key for a config entry's XML data."""
     return f"{STORAGE_KEY_PREFIX}_{entry_id}"
+
+
+def _get_temp_storage_key(unique_id: str) -> str:
+    """Get the temporary storage key based on unique_id (for config flow)."""
+    return f"{TEMP_STORAGE_PREFIX}_{unique_id}"
 
 
 class GreenButtonXmlStorage:
@@ -52,8 +59,15 @@ class GreenButtonXmlStorage:
     async def async_save(self, data: dict[str, Any]) -> None:
         """Save XML data to disk immediately."""
         self._data = data
+        storage_file = _get_storage_key(self.entry_id)
+        
+        # Calculate approximate size of data being saved
+        data_size_bytes = len(json.dumps(data))
+        data_size_mb = data_size_bytes / (1024 * 1024)
+        
+        _LOGGER.info("Saving XML data to .storage/%s (~%.2f MB)", storage_file, data_size_mb) 
         await self._store.async_save(data)
-        _LOGGER.info("Saved XML data to storage file for entry %s", self.entry_id)
+        _LOGGER.info("✅ Saved XML data to .storage/%s", storage_file)
 
     def async_delay_save(self, data: dict[str, Any], delay: float = 1.0) -> None:
         """Schedule a delayed save of XML data."""
@@ -126,13 +140,16 @@ class GreenButtonXmlStorage:
         stored_xmls = data.get("stored_xmls", [])
 
         if not stored_xmls:
+            _LOGGER.info("No stored XMLs to clear")
             return (0, 0)
 
         if label is None:
             # Clear all
             removed_count = len(stored_xmls)
+            _LOGGER.info("Clearing all %d stored XML label(s)", removed_count)
             data["stored_xmls"] = []
             await self.async_save(data)
+            _LOGGER.info("✅ Cleared all stored XMLs, storage file now contains empty list")
             return (removed_count, 0)
         else:
             # Clear specific label
@@ -141,8 +158,14 @@ class GreenButtonXmlStorage:
             removed_count = original_count - len(stored_xmls)
 
             if removed_count > 0:
+                _LOGGER.info("Clearing label '%s': removing %d of %d total label(s)", 
+                           label, removed_count, original_count)
                 data["stored_xmls"] = stored_xmls
                 await self.async_save(data)
+                _LOGGER.info("✅ Cleared label '%s', %d label(s) remaining in storage", 
+                           label, len(stored_xmls))
+            else:
+                _LOGGER.warning("Label '%s' not found in stored XMLs", label)
 
             return (removed_count, len(stored_xmls))
 
@@ -157,3 +180,57 @@ async def async_get_xml_storage(hass: HomeAssistant, entry_id: str) -> GreenButt
         hass.data[DOMAIN][storage_key] = storage
 
     return hass.data[DOMAIN][storage_key]
+
+
+async def async_migrate_temp_storage(hass: HomeAssistant, unique_id: str, entry_id: str) -> bool:
+    """Migrate temporary XML storage (from config flow) to permanent storage.
+    
+    Args:
+        hass: Home Assistant instance
+        unique_id: The unique_id used to create temp storage during config flow
+        entry_id: The actual entry_id to migrate to
+    
+    Returns:
+        True if migration occurred, False if no temp storage found
+    """
+    # Create temp storage instance to check for data
+    temp_store = Store[dict[str, Any]](
+        hass,
+        STORAGE_VERSION,
+        _get_temp_storage_key(unique_id),
+        private=True,
+    )
+    
+    # Try to load temp data
+    temp_data = await temp_store.async_load()
+    
+    if not temp_data or not temp_data.get("stored_xmls"):
+        _LOGGER.debug("No temporary storage found for unique_id %s", unique_id)
+        return False
+    
+    _LOGGER.info("[STORAGE MIGRATION] Found temporary storage for unique_id %s, migrating to entry %s", 
+                unique_id, entry_id)
+    
+    # Get/create permanent storage
+    perm_storage = await async_get_xml_storage(hass, entry_id)
+    
+    # Load current permanent data
+    perm_data = await perm_storage.async_load()
+    
+    # Merge temp data into permanent storage
+    temp_xmls = temp_data.get("stored_xmls", [])
+    perm_xmls = perm_data.get("stored_xmls", [])
+    
+    perm_xmls.extend(temp_xmls)
+    perm_data["stored_xmls"] = perm_xmls
+    
+    # Save to permanent storage
+    await perm_storage.async_save(perm_data)
+    
+    # Delete temporary storage
+    await temp_store.async_remove()
+    
+    _LOGGER.info("[STORAGE MIGRATION] Successfully migrated %d XML label(s) from temporary storage to .storage/green_button_xml_%s",
+                len(temp_xmls), entry_id)
+    
+    return True

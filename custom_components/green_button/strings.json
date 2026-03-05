@@ -11,12 +11,16 @@
           "cost_currency": "Cost Currency",
           "gas_cost_allocation": "Gas cost allocation",
           "gas_usage_allocation": "Gas usage allocation",
+          "electricity_cost_power_of_ten_multiplier": "Electricity cost power-of-ten multiplier",
+          "gas_cost_power_of_ten_multiplier": "Gas cost power-of-ten multiplier",
           "xml": "XML",
           "xml_file_path": "XML File Path"
         },
         "data_description": {
           "xml_file_path": "Relative paths resolve against the Home Assistant config directory (e.g., /config).",
-          "xml": "Paste ESPI XML content directly. For large files, using a file path is recommended."
+          "xml": "Paste ESPI XML content directly. For large files, using a file path is recommended.",
+          "electricity_cost_power_of_ten_multiplier": "Scales raw electricity cost values from the XML: cost × 10^N. The default (-5) converts hundredths-of-cents to dollars (e.g., 12345 → $0.12345). Change only if your utility uses a different scale.",
+          "gas_cost_power_of_ten_multiplier": "Scales raw gas cost values from the XML: cost × 10^N. The default (-5) applies additional scaling to the parsed value. Change only if your utility uses a different scale."
         }
       }
     },
@@ -49,7 +53,9 @@
           "energy_unit": "[%key:component::green_button::config::step::user::data::energy_unit%]",
           "cost_currency": "[%key:component::green_button::config::step::user::data::cost_currency%]",
           "gas_cost_allocation": "Gas cost allocation",
-          "gas_usage_allocation": "Gas usage allocation"
+          "gas_usage_allocation": "Gas usage allocation",
+          "electricity_cost_power_of_ten_multiplier": "Electricity cost power-of-ten multiplier",
+          "gas_cost_power_of_ten_multiplier": "Gas cost power-of-ten multiplier"
         }
       }
     }

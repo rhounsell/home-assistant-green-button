@@ -38,6 +38,11 @@ Green Button XML blocks do not need to be imported in chronological order, and c
 
 When importing xml files, it's probably easiest to locate the file to be imported in Home Assistant's **share** folder, which appears under the config folder, and can be referenced in the file path using **/share/**/<green_button_xml_file.xml>
 
+### Power Of Ten Multiplier for Cost
+The Green Button spec says that the [default power-of-ten-multiplier for cost](https://www.greenbuttonalliance.org/costandcurrency) is "-5", but that providers may choose to use a different value. The Green Button component allows the default multipliers for cost for gas and for electricity to be overridden if your provider uses a non-standard cost power-of-ten-multiplier.
+
+If the value is ever changed after Green Button data has been imported, the new value will apply to any new imported cost data. To force recalculation of previously-imported costs, run the *Recalculate Green Button Cost Statistics* action under Developer Tools -> Actions.
+
 ## Services/Actions
 
 There are several actions (services) related to the Green Button custom component available under **Developer Tools → Actions**. As of this writing, they are:
@@ -46,16 +51,11 @@ There are several actions (services) related to the Green Button custom componen
 - Delete Green Button Statistics
 - Import Green Button ESPI XML
 - Clear Stored Green Button XML Data
+- Recalculate Green Button Cost Statistics
 
 ## Notes
 
-This component has been developed using Hydro Ottawa's version of Green Button XML. There are a number of optional elements in the Green Buttton XML format which may or not be used in the Green Button XML downloaded from other providers. For example, some providers may specify a non-standard power-of-ten multiplier for usage costs instead of using the default value of -5 (10^-5). This componnent is a work in progress, and will probably continue to evolve to handle a wider set of Green Button XML element options.
-
 None of the original tests or development support files such as .pre-commit-config.yaml have been updated or, for that matter, used when updating this component.
-
-## Known Issues
-
-Non-standard power of ten multipliers for usage costs are not currently handled. The multiplier for energy usage data is incorrectly used instead.
 
 ## Credits
 
