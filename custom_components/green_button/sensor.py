@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import traceback
 from typing import Any
 
 from homeassistant.components.sensor import (
