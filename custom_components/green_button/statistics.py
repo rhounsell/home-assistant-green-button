@@ -2224,6 +2224,26 @@ async def update_gas_cost_statistics(
     if not records:
         return
 
+    # Append a zero-state sentinel for today so HA never computes a negative daily delta.
+    # When data only covers up to a few days ago, the last record's cumulative sum is S.
+    # Without a record for today, HA sees sum drop from S to 0 and shows -S as today's cost.
+    # The sentinel carries the last sum forward with state=0 so the delta reads as $0.
+    today_midnight = datetime.datetime.combine(
+        datetime.date.today(), datetime.time.min, tzinfo=tzinfo
+    )
+    last_record = records[-1]
+    if last_record["start"] < today_midnight:
+        records.append({
+            "start": today_midnight,
+            "state": 0.0,
+            "sum": float(last_record["sum"]),
+        })
+        _LOGGER.debug(
+            "Appended today sentinel for %s (sum=%.2f)",
+            entity.entity_id,
+            last_record["sum"],
+        )
+
     # Clear all existing statistics and reimport with the merged data
     try:
         await _ClearStatisticsTask.queue_task(
