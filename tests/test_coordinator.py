@@ -129,3 +129,12 @@ def test_get_usage_summaries_accepts_usage_point_id_for_summaries_only_path() ->
 
     summaries = coord.get_usage_summaries_for_meter_reading("up1")
     assert [summary.id for summary in summaries] == ["jan", "feb"]
+
+
+def test_green_button_gas_sensor_suppresses_auto_state_writes() -> None:
+    from custom_components.green_button.sensor import GreenButtonGasSensor
+
+    coord = _make_coordinator()
+    gas_sensor = GreenButtonGasSensor(coord, "up1")
+
+    assert gas_sensor.suppress_auto_state_write is True
