@@ -7,6 +7,8 @@ import dataclasses
 import datetime
 import decimal
 import logging
+import sqlite3
+from collections import Counter
 from collections.abc import Callable
 from collections.abc import Sequence
 from typing import Any
@@ -369,6 +371,91 @@ def _find_last_statistic_before(
         if stat["start"] < target_time:
             return stat
     return None
+
+
+def _debug_dump_statistics_records(label: str, records: list[StatisticData]) -> None:
+    """Log a compact debug summary of generated statistic records."""
+    if not records:
+        _LOGGER.warning("[GB DEBUG] %s: no records", label)
+        return
+    total_state = sum(float(r.get("state", 0.0) or 0.0) for r in records)
+    _LOGGER.warning(
+        "[GB DEBUG] %s: count=%d sum(state)=%.5f first=%s state=%.5f sum=%.5f last=%s state=%.5f sum=%.5f",
+        label,
+        len(records),
+        total_state,
+        records[0]["start"],
+        float(records[0].get("state", 0.0) or 0.0),
+        float(records[0].get("sum", 0.0) or 0.0),
+        records[-1]["start"],
+        float(records[-1].get("state", 0.0) or 0.0),
+        float(records[-1].get("sum", 0.0) or 0.0),
+    )
+
+
+def _debug_dump_usage_summaries(entity_id: str, usage_summaries: list[model.UsageSummary]) -> None:
+    """Log duplicate hints and totals for gas cost usage summaries."""
+    ids = [getattr(us, "id", None) for us in usage_summaries]
+    id_dups = {k: v for k, v in Counter(ids).items() if k and v > 1}
+    period_keys = [
+        (
+            getattr(us, "start", None).isoformat() if getattr(us, "start", None) else None,
+            str(getattr(us, "duration", None)),
+            float(getattr(us, "total_cost", 0.0) or 0.0),
+        )
+        for us in usage_summaries
+    ]
+    period_dups = {k: v for k, v in Counter(period_keys).items() if v > 1}
+    total_cost = sum(float(getattr(us, "total_cost", 0.0) or 0.0) for us in usage_summaries)
+    _LOGGER.warning(
+        "[GB DEBUG] usage_summaries entity=%s count=%d total_cost=%.5f duplicate_ids=%s duplicate_periods=%s",
+        entity_id,
+        len(usage_summaries),
+        total_cost,
+        id_dups,
+        period_dups,
+    )
+    for us in usage_summaries:
+        _LOGGER.warning(
+            "[GB DEBUG] usage_summary entity=%s id=%s start=%s duration=%s total_cost=%.5f consumption_m3=%s",
+            entity_id,
+            getattr(us, "id", None),
+            getattr(us, "start", None),
+            getattr(us, "duration", None),
+            float(getattr(us, "total_cost", 0.0) or 0.0),
+            getattr(us, "consumption_m3", None),
+        )
+
+
+def _debug_dump_db_statistics(hass: HomeAssistant, statistic_id: str) -> None:
+    """Inspect recorder DB rows after import for one statistic id."""
+    try:
+        db_path = hass.config.path("home-assistant_v2.db")
+        conn = sqlite3.connect(db_path)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "select start_ts, state, sum from statistics where metadata_id=(select id from statistics_meta where statistic_id=? limit 1) order by start_ts asc",
+                (statistic_id,),
+            )
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            _LOGGER.warning("[GB DEBUG] db_post_import %s: no rows", statistic_id)
+            return
+        total_state = sum(float(r[1] or 0.0) for r in rows)
+        _LOGGER.warning(
+            "[GB DEBUG] db_post_import %s: count=%d sum(state)=%.5f final_sum=%.5f first=%s last=%s",
+            statistic_id,
+            len(rows),
+            total_state,
+            float(rows[-1][2] or 0.0),
+            rows[0],
+            rows[-1],
+        )
+    except Exception:
+        _LOGGER.exception("[GB DEBUG] failed db inspection for %s", statistic_id)
 
 
 def _calculate_running_sum(stats: list[StatisticData]) -> list[StatisticData]:
@@ -1966,6 +2053,20 @@ async def update_gas_statistics(
             if period_m3 is None or period_m3 <= 0:
                 continue
 
+            # Guard: skip any record in the future or at/after today's midnight.
+            # Billing periods should only produce records for completed months.
+            today_midnight_guard = datetime.datetime.combine(
+                datetime.date.today(), datetime.time.min, tzinfo=tzinfo
+            )
+            if rec_start >= today_midnight_guard:
+                _LOGGER.warning(
+                    "Gas %s: Skipping record at %s (>= today midnight %s) to prevent future-date stats corruption",
+                    entity.entity_id,
+                    rec_start,
+                    today_midnight_guard,
+                )
+                continue
+
             records.append({"start": rec_start, "state": period_m3, "sum": 0.0})
 
         if not records:
@@ -2079,6 +2180,7 @@ async def update_gas_cost_statistics(
         entity.entity_id,
         merge_with_existing,
     )
+    _debug_dump_usage_summaries(entity.entity_id, usage_summaries)
     
     # Calculate the adjustment multiplier
     # Parser applies 10^-3, user wants 10^gas_cost_multiplier
@@ -2099,10 +2201,21 @@ async def update_gas_cost_statistics(
         # Build records sorted by period end
         summaries_sorted = sorted(usage_summaries, key=lambda s: s.start + s.duration)
         new_statistics_data: list[StatisticData] = []
+        today_midnight_cost_guard = datetime.datetime.combine(
+            datetime.date.today(), datetime.time.min, tzinfo=tzinfo
+        )
         for us in summaries_sorted:
             period_end = us.start + us.duration
             # Place the increment at 00:00 of the period end date (the day the period ends)
             rec_start = datetime.datetime.combine(period_end.date(), datetime.time.min, tzinfo=tzinfo)
+            # Guard: skip any record at or after today's midnight (billing periods should be finalized)
+            if rec_start >= today_midnight_cost_guard:
+                _LOGGER.warning(
+                    "Gas Cost %s: Skipping record at %s (>= today midnight) to prevent future-date stats corruption",
+                    entity.entity_id,
+                    rec_start,
+                )
+                continue
             new_statistics_data.append({
                 "start": rec_start,
                 "state": float(us.total_cost * adjustment_multiplier),
@@ -2111,6 +2224,8 @@ async def update_gas_cost_statistics(
 
         if not new_statistics_data:
             return
+
+        _debug_dump_statistics_records(f"{entity.entity_id} monthly_increment new_statistics_data", new_statistics_data)
 
         # Get all existing statistics for this entity (only if merging)
         if merge_with_existing:
@@ -2202,6 +2317,8 @@ async def update_gas_cost_statistics(
             })
 
         # Get all existing statistics for this entity (only if merging)
+        _debug_dump_statistics_records(f"{entity.entity_id} pro_rate_daily new_statistics_data", new_statistics_data)
+
         if merge_with_existing:
             existing_stats = await _get_all_existing_statistics(
                 hass,
@@ -2224,6 +2341,28 @@ async def update_gas_cost_statistics(
     if not records:
         return
 
+    _debug_dump_statistics_records(f"{entity.entity_id} records_pre_sentinel", records)
+
+    # Append a zero-state sentinel for today so HA never computes a negative daily delta.
+    # When data only covers up to a few days ago, the last record's cumulative sum is S.
+    # Without a record for today, HA sees sum drop from S to 0 and shows -S as today's cost.
+    # The sentinel carries the last sum forward with state=0 so the delta reads as $0.
+    today_midnight = datetime.datetime.combine(
+        datetime.date.today(), datetime.time.min, tzinfo=tzinfo
+    )
+    last_record = records[-1]
+    if last_record["start"] < today_midnight:
+        records.append({
+            "start": today_midnight,
+            "state": 0.0,
+            "sum": float(last_record["sum"]),
+        })
+        _LOGGER.debug(
+            "Appended today sentinel for %s (sum=%.2f)",
+            entity.entity_id,
+            last_record["sum"],
+        )
+
     # Clear all existing statistics and reimport with the merged data
     try:
         await _ClearStatisticsTask.queue_task(
@@ -2238,7 +2377,9 @@ async def update_gas_cost_statistics(
         _LOGGER.exception("Failed to clear gas cost stats for %s", entity.entity_id)
 
     try:
+        _debug_dump_statistics_records(f"{entity.entity_id} records_import_payload", records)
         async_import_statistics(hass, metadata, records)
         _LOGGER.info("Imported %d gas cost records for %s", len(records), entity.entity_id)
+        _debug_dump_db_statistics(hass, entity.long_term_statistics_id)
     except Exception:
         _LOGGER.exception("Failed to import gas cost stats for %s", entity.entity_id)
