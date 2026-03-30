@@ -418,7 +418,38 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                                     existing_up = usage_points[existing_idx]
                                     # Combine meter readings and usage summaries (UsagePoint is frozen, must use replace)
                                     combined_mrs = list(existing_up.meter_readings) + list(new_up.meter_readings)
-                                    combined_summaries = list(existing_up.usage_summaries) + list(new_up.usage_summaries)
+                                    summary_map = {
+                                        us.id: us for us in existing_up.usage_summaries if getattr(us, "id", None)
+                                    }
+                                    no_id_summaries = [
+                                        us for us in existing_up.usage_summaries if not getattr(us, "id", None)
+                                    ]
+                                    skipped_duplicates = 0
+                                    for us in new_up.usage_summaries:
+                                        us_id = getattr(us, "id", None)
+                                        if us_id:
+                                            if us_id in summary_map:
+                                                skipped_duplicates += 1
+                                                continue
+                                            summary_map[us_id] = us
+                                        else:
+                                            no_id_summaries.append(us)
+                                    combined_summaries = list(summary_map.values()) + no_id_summaries
+                                    combined_summaries.sort(
+                                        key=lambda us: (
+                                            getattr(us, "start", None) or 0,
+                                            str(getattr(us, "duration", None) or ""),
+                                            getattr(us, "id", "") or "",
+                                        )
+                                    )
+                                    _LOGGER.warning(
+                                        "[GB DEBUG] recalculation merge usage_point=%s combined_summaries=%d existing=%d new=%d skipped_duplicates=%d",
+                                        new_up.id,
+                                        len(combined_summaries),
+                                        len(existing_up.usage_summaries),
+                                        len(new_up.usage_summaries),
+                                        skipped_duplicates,
+                                    )
                                     
                                     # Create new UsagePoint with combined data
                                     merged_up = replace(

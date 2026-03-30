@@ -52,6 +52,8 @@ def _schedule_hass_task_from_any_thread(hass: HomeAssistant, coro) -> None:
 class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
     """A sensor for Green Button energy data."""
 
+    suppress_auto_state_write = True
+
     _attr_device_class = SensorDeviceClass.ENERGY
     # We set state_class to satisfy HA's validation (prevents "fix issue" warnings)
     # but we return None from native_value so there's no state history for HA
@@ -327,11 +329,8 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
             )
             self._cached_native_value = total_energy
 
-            # Write the state once after statistics import to update the sensor display
-            self.async_write_ha_state()
-
             _LOGGER.info(
-                "%s: Statistics update completed, state set to %.2f kWh.",
+                "%s: Statistics update completed; cached state now %.2f kWh (state write suppressed to avoid recorder auto-stat corruption).",
                 self.entity_id,
                 self._cached_native_value,
             )
@@ -344,6 +343,8 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
 
 class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
     """A sensor for Green Button monetary cost data (total)."""
+
+    suppress_auto_state_write = True
 
     _attr_device_class = SensorDeviceClass.MONETARY
     # Set state_class to TOTAL (not TOTAL_INCREASING) for monetary sensors
@@ -590,10 +591,9 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
 class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
     """Gas consumption sensor (m³, total increasing)."""
 
+    suppress_auto_state_write = True
+
     _attr_device_class = SensorDeviceClass.GAS
-    # We set state_class to satisfy HA's validation (prevents "fix issue" warnings)
-    # but we return None from native_value so there's no state history for HA
-    # to auto-compile. We manually import statistics via async_import_statistics().
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = "m³"
     _attr_has_entity_name = True
@@ -789,11 +789,8 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
             )
             self._cached_native_value = total
 
-            # Write the state once after statistics import to update the sensor display
-            self.async_write_ha_state()
-
             _LOGGER.info(
-                "%s: Gas statistics update completed, state set to %.2f m³.",
+                "%s: Gas statistics update completed; cached state now %.2f m³ (state write suppressed to avoid recorder auto-stat corruption).",
                 self.entity_id,
                 self._cached_native_value,
             )
@@ -859,11 +856,8 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
             total = sum(us.consumption_m3 or 0.0 for us in usage_point.usage_summaries)
             self._cached_native_value = total if total > 0 else 0.0
 
-            # Write the state once after statistics import to update the sensor display
-            self.async_write_ha_state()
-
             _LOGGER.info(
-                "%s: Gas statistics update (from summaries) completed, state set to %.2f m³.",
+                "%s: Gas statistics update (from summaries) completed; cached state now %.2f m³ (state write suppressed to avoid recorder auto-stat corruption).",
                 self.entity_id,
                 self._cached_native_value,
             )
@@ -877,10 +871,9 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
 class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
     """Gas cost sensor (monetary total) using UsageSummary pro-rated per day."""
 
+    suppress_auto_state_write = True
+
     _attr_device_class = SensorDeviceClass.MONETARY
-    # Set state_class to TOTAL (not TOTAL_INCREASING) for monetary sensors
-    # Monetary values can decrease (refunds, adjustments), so use TOTAL
-    # We disable recorder statistics for this entity and manually manage via async_import_statistics
     _attr_state_class = SensorStateClass.TOTAL
     _attr_has_entity_name = True
 
@@ -1133,6 +1126,12 @@ async def async_setup_entry(
         )
 
         for entity in created_entities:
+            if getattr(entity, "suppress_auto_state_write", False):
+                _LOGGER.info(
+                    "Skipping async_write_ha_state() on newly created sensor %s because it manages recorder statistics manually",
+                    getattr(entity, "entity_id", "UNKNOWN"),
+                )
+                continue
             _LOGGER.info(
                 "Calling async_write_ha_state() on newly created sensor %s",
                 getattr(entity, "entity_id", "UNKNOWN"),
