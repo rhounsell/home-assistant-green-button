@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from custom_components.green_button import model
 from custom_components.green_button.const import DOMAIN
 from custom_components.green_button.coordinator import GreenButtonCoordinator
+import pytest
 
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.core import HomeAssistant
@@ -22,6 +23,50 @@ def _interval_block(
     return model.IntervalBlock(
         block_id, reading_type, start, timedelta(hours=1), [reading]
     )
+
+
+def _hourly_block(
+    reading_type: model.ReadingType,
+    block_id: str,
+    start: datetime,
+    values: list[int],
+) -> model.IntervalBlock:
+    """Create an hourly block with a value for every reading."""
+    readings = [
+        model.IntervalReading(
+            reading_type,
+            index,
+            start + timedelta(hours=index),
+            timedelta(hours=1),
+            value,
+        )
+        for index, value in enumerate(values)
+    ]
+    return model.IntervalBlock(
+        block_id,
+        reading_type,
+        start,
+        timedelta(hours=len(readings)),
+        readings,
+    )
+
+
+def _merge_meter_readings(
+    hass: HomeAssistant,
+    existing_meter: model.MeterReading,
+    new_meter: model.MeterReading,
+) -> model.MeterReading:
+    """Merge one meter reading into another through the coordinator."""
+    coordinator = GreenButtonCoordinator(
+        hass, MockConfigEntry(domain=DOMAIN, entry_id="test-entry")
+    )
+    coordinator.usage_points = [
+        model.UsagePoint("usage-point", SensorDeviceClass.ENERGY, [existing_meter])
+    ]
+    coordinator._merge_usage_points(
+        [model.UsagePoint("usage-point", SensorDeviceClass.ENERGY, [new_meter])]
+    )
+    return coordinator.usage_points[0].meter_readings[0]
 
 
 def test_merge_keeps_new_meter_readings_and_usage_summaries(
@@ -60,3 +105,121 @@ def test_merge_keeps_new_meter_readings_and_usage_summaries(
         "second",
     ]
     assert list(merged.usage_summaries) == [summary]
+
+
+def test_merge_uses_new_values_for_corrected_intervals(
+    hass: HomeAssistant,
+) -> None:
+    """A later document replaces both usage and cost for the same interval."""
+    reading_type = model.ReadingType("type", 1, "CAD", 0, "Wh", 3600)
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    existing_meter = model.MeterReading(
+        "meter",
+        reading_type,
+        [_hourly_block(reading_type, "existing", start, [1000, 1000])],
+    )
+    corrected_reading = model.IntervalReading(
+        reading_type, 200, start, timedelta(hours=1), 2000
+    )
+    corrected_meter = model.MeterReading(
+        "meter",
+        reading_type,
+        [
+            model.IntervalBlock(
+                "corrected",
+                reading_type,
+                start,
+                timedelta(hours=1),
+                [corrected_reading],
+            )
+        ],
+    )
+
+    merged = _merge_meter_readings(hass, existing_meter, corrected_meter)
+    readings = [
+        reading
+        for block in merged.interval_blocks
+        for reading in block.interval_readings
+    ]
+
+    assert [(reading.value, reading.cost) for reading in readings] == [
+        (2000, 200),
+        (1000, 1),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("initial_values", "new_values"),
+    [
+        pytest.param([1000] * 23, [1000] * 24, id="short-then-long"),
+        pytest.param([1000] * 24, [1000] * 23, id="long-then-short"),
+    ],
+)
+def test_merge_reconciles_differently_sized_blocks(
+    hass: HomeAssistant,
+    initial_values: list[int],
+    new_values: list[int],
+) -> None:
+    """Block packaging cannot duplicate identical hourly intervals."""
+    reading_type = model.ReadingType("type", 1, "CAD", 0, "Wh", 3600)
+    start = datetime(2026, 8, 9, tzinfo=UTC)
+    existing_meter = model.MeterReading(
+        "meter",
+        reading_type,
+        [_hourly_block(reading_type, "initial", start, initial_values)],
+    )
+    new_meter = model.MeterReading(
+        "meter",
+        reading_type,
+        [_hourly_block(reading_type, "new", start, new_values)],
+    )
+
+    merged = _merge_meter_readings(hass, existing_meter, new_meter)
+    readings = [
+        reading
+        for block in merged.interval_blocks
+        for reading in block.interval_readings
+    ]
+
+    assert len(readings) == 24
+    assert {reading.start for reading in readings} == {
+        start + timedelta(hours=index) for index in range(24)
+    }
+
+
+def test_merge_rejects_ambiguous_interval_overlap(
+    hass: HomeAssistant,
+) -> None:
+    """A different-length overlap preserves prior coverage without duplication."""
+    reading_type = model.ReadingType("type", 1, "CAD", 0, "Wh", 3600)
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    existing_reading = model.IntervalReading(
+        reading_type, 0, start, timedelta(hours=2), 2000
+    )
+    existing_meter = model.MeterReading(
+        "meter",
+        reading_type,
+        [
+            model.IntervalBlock(
+                "existing",
+                reading_type,
+                start,
+                timedelta(hours=2),
+                [existing_reading],
+            )
+        ],
+    )
+    new_meter = model.MeterReading(
+        "meter",
+        reading_type,
+        [_interval_block(reading_type, "ambiguous", start)],
+    )
+
+    merged = _merge_meter_readings(hass, existing_meter, new_meter)
+    readings = [
+        reading
+        for block in merged.interval_blocks
+        for reading in block.interval_readings
+    ]
+
+    assert readings == [existing_reading]
