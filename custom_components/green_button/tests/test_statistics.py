@@ -299,6 +299,88 @@ async def test_summary_only_gas_usage_uses_local_billing_end_date(
     assert records[0]["state"] == pytest.approx(10.0)
 
 
+async def test_monthly_gas_usage_and_daily_cost_share_available_readings(
+    hass: HomeAssistant,
+) -> None:
+    """Monthly usage can use summaries while costs use the same daily readings."""
+    await hass.config.async_set_time_zone("America/Toronto")
+    reading_type = model.ReadingType("type", 7, "CAD", 0, "m³", 86400)
+    start = datetime(2026, 1, 1, 5, tzinfo=UTC)
+    readings = [
+        model.IntervalReading(reading_type, 0, start, timedelta(days=1), 4),
+        model.IntervalReading(reading_type, 0, start + timedelta(days=1), timedelta(days=1), 6),
+    ]
+    meter = model.MeterReading(
+        "meter",
+        reading_type,
+        [model.IntervalBlock("block", reading_type, start, timedelta(days=2), readings)],
+    )
+    summary = model.UsageSummary(
+        "summary", start, timedelta(days=2), 100, "CAD", consumption_m3=None
+    )
+    recorder = Mock()
+    recorder.async_add_executor_job = AsyncMock(return_value=None)
+
+    with (
+        patch.object(statistics.recorder_helper, "get_instance", return_value=recorder),
+        patch.object(
+            statistics, "_async_replace_statistics", new_callable=AsyncMock
+        ) as replace_statistics,
+    ):
+        await statistics._async_update_gas_statistics(
+            hass,
+            _StatisticsEntity(),  # type: ignore[arg-type]
+            meter,
+            [summary],
+            allocation_mode="monthly_increment",
+        )
+        usage_records = replace_statistics.await_args.args[2]
+        await statistics._async_update_gas_cost_statistics(
+            hass,
+            _StatisticsEntity(),  # type: ignore[arg-type]
+            meter,
+            [summary],
+            allocation_mode="pro_rate_daily",
+            gas_cost_multiplier=0,
+            merge_with_existing=False,
+        )
+        cost_records = replace_statistics.await_args.args[2]
+
+    assert [record["state"] for record in usage_records] == pytest.approx([10.0])
+    assert [record["state"] for record in cost_records] == pytest.approx([40.0, 60.0])
+
+
+async def test_monthly_gas_usage_accepts_unrepresented_long_reading(
+    hass: HomeAssistant,
+) -> None:
+    """A multi-day gas reading can provide a billing increment without a summary."""
+    reading_type = model.ReadingType("type", 7, "CAD", 0, "m³", 604800)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    reading = model.IntervalReading(reading_type, 0, start, timedelta(days=6), 12)
+    meter = model.MeterReading(
+        "meter",
+        reading_type,
+        [model.IntervalBlock("block", reading_type, start, reading.duration, [reading])],
+    )
+    recorder = Mock()
+    recorder.async_add_executor_job = AsyncMock(return_value=None)
+
+    with (
+        patch.object(statistics.recorder_helper, "get_instance", return_value=recorder),
+        patch.object(
+            statistics, "_async_replace_statistics", new_callable=AsyncMock
+        ) as replace_statistics,
+    ):
+        await statistics._async_update_gas_statistics(
+            hass,
+            _StatisticsEntity(),  # type: ignore[arg-type]
+            meter,
+            allocation_mode="monthly_increment",
+        )
+
+    assert [record["state"] for record in replace_statistics.await_args.args[2]] == [12.0]
+
+
 async def test_energy_statistics_split_trimmed_multi_hour_intervals(
     hass: HomeAssistant,
 ) -> None:

@@ -149,6 +149,7 @@ async def test_gas_allocation_mode_change_keeps_single_stream_identity(
 
     await sensor.async_setup_entry(hass, entry, async_add_entities)
     daily_ids = {entity.unique_id for entity in added}
+    assert {entity._meter_reading_id for entity in added} == {"/MeterReading/1"}
 
     hass.config_entries.async_update_entry(
         entry, options={"gas_usage_allocation": "monthly_increment"}
@@ -157,3 +158,4 @@ async def test_gas_allocation_mode_change_keeps_single_stream_identity(
 
     assert len(added) == 2
     assert {entity.unique_id for entity in added} == daily_ids
+    assert {entity._meter_reading_id for entity in added} == {"/MeterReading/1"}

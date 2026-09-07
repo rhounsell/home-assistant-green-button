@@ -700,6 +700,8 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for usage_point in self.usage_points:
             if usage_point_id is not None and usage_point.id != usage_point_id:
                 continue
+            if usage_point.id == meter_reading_id:
+                return list(getattr(usage_point, "usage_summaries", []) or [])
             for meter_reading in usage_point.meter_readings:
                 if meter_reading.id == meter_reading_id:
                     return list(getattr(usage_point, "usage_summaries", []) or [])
