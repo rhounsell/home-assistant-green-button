@@ -12,6 +12,7 @@ from custom_components.green_button.coordinator import GreenButtonCoordinator
 from custom_components.green_button.parsers import espi
 import pytest
 
+from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from tests.common import MockConfigEntry
@@ -39,6 +40,25 @@ def test_interval_parser_preserves_missing_cost_and_explicit_zero() -> None:
 
     assert parser(_interval_reading_element(cost=None)).cost is None
     assert parser(_interval_reading_element(cost="0")).cost == 0
+
+
+@pytest.mark.parametrize(
+    ("device_class", "interval_length", "expected"),
+    [
+        pytest.param(SensorDeviceClass.ENERGY, 3600, True, id="hourly-electricity"),
+        pytest.param(SensorDeviceClass.ENERGY, 86400, False, id="daily-electricity"),
+        pytest.param(SensorDeviceClass.GAS, 86400, True, id="daily-gas"),
+        pytest.param(SensorDeviceClass.GAS, 604800, True, id="weekly-gas"),
+    ],
+)
+def test_gas_parser_accepts_daily_and_long_consumption_readings(
+    device_class: SensorDeviceClass, interval_length: int, expected: bool
+) -> None:
+    """Gas feeds retain daily and billing-period consumption readings."""
+    assert (
+        espi._is_supported_consumption_stream(device_class, 1, interval_length)
+        is expected
+    )
 
 
 @pytest.mark.parametrize(

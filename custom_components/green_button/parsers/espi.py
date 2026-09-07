@@ -43,6 +43,19 @@ _SERVICE_KIND: Final = {
 }
 
 
+def _is_supported_consumption_stream(
+    device_class: sensor.SensorDeviceClass,
+    flow_direction: int,
+    interval_length: int,
+) -> bool:
+    """Return whether an ESPI meter reading is supported for this commodity."""
+    if flow_direction != 1:
+        return False
+    if device_class == sensor.SensorDeviceClass.ENERGY:
+        return interval_length < 86400
+    return device_class == sensor.SensorDeviceClass.GAS and interval_length >= 86400
+
+
 class EspiXmlParseError(ValueError):
     """Error when parsing ESPI XML."""
 
@@ -549,16 +562,10 @@ class EspiEntry:
                                 flow_direction = rt_entry.parse_child_text("espi:flowDirection", int)
                                 interval_length = rt_entry.parse_child_text("espi:intervalLength", int)
 
-                                # For electricity: include sub-daily consumption (< 86400)
-                                # For gas: include daily consumption (== 86400)
-                                if (
-                                    sensor_device_class == sensor.SensorDeviceClass.ENERGY
-                                    and flow_direction == 1
-                                    and interval_length < 86400
-                                ) or (
-                                    sensor_device_class == sensor.SensorDeviceClass.GAS
-                                    and flow_direction == 1
-                                    and interval_length == 86400
+                                if _is_supported_consumption_stream(
+                                    sensor_device_class,
+                                    flow_direction,
+                                    interval_length,
                                 ):
                                     logger.debug(
                                         "Including MeterReading %s (flowDirection=%d, intervalLength=%d)",

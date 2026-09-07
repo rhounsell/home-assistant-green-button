@@ -62,6 +62,15 @@ def _cost_multiplier(coordinator: GreenButtonCoordinator, gas: bool = False) -> 
     )
 
 
+def _has_interval_readings(meter_reading: model.MeterReading) -> bool:
+    """Return whether a meter stream has usable interval data."""
+    return bool(meter_reading.interval_blocks) and any(
+        reading.value is not None
+        for block in meter_reading.interval_blocks
+        for reading in block.interval_readings
+    )
+
+
 def _schedule_hass_task_from_any_thread(hass: HomeAssistant, coro) -> None:
     """Schedule a coroutine on HA's event loop from any thread safely.
 
@@ -663,9 +672,21 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
                         and usage_point.id == self._meter_reading_id
                         and usage_point.usage_summaries
                     ):
-                        _schedule_hass_task_from_any_thread(
-                            self.hass, self.update_sensor_and_statistics_from_summaries(usage_point)
-                        )
+                        meter_readings = [
+                            meter_reading
+                            for meter_reading in usage_point.meter_readings
+                            if _has_interval_readings(meter_reading)
+                        ]
+                        if len(meter_readings) == 1:
+                            _schedule_hass_task_from_any_thread(
+                                self.hass,
+                                self.update_sensor_and_statistics(meter_readings[0]),
+                            )
+                        else:
+                            _schedule_hass_task_from_any_thread(
+                                self.hass,
+                                self.update_sensor_and_statistics_from_summaries(usage_point),
+                            )
                         break
     async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
         """Update cached values and schedule historical statistics."""
@@ -914,9 +935,21 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
                         and usage_point.id == self._meter_reading_id
                         and usage_point.usage_summaries
                     ):
-                        _schedule_hass_task_from_any_thread(
-                            self.hass, self.update_sensor_and_statistics_from_summaries(usage_point)
-                        )
+                        meter_readings = [
+                            meter_reading
+                            for meter_reading in usage_point.meter_readings
+                            if _has_interval_readings(meter_reading)
+                        ]
+                        if len(meter_readings) == 1:
+                            _schedule_hass_task_from_any_thread(
+                                self.hass,
+                                self.update_sensor_and_statistics(meter_readings[0]),
+                            )
+                        else:
+                            _schedule_hass_task_from_any_thread(
+                                self.hass,
+                                self.update_sensor_and_statistics_from_summaries(usage_point),
+                            )
                         break
 
     async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
@@ -1058,12 +1091,7 @@ async def async_setup_entry(
             (
                 meter_reading
                 for meter_reading in usage_point.meter_readings
-                if meter_reading.interval_blocks
-                and any(
-                    reading.value is not None
-                    for block in meter_reading.interval_blocks
-                    for reading in block.interval_readings
-                )
+                if _has_interval_readings(meter_reading)
             ),
             key=lambda meter_reading: meter_reading.id,
         )

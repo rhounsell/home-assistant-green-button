@@ -1857,6 +1857,14 @@ def _gas_daily_totals(
 
     return daily_totals
 
+
+def _is_gas_billing_period_reading(reading: model.IntervalReading) -> bool:
+    """Return whether a reading represents more than one daily gas interval."""
+    return (
+        reading.reading_type.interval_length > 86400
+        or reading.duration > datetime.timedelta(days=1)
+    )
+
 async def _generate_daily_m3_statistics(
     hass: HomeAssistant,
     entity: GreenButtonEntity,
@@ -1963,29 +1971,18 @@ async def _async_update_gas_statistics(
             source = f"UsageSummary:{us.id}"
             periods_to_process.append((period_start, period_end, consumption_m3, source))
 
-        # Check for long IntervalReadings (>7 days) that might represent billing periods
-        # not yet in UsageSummary
-        MIN_BILLING_PERIOD_DAYS = 7
+        # Include an unrepresented multi-day interval as a billing period. A
+        # matching UsageSummary is authoritative and prevents double counting.
         for rd in readings:
-            duration_days = rd.duration.total_seconds() / 86400
-            if duration_days >= MIN_BILLING_PERIOD_DAYS:
+            if _is_gas_billing_period_reading(rd):
                 rd_start = rd.start
                 rd_end = rd.start + rd.duration
-                # Check if this period overlaps significantly with any UsageSummary
-                overlaps = False
-                for us in summaries:
-                    us_start = us.start
-                    us_end = us.start + us.duration
-                    # Check for significant overlap (>50% of either period)
-                    overlap_start = max(rd_start, us_start)
-                    overlap_end = min(rd_end, us_end)
-                    if overlap_start < overlap_end:
-                        overlap_days = (overlap_end - overlap_start).total_seconds() / 86400
-                        if overlap_days > min(duration_days, (us_end - us_start).total_seconds() / 86400) * 0.5:
-                            overlaps = True
-                            break
+                overlaps_summary = any(
+                    rd_start < us.start + us.duration and us.start < rd_end
+                    for us in summaries
+                )
 
-                if not overlaps:
+                if not overlaps_summary:
                     # This is a billing-period-length reading not covered by UsageSummary
                     consumption_m3 = float(scaling.interval_value(rd))
                     source = f"IntervalReading:{rd_start.isoformat()}"
