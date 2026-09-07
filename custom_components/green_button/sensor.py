@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from hashlib import sha256
 import logging
 from typing import Any
 
@@ -26,6 +27,22 @@ from .coordinator import GreenButtonCoordinator
 from .statistic_ids import statistic_id_from_unique_id
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _legacy_unique_id(entry_id: str, meter_reading_id: str, suffix: str) -> str:
+    """Return the pre-2.0 identifier based on the final provider path segment."""
+    return f"{entry_id}_{meter_reading_id.rsplit('/', 1)[-1]}{suffix}"
+
+
+def _stream_unique_id(
+    entry_id: str,
+    usage_point_id: str,
+    meter_reading_id: str,
+    suffix: str,
+) -> str:
+    """Return a stable identifier for one provider usage-point stream."""
+    identity = "\x00".join((usage_point_id, meter_reading_id, suffix))
+    return f"{entry_id}_{sha256(identity.encode()).hexdigest()}{suffix}"
 
 
 def _cost_multiplier(coordinator: GreenButtonCoordinator, gas: bool = False) -> int:
@@ -67,6 +84,11 @@ class GreenButtonStatisticsSensor(CoordinatorEntity[GreenButtonCoordinator], Sen
     _attr_state_class = None
 
     @property
+    def legacy_unique_id(self) -> str:
+        """Return the former path-suffix ID for a possible registry migration."""
+        return self._legacy_unique_id
+
+    @property
     def long_term_statistics_id(self) -> str:
         """Return the external series associated with this display entity."""
         return statistic_id_from_unique_id(self._attr_unique_id)
@@ -88,20 +110,27 @@ class GreenButtonSensor(GreenButtonStatisticsSensor):
         self,
         coordinator: GreenButtonCoordinator,
         meter_reading_id: str,
+        usage_point_id: str | None = None,
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
         self._meter_reading_id = meter_reading_id
+        self._usage_point_id = usage_point_id
         self._cached_native_value: float = 0.0  # Cache last imported statistics value
 
-        # Create a cleaner unique ID from the meter reading ID
-        # Extract the last part after the final slash for a shorter identifier
-        clean_id = (
-            meter_reading_id.split("/")[-1]
-            if "/" in meter_reading_id
-            else meter_reading_id
+        self._legacy_unique_id = _legacy_unique_id(
+            coordinator.config_entry.entry_id, meter_reading_id, ""
         )
-        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}"
+        self._attr_unique_id = (
+            _stream_unique_id(
+                coordinator.config_entry.entry_id,
+                usage_point_id,
+                meter_reading_id,
+                "",
+            )
+            if usage_point_id is not None
+            else self._legacy_unique_id
+        )
         # Simple name - Home Assistant will combine with device name since _attr_has_entity_name=True
         self._attr_name = "Usage"
 
@@ -136,7 +165,9 @@ class GreenButtonSensor(GreenButtonStatisticsSensor):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
-        meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
+        meter_reading = self.coordinator.get_meter_reading_by_id(
+            self._meter_reading_id, self._usage_point_id
+        )
         if not meter_reading:
             return super().extra_state_attributes
 
@@ -188,7 +219,9 @@ class GreenButtonSensor(GreenButtonStatisticsSensor):
             self.entity_id,
         )
 
-        meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
+        meter_reading = self.coordinator.get_meter_reading_by_id(
+            self._meter_reading_id, self._usage_point_id
+        )
         if meter_reading:
             # Calculate total energy from all interval blocks (for internal tracking only)
             total_energy = 0
@@ -232,7 +265,10 @@ class GreenButtonSensor(GreenButtonStatisticsSensor):
             )
             for usage_point in usage_points:
                 for meter_reading in usage_point.meter_readings:
-                    if meter_reading.id == self._meter_reading_id:
+                    if (
+                        (self._usage_point_id is None or usage_point.id == self._usage_point_id)
+                        and meter_reading.id == self._meter_reading_id
+                    ):
                         # Schedule statistics update (statistics system is idempotent)
                         _LOGGER.info(
                             "Sensor %s: Scheduling statistics update for meter reading %s",
@@ -330,18 +366,26 @@ class GreenButtonCostSensor(GreenButtonStatisticsSensor):
         self,
         coordinator: GreenButtonCoordinator,
         meter_reading_id: str,
+        usage_point_id: str | None = None,
     ) -> None:
         super().__init__(coordinator)
         self._meter_reading_id = meter_reading_id
+        self._usage_point_id = usage_point_id
         self._cached_native_value: float = 0.0  # Initialize to 0 for Energy Dashboard
 
-        # Build unique id with cost suffix
-        clean_id = (
-            meter_reading_id.split("/")[-1]
-            if "/" in meter_reading_id
-            else meter_reading_id
+        self._legacy_unique_id = _legacy_unique_id(
+            coordinator.config_entry.entry_id, meter_reading_id, "_cost"
         )
-        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}_cost"
+        self._attr_unique_id = (
+            _stream_unique_id(
+                coordinator.config_entry.entry_id,
+                usage_point_id,
+                meter_reading_id,
+                "_cost",
+            )
+            if usage_point_id is not None
+            else self._legacy_unique_id
+        )
         # Simple name - Home Assistant will combine with device name since _attr_has_entity_name=True
         self._attr_name = "Cost"
 
@@ -364,7 +408,9 @@ class GreenButtonCostSensor(GreenButtonStatisticsSensor):
         if not self.coordinator.data or not self.coordinator.data.get("usage_points"):
             return self._cached_native_value  # Return cached value instead of None
 
-        meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
+        meter_reading = self.coordinator.get_meter_reading_by_id(
+            self._meter_reading_id, self._usage_point_id
+        )
         if not meter_reading:
             return self._cached_native_value  # Return cached value instead of None
 
@@ -400,7 +446,9 @@ class GreenButtonCostSensor(GreenButtonStatisticsSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
+        meter_reading = self.coordinator.get_meter_reading_by_id(
+            self._meter_reading_id, self._usage_point_id
+        )
         if not meter_reading:
             return super().extra_state_attributes
 
@@ -452,7 +500,10 @@ class GreenButtonCostSensor(GreenButtonStatisticsSensor):
             usage_points = self.coordinator.data["usage_points"]
             for usage_point in usage_points:
                 for meter_reading in usage_point.meter_readings:
-                    if meter_reading.id == self._meter_reading_id:
+                    if (
+                        (self._usage_point_id is None or usage_point.id == self._usage_point_id)
+                        and meter_reading.id == self._meter_reading_id
+                    ):
                         _schedule_hass_task_from_any_thread(
                             self.hass, self.update_sensor_and_statistics(meter_reading)
                         )
@@ -516,12 +567,29 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
     _attr_native_unit_of_measurement = "m³"
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator: GreenButtonCoordinator, meter_reading_id: str) -> None:
+    def __init__(
+        self,
+        coordinator: GreenButtonCoordinator,
+        meter_reading_id: str,
+        usage_point_id: str | None = None,
+    ) -> None:
         super().__init__(coordinator)
         self._meter_reading_id = meter_reading_id
+        self._usage_point_id = usage_point_id
         self._cached_native_value: float = 0.0  # Initialize to 0 for Energy Dashboard
-        clean_id = meter_reading_id.split("/")[-1] if "/" in meter_reading_id else meter_reading_id
-        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}_gas"
+        self._legacy_unique_id = _legacy_unique_id(
+            coordinator.config_entry.entry_id, meter_reading_id, "_gas"
+        )
+        self._attr_unique_id = (
+            _stream_unique_id(
+                coordinator.config_entry.entry_id,
+                usage_point_id,
+                meter_reading_id,
+                "_gas",
+            )
+            if usage_point_id is not None
+            else self._legacy_unique_id
+        )
         # Simple name - Home Assistant will combine with device name since _attr_has_entity_name=True
         self._attr_name = "Usage"
 
@@ -570,7 +638,10 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
             found_meter_reading = False
             for usage_point in self.coordinator.data["usage_points"]:
                 for meter_reading in usage_point.meter_readings:
-                    if meter_reading.id == self._meter_reading_id:
+                    if (
+                        (self._usage_point_id is None or usage_point.id == self._usage_point_id)
+                        and meter_reading.id == self._meter_reading_id
+                    ):
                         found_meter_reading = True
                         _schedule_hass_task_from_any_thread(
                             self.hass, self.update_sensor_and_statistics(meter_reading)
@@ -582,7 +653,11 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
             # If not found as meter reading, check if it's a UsagePoint ID (UsageSummary-only case)
             if not found_meter_reading:
                 for usage_point in self.coordinator.data["usage_points"]:
-                    if usage_point.id == self._meter_reading_id and usage_point.usage_summaries:
+                    if (
+                        (self._usage_point_id is None or usage_point.id == self._usage_point_id)
+                        and usage_point.id == self._meter_reading_id
+                        and usage_point.usage_summaries
+                    ):
                         _schedule_hass_task_from_any_thread(
                             self.hass, self.update_sensor_and_statistics_from_summaries(usage_point)
                         )
@@ -598,7 +673,9 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
 
 
         # Import gas m³ statistics per selected allocation mode
-        summaries = self.coordinator.get_usage_summaries_for_meter_reading(self._meter_reading_id)
+        summaries = self.coordinator.get_usage_summaries_for_meter_reading(
+            self._meter_reading_id, self._usage_point_id
+        )
         usage_allocation_mode = (
             self.coordinator.config_entry.options.get("gas_usage_allocation")
             or self.coordinator.config_entry.data.get("gas_usage_allocation")
@@ -729,11 +806,28 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
     _attr_device_class = SensorDeviceClass.MONETARY
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator: GreenButtonCoordinator, meter_reading_id: str) -> None:
+    def __init__(
+        self,
+        coordinator: GreenButtonCoordinator,
+        meter_reading_id: str,
+        usage_point_id: str | None = None,
+    ) -> None:
         super().__init__(coordinator)
         self._meter_reading_id = meter_reading_id
-        clean_id = meter_reading_id.split("/")[-1] if "/" in meter_reading_id else meter_reading_id
-        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{clean_id}_gas_cost"
+        self._usage_point_id = usage_point_id
+        self._legacy_unique_id = _legacy_unique_id(
+            coordinator.config_entry.entry_id, meter_reading_id, "_gas_cost"
+        )
+        self._attr_unique_id = (
+            _stream_unique_id(
+                coordinator.config_entry.entry_id,
+                usage_point_id,
+                meter_reading_id,
+                "_gas_cost",
+            )
+            if usage_point_id is not None
+            else self._legacy_unique_id
+        )
         # Simple name - Home Assistant will combine with device name since _attr_has_entity_name=True
         self._attr_name = "Cost"
         self._attr_native_unit_of_measurement = "CAD"
@@ -751,7 +845,7 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
     @property
     def native_value(self) -> float | None:
         summaries = self.coordinator.get_usage_summaries_for_meter_reading(
-            self._meter_reading_id
+            self._meter_reading_id, self._usage_point_id
         )
         if not summaries:
             return 0.0
@@ -793,7 +887,10 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
             found_meter_reading = False
             for usage_point in self.coordinator.data["usage_points"]:
                 for meter_reading in usage_point.meter_readings:
-                    if meter_reading.id == self._meter_reading_id:
+                    if (
+                        (self._usage_point_id is None or usage_point.id == self._usage_point_id)
+                        and meter_reading.id == self._meter_reading_id
+                    ):
                         found_meter_reading = True
                         _schedule_hass_task_from_any_thread(
                             self.hass, self.update_sensor_and_statistics(meter_reading)
@@ -805,7 +902,11 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
             # If not found as meter reading, check if it's a UsagePoint ID (UsageSummary-only case)
             if not found_meter_reading:
                 for usage_point in self.coordinator.data["usage_points"]:
-                    if usage_point.id == self._meter_reading_id and usage_point.usage_summaries:
+                    if (
+                        (self._usage_point_id is None or usage_point.id == self._usage_point_id)
+                        and usage_point.id == self._meter_reading_id
+                        and usage_point.usage_summaries
+                    ):
                         _schedule_hass_task_from_any_thread(
                             self.hass, self.update_sensor_and_statistics_from_summaries(usage_point)
                         )
@@ -818,7 +919,9 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
 
         # Update long-term statistics with pro-rated daily cost
         # Run in background to not block startup
-        summaries = self.coordinator.get_usage_summaries_for_meter_reading(self._meter_reading_id)
+        summaries = self.coordinator.get_usage_summaries_for_meter_reading(
+            self._meter_reading_id, self._usage_point_id
+        )
         allocation_mode = (
             self.coordinator.config_entry.options.get("gas_cost_allocation")
             or self.coordinator.config_entry.data.get("gas_cost_allocation")
@@ -932,307 +1035,154 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Green Button sensor entities from a config entry."""
-    _LOGGER.debug("Setting up Green Button sensor platform")
-
-    # Get the coordinator from hass.data
+    """Set up one stable entity pair for every unambiguous provider stream."""
     coordinator: GreenButtonCoordinator = hass.data[DOMAIN][entry.entry_id][
         "coordinator"
     ]
+    active_unique_ids: set[str] = set()
 
-    # Track only entities created by this setup so we can safely write state afterwards
-    created_entities: list[SensorEntity] = []
-    # Track entities that have been added to HA to avoid re-adding reused entities on subsequent coordinator updates
-    entities_added_to_hass: bool = False
-
-    async def _async_update_created_entities() -> None:
-        """Write state for newly created entities after they are added to HA."""
-        if not created_entities:
-            _LOGGER.debug("No newly created entities to update")
-            return
-
-        _LOGGER.info(
-            "Updating %d newly created sensor entities (data_available=%s, last_update_success=%s)",
-            len(created_entities),
-            coordinator.data is not None,
-            coordinator.last_update_success,
+    def _eligible_meter_readings(
+        usage_point: model.UsagePoint,
+    ) -> list[model.MeterReading]:
+        return sorted(
+            (
+                meter_reading
+                for meter_reading in usage_point.meter_readings
+                if meter_reading.interval_blocks
+                and any(
+                    reading.value is not None
+                    for block in meter_reading.interval_blocks
+                    for reading in block.interval_readings
+                )
+            ),
+            key=lambda meter_reading: meter_reading.id,
         )
 
-        for entity in created_entities:
-            _LOGGER.info(
-                "Calling async_write_ha_state() on newly created sensor %s",
-                getattr(entity, "entity_id", "UNKNOWN"),
+    def _migrate_legacy_entities(
+        entity_registry: Any, candidates: list[GreenButtonStatisticsSensor]
+    ) -> None:
+        """Move an unambiguous suffix-based entity and its external series."""
+        by_legacy_id: dict[str, list[GreenButtonStatisticsSensor]] = {}
+        for candidate in candidates:
+            if candidate.unique_id != candidate.legacy_unique_id:
+                by_legacy_id.setdefault(candidate.legacy_unique_id, []).append(
+                    candidate
+                )
+
+        for legacy_unique_id, matching_candidates in by_legacy_id.items():
+            if len(matching_candidates) != 1:
+                _LOGGER.warning(
+                    "Not migrating ambiguous legacy Green Button stream ID %s",
+                    legacy_unique_id,
+                )
+                continue
+
+            candidate = matching_candidates[0]
+            if entity_registry.async_get_entity_id(
+                "sensor", DOMAIN, candidate.unique_id
+            ):
+                continue
+            if not (
+                legacy_entity_id := entity_registry.async_get_entity_id(
+                    "sensor", DOMAIN, legacy_unique_id
+                )
+            ):
+                continue
+
+            entity_registry.async_update_entity(
+                legacy_entity_id, new_unique_id=candidate.unique_id
             )
-            entity.async_write_ha_state()
+            statistics.rename_external_statistic(
+                hass,
+                candidate.legacy_unique_id,
+                candidate.unique_id,
+            )
+            _LOGGER.info(
+                "Migrated Green Button stream %s to full provider identity",
+                legacy_entity_id,
+            )
 
     def _async_create_entities() -> None:
-        """Create new entities when data becomes available."""
-        entities = []
-        entity_registry = async_get_entity_registry(hass)
+        """Create entities for all streams currently available from the provider."""
+        if not coordinator.data or not coordinator.data.get("usage_points"):
+            return
 
-        # If we have data, create entities for each meter reading
-        if coordinator.data and coordinator.data.get("usage_points"):
-            for usage_point in coordinator.usage_points:
-                is_gas = usage_point.sensor_device_class == SensorDeviceClass.GAS
+        candidates: list[GreenButtonStatisticsSensor] = []
+        for usage_point in sorted(coordinator.usage_points, key=lambda point: point.id):
+            meter_readings = _eligible_meter_readings(usage_point)
+            if usage_point.sensor_device_class == SensorDeviceClass.GAS:
+                allocation_mode = (
+                    entry.options.get("gas_usage_allocation")
+                    or entry.data.get("gas_usage_allocation")
+                    or "daily_readings"
+                )
+                if allocation_mode == "monthly_increment" and usage_point.usage_summaries:
+                    summary_stream_id = (
+                        meter_readings[0].id
+                        if len(meter_readings) == 1
+                        else usage_point.id
+                    )
+                    candidates.extend(
+                        (
+                            GreenButtonGasSensor(
+                                coordinator, summary_stream_id, usage_point.id
+                            ),
+                            GreenButtonGasCostSensor(
+                                coordinator, summary_stream_id, usage_point.id
+                            ),
+                        )
+                    )
+                    continue
 
-                # For gas usage points, check the allocation mode setting first
-                if is_gas:
-                    allocation_mode = (
-                        entry.options.get("gas_usage_allocation")
-                        or entry.data.get("gas_usage_allocation")
-                        or "daily_readings"
+                for meter_reading in meter_readings:
+                    candidates.append(
+                        GreenButtonGasSensor(
+                            coordinator, meter_reading.id, usage_point.id
+                        )
                     )
 
-                    # If monthly_increment mode is enabled, use UsageSummaries regardless of meter readings availability
-                    if allocation_mode == "monthly_increment" and usage_point.usage_summaries:
-                        # Use UsagePoint ID as the "meter_reading_id" - the sensor will handle this
-                        gas_sensor = GreenButtonGasSensor(coordinator, usage_point.id)
-                        if gas_sensor.unique_id:
-                            # Check if this entity already exists in the registry (to log if reused)
-                            existing_entity = entity_registry.async_get_entity_id(
-                                "sensor", DOMAIN, gas_sensor.unique_id
-                            )
-                            if existing_entity:
-                                _LOGGER.debug(
-                                    "Reusing gas sensor %s (entity_id: %s)",
-                                    gas_sensor.unique_id,
-                                    existing_entity,
-                                )
-                            else:
-                                _LOGGER.info(
-                                    "Created gas sensor %s for UsagePoint %s (using monthly increment mode with UsageSummaries)",
-                                    gas_sensor.unique_id,
-                                    usage_point.id,
-                                )
-                                created_entities.append(gas_sensor)
-                            # Always add to entities list so it gets instantiated and added to HA
-                            entities.append(gas_sensor)
-                        else:
-                            _LOGGER.warning("Gas sensor has no unique_id, skipping creation")
-
-                        gas_cost_sensor = GreenButtonGasCostSensor(coordinator, usage_point.id)
-                        if gas_cost_sensor.unique_id:
-                            # Check if this entity already exists in the registry (to log if reused)
-                            existing_entity = entity_registry.async_get_entity_id(
-                                "sensor", DOMAIN, gas_cost_sensor.unique_id
-                            )
-                            if existing_entity:
-                                _LOGGER.debug(
-                                    "Reusing gas cost sensor %s (entity_id: %s)",
-                                    gas_cost_sensor.unique_id,
-                                    existing_entity,
-                                )
-                            else:
-                                _LOGGER.info(
-                                    "Created gas cost sensor %s for UsagePoint %s (using monthly increment mode with UsageSummaries)",
-                                    gas_cost_sensor.unique_id,
-                                    usage_point.id,
-                                )
-                                created_entities.append(gas_cost_sensor)
-                            # Always add to entities list so it gets instantiated and added to HA
-                            entities.append(gas_cost_sensor)
-                        else:
-                            _LOGGER.warning("Gas cost sensor has no unique_id, skipping creation")
-
-                        # Skip to next usage point since we handled this gas data with monthly mode
-                        continue
-
-                    # Gas meter readings: create exactly one pair per UsagePoint using a deterministic choice
-                    # (only if NOT using monthly_increment mode)
-                    if usage_point.meter_readings:
-                        eligible_mrs = [
-                            mr
-                            for mr in usage_point.meter_readings
-                            if mr.interval_blocks
-                            and any(
-                                ir.value is not None
-                                for blk in mr.interval_blocks
-                                for ir in blk.interval_readings
-                            )
-                        ]
-
-                        if not eligible_mrs:
-                            _LOGGER.info(
-                                "Skipping gas UsagePoint %s because no meter reading has interval data",
-                                usage_point.id,
-                            )
-                            continue
-
-                        # Pick a deterministic meter reading so repeated calls don't create new pairs
-                        primary_mr = sorted(eligible_mrs, key=lambda mr: mr.id)[0]
-
-                        gas_sensor = GreenButtonGasSensor(coordinator, primary_mr.id)
-                        if gas_sensor.unique_id:
-                            # Check if this entity already exists in the registry (to log if reused)
-                            existing_entity = entity_registry.async_get_entity_id(
-                                "sensor", DOMAIN, gas_sensor.unique_id
-                            )
-                            if existing_entity:
-                                _LOGGER.debug(
-                                    "Reusing gas sensor %s (entity_id: %s)",
-                                    gas_sensor.unique_id,
-                                    existing_entity,
-                                )
-                            else:
-                                _LOGGER.info(
-                                    "Created gas sensor %s for meter reading %s (UsagePoint %s; %d eligible meter readings)",
-                                    gas_sensor.unique_id,
-                                    primary_mr.id,
-                                    usage_point.id,
-                                    len(eligible_mrs),
-                                )
-                                created_entities.append(gas_sensor)
-                            # Always add to entities list so it gets instantiated and added to HA
-                            entities.append(gas_sensor)
-                        else:
-                            _LOGGER.warning("Gas sensor has no unique_id, skipping creation")
-
-                        gas_cost_sensor = GreenButtonGasCostSensor(coordinator, primary_mr.id)
-                        if gas_cost_sensor.unique_id:
-                            # Check if this entity already exists in the registry (to log if reused)
-                            existing_entity = entity_registry.async_get_entity_id(
-                                "sensor", DOMAIN, gas_cost_sensor.unique_id
-                            )
-                            if existing_entity:
-                                _LOGGER.debug(
-                                    "Reusing gas cost sensor %s (entity_id: %s)",
-                                    gas_cost_sensor.unique_id,
-                                    existing_entity,
-                                )
-                            else:
-                                _LOGGER.info(
-                                    "Created gas cost sensor %s for meter reading %s (UsagePoint %s)",
-                                    gas_cost_sensor.unique_id,
-                                    primary_mr.id,
-                                    usage_point.id,
-                                )
-                                created_entities.append(gas_cost_sensor)
-                            # Always add to entities list so it gets instantiated and added to HA
-                            entities.append(gas_cost_sensor)
-                        else:
-                            _LOGGER.warning("Gas cost sensor has no unique_id, skipping creation")
-
-                        # Skip electricity creation for this usage point
-                        continue
-                    else:
-                        # Gas usage point has no meter readings and either no summaries or not using monthly mode
-                        if not usage_point.usage_summaries:
-                            _LOGGER.warning(
-                                "Skipping gas UsagePoint %s: no meter readings and no usage summaries",
-                                usage_point.id,
-                            )
-                        else:
-                            _LOGGER.warning(
-                                "Gas UsagePoint %s has UsageSummaries but monthly_increment mode is not enabled. "
-                                "Enable 'Single billing-period usage increment' in integration settings to use this data.",
-                                usage_point.id,
-                            )
-                        continue
-
-                # Electricity meter readings (or non-gas usage points)
-                # Create exactly one pair per UsagePoint to avoid duplicates on reload
-                if usage_point.meter_readings:
-                    eligible_electric_mrs = [
-                        mr
-                        for mr in usage_point.meter_readings
-                        if mr.interval_blocks
-                        and any(
-                            ir.value is not None
-                            for blk in mr.interval_blocks
-                            for ir in blk.interval_readings
+                if len(meter_readings) == 1:
+                    candidates.append(
+                        GreenButtonGasCostSensor(
+                            coordinator, meter_readings[0].id, usage_point.id
                         )
-                    ]
+                    )
+                elif meter_readings and usage_point.usage_summaries:
+                    _LOGGER.warning(
+                        "Skipping gas cost entities for UsagePoint %s: its billing "
+                        "summary cannot be attributed to one of %d meter streams",
+                        usage_point.id,
+                        len(meter_readings),
+                    )
+                continue
 
-                    if not eligible_electric_mrs:
-                        _LOGGER.info(
-                            "Skipping electricity UsagePoint %s because no meter reading has interval data",
-                            usage_point.id,
-                        )
-                        continue
+            for meter_reading in meter_readings:
+                candidates.extend(
+                    (
+                        GreenButtonSensor(
+                            coordinator, meter_reading.id, usage_point.id
+                        ),
+                        GreenButtonCostSensor(
+                            coordinator, meter_reading.id, usage_point.id
+                        ),
+                    )
+                )
 
-                    # Pick a deterministic meter reading (sorted by ID for consistency)
-                    primary_electric_mr = sorted(eligible_electric_mrs, key=lambda mr: mr.id)[0]
+        if not candidates:
+            return
 
-                    energy_sensor = GreenButtonSensor(coordinator, primary_electric_mr.id)
-                    if energy_sensor.unique_id:
-                        # Check if this entity already exists in the registry (to log if reused)
-                        existing_entity = entity_registry.async_get_entity_id(
-                            "sensor", DOMAIN, energy_sensor.unique_id
-                        )
-                        if existing_entity:
-                            _LOGGER.debug(
-                                "Reusing energy sensor %s (entity_id: %s)",
-                                energy_sensor.unique_id,
-                                existing_entity,
-                            )
-                        else:
-                            _LOGGER.info(
-                                "Created energy sensor %s for meter reading %s (UsagePoint %s; %d eligible meter readings)",
-                                energy_sensor.unique_id,
-                                primary_electric_mr.id,
-                                usage_point.id,
-                                len(eligible_electric_mrs),
-                            )
-                            created_entities.append(energy_sensor)
-                        # Always add to entities list so it gets instantiated and added to HA
-                        entities.append(energy_sensor)
-                    else:
-                        _LOGGER.warning("Energy sensor has no unique_id, skipping creation")
+        entity_registry = async_get_entity_registry(hass)
+        _migrate_legacy_entities(entity_registry, candidates)
+        new_entities = [
+            candidate
+            for candidate in candidates
+            if candidate.unique_id not in active_unique_ids
+        ]
+        if not new_entities:
+            return
 
-                    cost_sensor = GreenButtonCostSensor(coordinator, primary_electric_mr.id)
-                    if cost_sensor.unique_id:
-                        # Check if this entity already exists in the registry (to log if reused)
-                        existing_entity = entity_registry.async_get_entity_id(
-                            "sensor", DOMAIN, cost_sensor.unique_id
-                        )
-                        if existing_entity:
-                            _LOGGER.debug(
-                                "Reusing cost sensor %s (entity_id: %s)",
-                                cost_sensor.unique_id,
-                                existing_entity,
-                            )
-                        else:
-                            _LOGGER.info(
-                                "Created cost sensor %s for meter reading %s (UsagePoint %s)",
-                                cost_sensor.unique_id,
-                                primary_electric_mr.id,
-                                usage_point.id,
-                            )
-                            created_entities.append(cost_sensor)
-                        # Always add to entities list so it gets instantiated and added to HA
-                        entities.append(cost_sensor)
-                    else:
-                        _LOGGER.warning("Cost sensor has no unique_id, skipping creation")
+        async_add_entities(new_entities)
+        active_unique_ids.update(entity.unique_id for entity in new_entities)
 
-        # Add entities to Home Assistant only if this is the first time (initial setup)
-        # or if there are newly created entities. On subsequent coordinator updates,
-        # skip async_add_entities if all entities are reused (to avoid duplicate ID errors).
-        nonlocal entities_added_to_hass
-        if not entities_added_to_hass and entities:
-            # First time: add all entities (new and reused)
-            async_add_entities(entities)
-            entities_added_to_hass = True
-            _LOGGER.info("Added %d Green Button sensor entities (%d newly created, %d reused)",
-                        len(entities), len(created_entities), len(entities) - len(created_entities))
-
-            # After adding, schedule a state write for created entities only
-            # (reused entities will have state written via async_added_to_hass or coordinator updates)
-            _schedule_hass_task_from_any_thread(hass, _async_update_created_entities())
-        elif entities and created_entities:
-            # Subsequent updates: only add if there are newly created entities
-            async_add_entities(created_entities)
-            _LOGGER.info("Added %d new Green Button sensor entities on data import",
-                        len(created_entities))
-
-            # Schedule state write for these new entities
-            _schedule_hass_task_from_any_thread(hass, _async_update_created_entities())
-        elif entities:
-            # All entities are reused, no need to call async_add_entities
-            _LOGGER.debug("All %d entities already exist in Home Assistant, skipping async_add_entities",
-                         len(entities))
-
-    # Create initial entities (if any data is already available)
     _async_create_entities()
-
-    # Subscribe to coordinator updates to create entities when new data arrives
     entry.async_on_unload(coordinator.async_add_listener(_async_create_entities))

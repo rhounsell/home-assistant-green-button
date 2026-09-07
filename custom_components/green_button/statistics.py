@@ -31,6 +31,7 @@ from .const import (
     DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER,
     DOMAIN,
 )
+from .statistic_ids import statistic_id_from_unique_id
 
 if TYPE_CHECKING:
     from homeassistant.components.recorder.core import Recorder
@@ -130,7 +131,7 @@ _DATA_STATISTICS_TASKS = f"{DOMAIN}_statistics_tasks"
 
 
 @final
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=False)
 class _SensorStatRecord:
     timestamp: datetime.datetime
     last_reset: datetime.datetime | None
@@ -443,6 +444,34 @@ async def _async_replace_statistics(
     """Validate and atomically replace an external statistics series."""
     validated = _validated_statistics(metadata, records)
     await _ReplaceStatisticsTask.queue_task(hass, metadata, validated)
+
+
+@final
+@dataclasses.dataclass(frozen=False)
+class _RenameExternalStatisticTask(tasks.RecorderTask):
+    """Rename an external Green Button series with its entity identity."""
+
+    old_statistic_id: str
+    new_statistic_id: str
+
+    def run(self, instance: Recorder) -> None:
+        """Rename only metadata owned by this integration."""
+        with recorder_helper.session_scope(session=instance.get_session()) as session:
+            instance.statistics_meta_manager.update_statistic_id(
+                session, DOMAIN, self.old_statistic_id, self.new_statistic_id
+            )
+
+
+def rename_external_statistic(
+    hass: HomeAssistant, old_unique_id: str, new_unique_id: str
+) -> None:
+    """Queue migration of an external series after an entity-ID migration."""
+    recorder_helper.get_instance(hass).queue_task(
+        _RenameExternalStatisticTask(
+            statistic_id_from_unique_id(old_unique_id),
+            statistic_id_from_unique_id(new_unique_id),
+        )
+    )
 
 
 async def _get_all_existing_statistics(
