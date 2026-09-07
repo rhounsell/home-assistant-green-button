@@ -270,106 +270,50 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.warning("[CONFIG FLOW IMPORT - LEGACY] Failed to remove initial_xml from config entry data!")
             return  # Data already processed
 
-        # Try to load from new separate storage file first
-        xml_storage = await async_get_xml_storage(self.hass, self.config_entry.entry_id)
-        stored_xmls = xml_storage.get_stored_xmls()
-
-        # Fall back to config entry storage for backwards compatibility
-        if not stored_xmls:
-            stored_xmls = self.config_entry.data.get("stored_xmls", [])
-
-            # Fall back to legacy single XML storage if multi-XML not found
-            if not stored_xmls:
-                xml_data = self.config_entry.data.get("xml")
-                if xml_data:
-                    _LOGGER.debug("Found legacy single XML storage, will migrate on next save")
-                    stored_xmls = [{"label": "imported_data", "xml": xml_data}]
-
-        if not stored_xmls:
-            _LOGGER.debug("No stored XML data found in storage or config entry")
-            return
-
         if self.has_existing_entities():
             _LOGGER.debug("Entities already exist, skipping XML re-parsing on restart")
             return
 
         try:
-            _LOGGER.info("[RESTART] Loading %d stored label(s) from XML storage", len(stored_xmls))
-
-            # Log labels of stored XMLs for debugging
-            stored_labels = [
-                f"{entry.get('label', f'xml_{i}')} ({len(entry.get('xmls', [entry.get('xml', '')]))} XMLs)"
-                for i, entry in enumerate(stored_xmls)
-            ]
-            _LOGGER.info("[RESTART] Stored XML labels: %s", stored_labels)
-
-            # Parse and merge all stored XMLs
-            xml_count = 0
-            for idx, xml_entry in enumerate(stored_xmls):
-                label = xml_entry.get("label", f"xml_{idx}")
-
-                # Handle both old format (single "xml") and new format ("xmls" list)
-                xml_list = xml_entry.get("xmls", [])
-                if not xml_list and "xml" in xml_entry:
-                    xml_list = [xml_entry["xml"]]
-
-                if not xml_list:
-                    _LOGGER.warning("[RESTART] Skipping empty XML entry with label '%s'", label)
-                    continue
-
-                for xml_idx, xml_data in enumerate(xml_list):
-                    if not xml_data:
-                        continue
-
-                    xml_count += 1
-                    _LOGGER.debug("[RESTART] Parsing stored XML '%s' [%d/%d]", label, xml_idx + 1, len(xml_list))
-                    usage_points = await self.hass.async_add_executor_job(
-                        espi.parse_xml, xml_data
-                    )
-
-                    if usage_points:
-                        # Log date range of data in this XML
-                        for up in usage_points:
-                            for mr in up.meter_readings:
-                                all_readings = [
-                                    ir for ib in mr.interval_blocks for ir in ib.interval_readings
-                                ]
-                                if all_readings:
-                                    min_start = min(ir.start for ir in all_readings)
-                                    max_end = max(ir.end for ir in all_readings)
-                                    _LOGGER.info(
-                                        "[RESTART] XML '%s'[%d] MeterReading %s: data range %s to %s (%d readings)",
-                                        label,
-                                        xml_idx,
-                                        mr.id.split("/")[-1] if "/" in mr.id else mr.id,
-                                        min_start.isoformat(),
-                                        max_end.isoformat(),
-                                        len(all_readings),
-                                    )
-
-                        # Merge with existing data (if any from previous XMLs)
-                        if not self.usage_points:
-                            self.usage_points = usage_points
-                        else:
-                            self._merge_usage_points(usage_points)
-                        _LOGGER.debug(
-                            "[RESTART] Loaded %d usage points from XML '%s'[%d]",
-                            len(usage_points),
-                            label,
-                            xml_idx,
-                        )
+            self.usage_points = await self.async_reconstruct_stored_usage_points()
+            if not self.usage_points:
+                _LOGGER.debug("No stored XML data found in storage or config entry")
+                return
 
             self.async_set_updated_data({"usage_points": self.usage_points})
             self.last_update_success = True
             _LOGGER.info(
-                "[RESTART] Successfully loaded %d total usage points from %d XML(s) across %d label(s). last_update_success set to True.",
+                "[RESTART] Successfully loaded %d canonical usage point(s). last_update_success set to True.",
                 len(self.usage_points),
-                xml_count,
-                len(stored_xmls),
             )
         except (ValueError, OSError) as err:
             self.last_update_success = False
             _LOGGER.warning("[RESTART] Failed to load stored XML data: %s. last_update_success set to False.", err)
+
+    async def async_reconstruct_stored_usage_points(self) -> list[model.UsagePoint]:
+        """Parse all archived XML and apply the normal import reconciliation."""
+        xml_storage = await async_get_xml_storage(self.hass, self.config_entry.entry_id)
+        stored_xmls = xml_storage.get_stored_xmls()
+        if not stored_xmls:
+            stored_xmls = self.config_entry.data.get("stored_xmls", [])
+        if not stored_xmls and (xml_data := self.config_entry.data.get("xml")):
+            stored_xmls = [{"label": "imported_data", "xml": xml_data}]
+
+        reconstructed = GreenButtonCoordinator(self.hass, self.config_entry)
+        for xml_entry in stored_xmls:
+            xml_list = xml_entry.get("xmls", [])
+            if not xml_list and "xml" in xml_entry:
+                xml_list = [xml_entry["xml"]]
+            for xml_data in xml_list:
+                if not xml_data:
+                    continue
+                usage_points = await self.hass.async_add_executor_job(
+                    espi.parse_xml, xml_data
+                )
+                if usage_points:
+                    reconstructed._merge_usage_points(usage_points)
+
+        return reconstructed.usage_points
 
     def _merge_usage_points(self, new_usage_points: list[model.UsagePoint]) -> None:
         """Merge new usage points with existing ones, combining interval blocks."""
@@ -413,11 +357,9 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     existing_up, list(new_up.meter_readings)
                 )
                 # Merge usage summaries (unique by id)
-                existing_summaries = {us.id: us for us in existing_up.usage_summaries}
-                merged_summaries = list(existing_up.usage_summaries)
-                for us in new_up.usage_summaries:
-                    if us.id not in existing_summaries:
-                        merged_summaries.append(us)
+                merged_summaries = self._merge_usage_summaries(
+                    existing_up.usage_summaries, new_up.usage_summaries
+                )
                 merged_up = dataclasses.replace(
                     existing_up,
                     meter_readings=merged_meter_readings,
@@ -499,7 +441,42 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._normalize_meter_reading(meter_reading)
                 for meter_reading in usage_point.meter_readings
             ],
+            usage_summaries=self._merge_usage_summaries(
+                [], usage_point.usage_summaries
+            ),
         )
+
+    @staticmethod
+    def _merge_usage_summaries(
+        existing_summaries: list[model.UsageSummary],
+        new_summaries: list[model.UsageSummary],
+    ) -> list[model.UsageSummary]:
+        """Deduplicate summaries and retain existing coverage on ambiguity."""
+        latest_by_id = {summary.id: summary for summary in new_summaries}
+        latest_by_period = {
+            (summary.start, summary.duration): summary
+            for summary in latest_by_id.values()
+        }
+        retained = [
+            summary
+            for summary in existing_summaries
+            if summary.id not in latest_by_id
+            and (summary.start, summary.duration) not in latest_by_period
+        ]
+        accepted = sorted(retained, key=lambda summary: summary.start)
+        for summary in sorted(latest_by_period.values(), key=lambda summary: summary.start):
+            if any(
+                summary.start < existing.start + existing.duration
+                and existing.start < summary.start + summary.duration
+                for existing in accepted
+            ):
+                _LOGGER.warning(
+                    "[MERGE] Rejecting ambiguous overlapping usage summary %s",
+                    summary.id,
+                )
+                continue
+            accepted.append(summary)
+        return sorted(accepted, key=lambda summary: summary.start)
 
     def _normalize_meter_reading(
         self, meter_reading: model.MeterReading

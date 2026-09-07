@@ -363,90 +363,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 _LOGGER.warning("No coordinator for entry %s", entry.title)
                 continue
 
-            # Reload all data from XML storage to get complete historical data
-            # (coordinator.data only has cached/recent meter readings)
-            _LOGGER.info("Reloading all XML data from storage for entry %s", entry.title)
-            
-            from . import xml_storage as xml_storage_module
-            
-            xml_storage = await xml_storage_module.async_get_xml_storage(hass, entry.entry_id)
-            stored_xmls = xml_storage.get_stored_xmls()
-            
-            if not stored_xmls:
-                _LOGGER.warning("No stored XML data found for entry %s", entry.title)
-                continue
-            
-            # Parse all stored XMLs to get complete usage points
-            usage_points = []
-            _LOGGER.info("Loading %d stored label(s) from XML storage for recalculation", len(stored_xmls))
-            
-            xml_count = 0
-            for idx, xml_entry in enumerate(stored_xmls):
-                label = xml_entry.get("label", f"xml_{idx}")
-                
-                # Handle both old format (single "xml") and new format ("xmls" list)
-                xml_list = xml_entry.get("xmls", [])
-                if not xml_list and "xml" in xml_entry:
-                    xml_list = [xml_entry["xml"]]
-                
-                if not xml_list:
-                    _LOGGER.warning("Skipping empty XML entry with label '%s'", label)
-                    continue
-                
-                for xml_idx, xml_data in enumerate(xml_list):
-                    if not xml_data:
-                        continue
-                    
-                    xml_count += 1
-                    _LOGGER.debug("Parsing stored XML '%s' [%d/%d]", label, xml_idx + 1, len(xml_list))
-                    
-                    # Parse XML in executor to avoid blocking
-                    parsed_usage_points = await hass.async_add_executor_job(
-                        espi.parse_xml, xml_data
-                    )
-                    
-                    if parsed_usage_points:
-                        # Merge with existing usage points
-                        if not usage_points:
-                            usage_points = parsed_usage_points
-                        else:
-                            # Merge meter readings by usage point ID
-                            from dataclasses import replace
-                            
-                            for new_up in parsed_usage_points:
-                                existing_idx = next(
-                                    (i for i, up in enumerate(usage_points) if up.id == new_up.id),
-                                    None
-                                )
-                                if existing_idx is not None:
-                                    existing_up = usage_points[existing_idx]
-                                    # Combine meter readings and usage summaries (UsagePoint is frozen, must use replace)
-                                    combined_mrs = list(existing_up.meter_readings) + list(new_up.meter_readings)
-                                    combined_summaries = list(existing_up.usage_summaries) + list(new_up.usage_summaries)
-                                    
-                                    # Create new UsagePoint with combined data
-                                    merged_up = replace(
-                                        existing_up,
-                                        meter_readings=combined_mrs,
-                                        usage_summaries=combined_summaries
-                                    )
-                                    usage_points[existing_idx] = merged_up
-                                    
-                                    _LOGGER.debug(
-                                        "Merged UsagePoint %s: %d meter readings (%d + %d), %d summaries (%d + %d)",
-                                        new_up.id.split("/")[-1] if "/" in new_up.id else new_up.id,
-                                        len(combined_mrs), len(existing_up.meter_readings), len(new_up.meter_readings),
-                                        len(combined_summaries), len(existing_up.usage_summaries), len(new_up.usage_summaries)
-                                    )
-                                else:
-                                    # Add new usage point
-                                    usage_points.append(new_up)
-            
-            _LOGGER.info("Loaded %d usage point(s) from %d XML(s) for recalculation", 
-                        len(usage_points), xml_count)
+            usage_points = await coordinator.async_reconstruct_stored_usage_points()
             
             if not usage_points:
-                _LOGGER.warning("No usage points found after parsing XMLs for entry %s", entry.title)
+                _LOGGER.warning("No canonical source data found for entry %s", entry.title)
                 continue
 
             # Get the entity registry to find sensor entities
@@ -649,7 +569,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     
                     _LOGGER.info("Recalculating electricity cost statistics for %s", entity_id)
                     _LOGGER.info("Electricity cost multiplier: raw=%s, final=%s", raw_multiplier, multiplier)
-                    _LOGGER.info("Processing %d meter reading(s) for entity %s", len(eligible_electric_mrs), entity_id)
+                    _LOGGER.info("Processing canonical meter reading %s for entity %s", primary_electric_mr.id, entity_id)
 
                     # Create a mock entity object for statistics
                     class MockElectricityCostEntity:
@@ -671,25 +591,15 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     mock_entity = MockElectricityCostEntity(entity_id, entity_state.name or "Electricity Cost", "CAD", unique_id)
 
                     try:
-                        # Process all meter readings for this entity
-                        for idx, meter_reading in enumerate(eligible_electric_mrs, 1):
-                            is_first = (idx == 1)
-                            
-                            _LOGGER.info("Processing meter reading %d of %d for %s (merge_with_existing=%s)", 
-                                        idx, len(eligible_electric_mrs), entity_id, not is_first)
-                            
-                            # First meter reading: clear all and regenerate from scratch
-                            # Subsequent meter readings: merge with what we just calculated
-                            await statistics.update_cost_statistics(
-                                hass,
-                                mock_entity,
-                                statistics.CostDataExtractor(multiplier),
-                                meter_reading,
-                                merge_with_existing=not is_first,
-                            )
+                        await statistics.update_cost_statistics(
+                            hass,
+                            mock_entity,
+                            statistics.CostDataExtractor(multiplier),
+                            primary_electric_mr,
+                            merge_with_existing=False,
+                        )
                         
-                        _LOGGER.info("✅ Recalculated electricity cost statistics for %s (%d meter readings processed)", 
-                                    entity_id, len(eligible_electric_mrs))
+                        _LOGGER.info("✅ Recalculated electricity cost statistics for %s", entity_id)
                         recalculated_count += 1
                     except Exception as e:
                         _LOGGER.error("❌ Failed to recalculate electricity cost statistics for %s: %s", entity_id, e)

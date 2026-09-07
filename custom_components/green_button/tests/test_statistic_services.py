@@ -94,6 +94,54 @@ async def test_recalculation_targets_external_statistics(
     assert statistics.create_metadata(entity)["source"] == DOMAIN
 
 
+async def test_recalculation_writes_the_canonical_electricity_stream_once(
+    hass: HomeAssistant,
+) -> None:
+    """The service receives one reconciled meter reading, not every XML stream."""
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+    coordinator = GreenButtonCoordinator(hass, entry)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"coordinator": coordinator}
+    unique_id = f"{entry.entry_id}_meter_cost"
+    registered = er.async_get(hass).async_get_or_create(
+        "sensor", DOMAIN, unique_id, config_entry=entry
+    )
+    hass.states.async_set(registered.entity_id, "0")
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    reading_type = model.ReadingType("type", 1, "CAD", -3, "Wh", 3600)
+    reading = model.IntervalReading(reading_type, 1000, start, timedelta(hours=1), 1000)
+    meter_reading = model.MeterReading(
+        "meter",
+        reading_type,
+        [
+            model.IntervalBlock(
+                "block", reading_type, start, timedelta(hours=1), [reading]
+            )
+        ],
+    )
+    usage_point = model.UsagePoint("point", SensorDeviceClass.ENERGY, [meter_reading])
+    await services.async_setup_services(hass)
+
+    with (
+        patch.object(
+            coordinator,
+            "async_reconstruct_stored_usage_points",
+            new=AsyncMock(return_value=[usage_point]),
+        ) as reconstruct,
+        patch.object(
+            statistics, "update_cost_statistics", new_callable=AsyncMock
+        ) as update,
+    ):
+        await hass.services.async_call(
+            DOMAIN, "recalculate_cost_statistics", {}, blocking=True
+        )
+
+    reconstruct.assert_awaited_once()
+    update.assert_awaited_once()
+    assert update.await_args.args[3] is meter_reading
+    assert update.await_args.kwargs["merge_with_existing"] is False
+
+
 async def test_delete_targets_external_statistics(hass: HomeAssistant) -> None:
     """The legacy entity-ID input resolves to the new series for deletion."""
     entry = er.async_get(hass).async_get_or_create("sensor", DOMAIN, "unique")
