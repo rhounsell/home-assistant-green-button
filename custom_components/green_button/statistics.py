@@ -297,6 +297,7 @@ def _queue_task(
 
 
 def _complete_future(future: asyncio.Future[T], value: T) -> None:
+    """Set a result unless the waiter has already completed or cancelled."""
     def _set_result() -> None:
         if not future.done():
             future.set_result(value)
@@ -305,8 +306,9 @@ def _complete_future(future: asyncio.Future[T], value: T) -> None:
 
 
 def _complete_future_exception(
-    future: asyncio.Future[T], err: Exception
+    future: asyncio.Future[T], err: BaseException
 ) -> None:
+    """Set an exception unless the waiter has already completed or cancelled."""
     def _set_exception() -> None:
         if not future.done():
             future.set_exception(err)
@@ -968,7 +970,11 @@ class _ComputeUpdatedPeriodStatisticsTask(tasks.RecorderTask):
     def run(self, instance: Recorder) -> None:
         start = self._interval_block.start
         end = self._interval_block.end
-        samples = self._compute_samples(start=start, end=end)
+        try:
+            samples = self._compute_samples(start=start, end=end)
+        except Exception as err:
+            _complete_future_exception(self._future, err)
+            return
         _complete_future(self._future, samples)
 
     @classmethod
@@ -1014,17 +1020,20 @@ class _ImportStatisticsTask(tasks.RecorderTask):
             len(self.samples),
             self.table.__tablename__,
         )
-        metadata = statistics.get_metadata(self.hass, statistic_ids={statistic_id}).get(
-            statistic_id, (0, None)
-        )[1]
-        if metadata is None:
-            metadata = create_metadata(self.entity)
-        success = statistics.import_statistics(
-            instance, metadata, self.samples, self.table
-        )
-        if not success:
-            recorder_helper.get_instance(self.hass).queue_task(self)
-            #  RDH recorder_util.get_instance(self.hass).queue_task(self)
+        try:
+            metadata = statistics.get_metadata(
+                self.hass, statistic_ids={statistic_id}
+            ).get(statistic_id, (0, None))[1]
+            if metadata is None:
+                metadata = create_metadata(self.entity)
+            success = statistics.import_statistics(
+                instance, metadata, self.samples, self.table
+            )
+            if not success:
+                recorder_helper.get_instance(self.hass).queue_task(self)
+                return
+        except Exception as err:
+            _complete_future_exception(self.future, err)
             return
         _complete_future(self.future, None)
 
@@ -1070,16 +1079,19 @@ class _AdjustStatisticsTask(tasks.RecorderTask):
             self.sum_adjustment,
             self.unit_of_measurement,
         )
-        success = statistics.adjust_statistics(
-            instance,
-            self.statistic_id,
-            self.start_time,
-            float(self.sum_adjustment),
-            self.unit_of_measurement,
-        )
-        if not success:
-            recorder_helper.get_instance(self.hass).queue_task(self)
-            #  RDH recorder_util.get_instance(self.hass).queue_task(self)
+        try:
+            success = statistics.adjust_statistics(
+                instance,
+                self.statistic_id,
+                self.start_time,
+                float(self.sum_adjustment),
+                self.unit_of_measurement,
+            )
+            if not success:
+                recorder_helper.get_instance(self.hass).queue_task(self)
+                return
+        except Exception as err:
+            _complete_future_exception(self.future, err)
             return
         _complete_future(self.future, None)
 
@@ -1116,9 +1128,13 @@ class _ClearStatisticsTask(tasks.RecorderTask):
 
     def run(self, instance: Recorder) -> None:
         _LOGGER.debug("[%s] Clearing statistics", self.statistic_id)
-        statistics.clear_statistics(
-            instance=instance, statistic_ids=[self.statistic_id]
-        )
+        try:
+            statistics.clear_statistics(
+                instance=instance, statistic_ids=[self.statistic_id]
+            )
+        except Exception as err:
+            _complete_future_exception(self.future, err)
+            return
         _complete_future(self.future, None)
 
     @classmethod
@@ -1181,9 +1197,8 @@ class _TruncateStatisticsAfterTask(tasks.RecorderTask):
                         "[%s] No metadata found when truncating; nothing to delete",
                         self.statistic_id,
                     )
-        except Exception:
-            # Re-queue if recorder is not ready
-            recorder_helper.get_instance(self.hass).queue_task(self)
+        except Exception as err:
+            _complete_future_exception(self.future, err)
             return
         _complete_future(self.future, None)
 

@@ -618,6 +618,44 @@ async def test_statistics_tasks_are_cancelled_on_unload(
     assert task.cancelled()
 
 
+async def test_clear_statistics_task_propagates_recorder_failure(
+    hass: HomeAssistant,
+) -> None:
+    """A recorder clear error resolves the queued task's waiting future."""
+    future: asyncio.Future[None] = hass.loop.create_future()
+    task = statistics._ClearStatisticsTask(hass, "green_button:test", future)
+
+    with patch.object(
+        statistics.statistics, "clear_statistics", side_effect=RuntimeError("database failed")
+    ):
+        task.run(Mock())
+
+    with pytest.raises(RuntimeError, match="database failed"):
+        await future
+
+
+async def test_queued_recorder_task_ignores_future_cancelled_during_unload(
+    hass: HomeAssistant,
+) -> None:
+    """A queued recorder completion cannot overwrite an unload cancellation."""
+    recorder = Mock()
+    queued: list[statistics.tasks.RecorderTask] = []
+    recorder.queue_task.side_effect = queued.append
+
+    with patch.object(statistics.recorder_helper, "get_instance", return_value=recorder):
+        update_task = statistics.async_schedule_statistics_update(
+            hass,
+            "entry",
+            statistics.clear_statistic(hass, "green_button:test"),
+        )
+        await asyncio.sleep(0)
+        await statistics.async_cancel_statistics_tasks(hass, "entry")
+
+    assert update_task.cancelled()
+    assert len(queued) == 1
+    queued[0].run(Mock())
+
+
 async def _energy(hass: HomeAssistant, entity: GreenButtonStatisticsSensor) -> None:
     reading_type = model.ReadingType("type", 1, "CAD", None, "Wh", 3600)
     reading = model.IntervalReading(
