@@ -78,7 +78,7 @@ class ReadingType:
     id: str
     commodity: int | None
     currency: str
-    power_of_ten_multiplier: int
+    power_of_ten_multiplier: int | None
     unit_of_measurement: str
     interval_length: int
 
@@ -116,6 +116,8 @@ class UsageSummary:
     currency: str
     # Optional total consumption for the billing period in m³ (if provided)
     consumption_m3: float | None = None
+    power_of_ten_multiplier: int | None = None
+    consumption_power_of_ten_multiplier: int | None = 0
 
 
 @final

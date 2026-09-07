@@ -14,10 +14,12 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from homeassistant.helpers.service import async_register_admin_service
 
-from . import statistics
+from . import scaling, statistics
 from .const import (
     CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
     CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER,
+    DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
+    DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER,
     DOMAIN,
 )
 from .coordinator import GreenButtonCoordinator
@@ -446,15 +448,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     _LOGGER.debug("entry.options: %s", entry.options)
                     _LOGGER.debug("entry.data: %s", entry.data)
                     
-                    raw_gas_multiplier = (
-                        entry.options.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER)
-                        if entry.options.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER) is not None
-                        else entry.data.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER)
+                    gas_multiplier = scaling.configured_multiplier(
+                        entry,
+                        CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER,
+                        DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER,
                     )
-                    gas_multiplier = int(raw_gas_multiplier) if raw_gas_multiplier is not None else -5
-                    
-                    _LOGGER.info("Gas cost multiplier for %s: raw=%s, final=%s", 
-                                entity_id, raw_gas_multiplier, gas_multiplier)
 
                     # Get summaries
                     summaries = list(usage_point.usage_summaries)
@@ -484,7 +482,16 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                         def native_unit_of_measurement(self) -> str:
                             return self._attr_native_unit_of_measurement
 
-                    mock_entity = MockGasCostEntity(entity_id, entity_state.name or "Gas Cost", "CAD", unique_id)
+                    currency = (
+                        summaries[0].currency
+                        if summaries
+                        else meter_reading.reading_type.currency
+                        if meter_reading
+                        else "CAD"
+                    )
+                    mock_entity = MockGasCostEntity(
+                        entity_id, entity_state.name or "Gas Cost", currency, unique_id
+                    )
 
                     try:
                         cost_allocation_mode = (
@@ -560,15 +567,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                         continue
 
                     # Get electricity cost multiplier
-                    raw_multiplier = (
-                        entry.options.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER)
-                        if entry.options.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER) is not None
-                        else entry.data.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER)
+                    multiplier = scaling.configured_multiplier(
+                        entry,
+                        CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
+                        DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
                     )
-                    multiplier = int(raw_multiplier) if raw_multiplier is not None else -5
-                    
                     _LOGGER.info("Recalculating electricity cost statistics for %s", entity_id)
-                    _LOGGER.info("Electricity cost multiplier: raw=%s, final=%s", raw_multiplier, multiplier)
                     _LOGGER.info("Processing canonical meter reading %s for entity %s", primary_electric_mr.id, entity_id)
 
                     # Create a mock entity object for statistics
@@ -588,7 +592,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                         def native_unit_of_measurement(self) -> str:
                             return self._attr_native_unit_of_measurement
 
-                    mock_entity = MockElectricityCostEntity(entity_id, entity_state.name or "Electricity Cost", "CAD", unique_id)
+                    mock_entity = MockElectricityCostEntity(
+                        entity_id,
+                        entity_state.name or "Electricity Cost",
+                        primary_electric_mr.reading_type.currency,
+                        unique_id,
+                    )
 
                     try:
                         await statistics.update_cost_statistics(

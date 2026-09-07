@@ -14,7 +14,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import model, statistics
+from . import model, scaling, statistics
 from .const import (
     CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
     CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER,
@@ -26,6 +26,23 @@ from .coordinator import GreenButtonCoordinator
 from .statistic_ids import statistic_id_from_unique_id
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _cost_multiplier(coordinator: GreenButtonCoordinator, gas: bool = False) -> int:
+    """Return the configured fallback used only when XML omits a multiplier."""
+    return scaling.configured_multiplier(
+        coordinator.config_entry,
+        (
+            CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER
+            if gas
+            else CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER
+        ),
+        (
+            DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER
+            if gas
+            else DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER
+        ),
+    )
 
 
 def _schedule_hass_task_from_any_thread(hass: HomeAssistant, coro) -> None:
@@ -178,9 +195,7 @@ class GreenButtonSensor(GreenButtonStatisticsSensor):
             for interval_block in meter_reading.interval_blocks:
                 for interval_reading in interval_block.interval_readings:
                     if interval_reading.value is not None:
-                        power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
-                        value = interval_reading.value * (10**power_multiplier)
-                        total_energy += value
+                        total_energy += float(scaling.interval_value(interval_reading))
             if total_energy > 0:
                 self._attr_native_value = total_energy / 1000.0
             else:
@@ -243,11 +258,7 @@ class GreenButtonSensor(GreenButtonStatisticsSensor):
             for interval_reading in interval_block.interval_readings:
                 if interval_reading.value is not None:
                     # Apply power of ten multiplier
-                    power_multiplier = (
-                        interval_reading.reading_type.power_of_ten_multiplier
-                    )
-                    value = interval_reading.value * (10**power_multiplier)
-                    total_energy += value
+                    total_energy += float(scaling.interval_value(interval_reading))
 
         # Convert from Wh to kWh if needed
         if total_energy > 0:
@@ -287,7 +298,7 @@ class GreenButtonSensor(GreenButtonStatisticsSensor):
             # Cache the last statistics sum value for display as sensor state
             # This prevents Energy Dashboard "unavailable" warnings
             total_energy = sum(
-                interval_reading.value * (10 ** interval_reading.reading_type.power_of_ten_multiplier) / 1000.0
+                float(scaling.interval_value(interval_reading)) / 1000.0
                 for interval_block in meter_reading.interval_blocks
                 for interval_reading in interval_block.interval_readings
                 if interval_reading.value is not None
@@ -363,11 +374,12 @@ class GreenButtonCostSensor(GreenButtonStatisticsSensor):
             self._attr_native_unit_of_measurement = currency
 
         total_cost = 0.0
+        fallback_multiplier = _cost_multiplier(self.coordinator)
         for interval_block in meter_reading.interval_blocks:
             for interval_reading in interval_block.interval_readings:
-                cost_raw = getattr(interval_reading, "cost", 0) or 0
-                power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
-                total_cost += cost_raw * (10 ** power_multiplier)
+                total_cost += float(
+                    scaling.interval_cost(interval_reading, fallback_multiplier)
+                )
 
         self._cached_native_value = float(total_cost)  # Cache the value
         return self._cached_native_value
@@ -449,11 +461,12 @@ class GreenButtonCostSensor(GreenButtonStatisticsSensor):
         """Update cached values and schedule historical statistics."""
         # Update state
         total_cost = 0.0
+        fallback_multiplier = _cost_multiplier(self.coordinator)
         for interval_block in meter_reading.interval_blocks:
             for interval_reading in interval_block.interval_readings:
-                cost_raw = getattr(interval_reading, "cost", 0) or 0
-                power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
-                total_cost += cost_raw * (10 ** power_multiplier)
+                total_cost += float(
+                    scaling.interval_cost(interval_reading, fallback_multiplier)
+                )
 
         # Set currency
         currency = getattr(meter_reading.reading_type, "currency", None)
@@ -478,12 +491,7 @@ class GreenButtonCostSensor(GreenButtonStatisticsSensor):
     async def _update_cost_statistics_async(self, meter_reading: model.MeterReading) -> None:
         """Update cost statistics in background without blocking."""
         try:
-            raw_multiplier = (
-                self.coordinator.config_entry.options.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER)
-                if self.coordinator.config_entry.options.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER) is not None
-                else self.coordinator.config_entry.data.get(CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER)
-            )
-            multiplier = int(raw_multiplier) if raw_multiplier is not None else DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER
+            multiplier = _cost_multiplier(self.coordinator)
             await statistics.update_cost_statistics(
                 self.hass,
                 self,
@@ -585,7 +593,7 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
         total = 0.0
         for block in meter_reading.interval_blocks:
             for rd in block.interval_readings:
-                total += float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
+                total += float(scaling.interval_value(rd))
         self._attr_native_value = total
 
 
@@ -625,7 +633,7 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
 
             # Cache the total value for display as sensor state
             total = sum(
-                float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
+                float(scaling.interval_value(rd))
                 for block in meter_reading.interval_blocks
                 for rd in block.interval_readings
             )
@@ -742,11 +750,18 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
 
     @property
     def native_value(self) -> float | None:
-        # Sensor state is cumulative total of UsageSummary total_cost
-        summaries = self.coordinator.get_usage_summaries_for_meter_reading(self._meter_reading_id)
+        summaries = self.coordinator.get_usage_summaries_for_meter_reading(
+            self._meter_reading_id
+        )
         if not summaries:
             return 0.0
-        return float(sum(us.total_cost for us in summaries))
+        self._attr_native_unit_of_measurement = summaries[0].currency
+        return float(
+            sum(
+                scaling.usage_summary_cost(us, _cost_multiplier(self.coordinator, True))
+                for us in summaries
+            )
+        )
 
     @property
     def name(self) -> str:
@@ -827,12 +842,7 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
     ) -> None:
         """Update gas cost statistics in background without blocking."""
         try:
-            raw_gas_multiplier = (
-                self.coordinator.config_entry.options.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER)
-                if self.coordinator.config_entry.options.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER) is not None
-                else self.coordinator.config_entry.data.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER)
-            )
-            gas_multiplier = int(raw_gas_multiplier) if raw_gas_multiplier is not None else DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER
+            gas_multiplier = _cost_multiplier(self.coordinator, True)
             await statistics.update_gas_cost_statistics(
                 self.hass,
                 self,
@@ -897,12 +907,7 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
     ) -> None:
         """Update gas cost statistics from summaries in background without blocking."""
         try:
-            raw_gas_multiplier = (
-                self.coordinator.config_entry.options.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER)
-                if self.coordinator.config_entry.options.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER) is not None
-                else self.coordinator.config_entry.data.get(CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER)
-            )
-            gas_multiplier = int(raw_gas_multiplier) if raw_gas_multiplier is not None else DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER
+            gas_multiplier = _cost_multiplier(self.coordinator, True)
             await statistics.update_gas_cost_statistics(
                 self.hass,
                 self,

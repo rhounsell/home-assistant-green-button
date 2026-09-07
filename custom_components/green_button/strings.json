@@ -19,8 +19,8 @@
         "data_description": {
           "xml_file_path": "Relative paths resolve against the Home Assistant config directory (e.g., /config).",
           "xml": "Paste ESPI XML content directly. For large files, using a file path is recommended.",
-          "electricity_cost_power_of_ten_multiplier": "Scales raw electricity cost values from the XML: cost × 10^N. The default (-5) converts hundredths-of-cents to dollars (e.g., 12345 → $0.12345). Change only if your utility uses a different scale.",
-          "gas_cost_power_of_ten_multiplier": "Scales raw gas cost values from the XML: cost × 10^N. The default (-5) applies additional scaling to the parsed value. Change only if your utility uses a different scale."
+          "electricity_cost_power_of_ten_multiplier": "Fallback scale for electricity values and costs when their XML omits powerOfTenMultiplier: raw value × 10^N. A multiplier declared in the XML always takes precedence.",
+          "gas_cost_power_of_ten_multiplier": "Fallback scale for gas values and costs when their XML omits powerOfTenMultiplier: raw value × 10^N. A multiplier declared in the XML always takes precedence."
         }
       }
     },

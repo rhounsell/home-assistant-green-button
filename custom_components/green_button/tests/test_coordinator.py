@@ -91,7 +91,7 @@ def test_merge_keeps_new_meter_readings_and_usage_summaries(
         "meter", reading_type, [_interval_block(reading_type, "second", second_start)]
     )
     summary = model.UsageSummary(
-        "summary", first_start, timedelta(days=30), 20.0, "CAD", 100.0
+        "summary", first_start, timedelta(days=30), 20.0, "CAD", 100.0, -5
     )
     coordinator._merge_usage_points(
         [
@@ -302,3 +302,31 @@ async def test_stored_reconstruction_matches_normal_canonical_merge(
         rebuilt = await reconstructed.async_reconstruct_stored_usage_points()
 
     assert rebuilt == normal.usage_points
+
+
+def test_merge_applies_configured_multiplier_only_when_source_omits_it(
+    hass: HomeAssistant,
+) -> None:
+    """A missing ReadingType multiplier uses the entry fallback during merging."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        entry_id="test-entry",
+        options={"electricity_cost_power_of_ten_multiplier": -3},
+    )
+    coordinator = GreenButtonCoordinator(hass, entry)
+    reading_type = model.ReadingType("type", 1, "CAD", None, "Wh", 3600)
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    meter = model.MeterReading(
+        "meter", reading_type, [_hourly_block(reading_type, "block", start, [1000])]
+    )
+    summary = model.UsageSummary(
+        "summary", start, timedelta(days=30), 25000, "CAD", 100.0, None
+    )
+
+    coordinator._merge_usage_points(
+        [model.UsagePoint("electricity", SensorDeviceClass.ENERGY, [meter], [summary])]
+    )
+
+    merged = coordinator.usage_points[0]
+    assert merged.meter_readings[0].reading_type.power_of_ten_multiplier == -3
+    assert merged.usage_summaries[0].power_of_ten_multiplier == -3

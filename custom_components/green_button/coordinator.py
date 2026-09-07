@@ -15,8 +15,15 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .xml_storage import async_get_xml_storage
 
 from . import model
-from .const import DOMAIN
+from .const import (
+    CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
+    CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER,
+    DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
+    DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER,
+    DOMAIN,
+)
 from .parsers import espi
+from . import scaling
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -350,6 +357,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         existing_up_map = {up.id: up for up in self.usage_points}
 
         for new_up in new_usage_points:
+            new_up = self._normalize_usage_point(new_up)
             if new_up.id in existing_up_map:
                 # Merge meter readings for existing usage point
                 existing_up = existing_up_map[new_up.id]
@@ -435,15 +443,50 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self, usage_point: model.UsagePoint
     ) -> model.UsagePoint:
         """Normalize interval data in a newly discovered usage point."""
+        fallback_multiplier = self._configured_multiplier(usage_point)
         return dataclasses.replace(
             usage_point,
             meter_readings=[
-                self._normalize_meter_reading(meter_reading)
+                self._normalize_meter_reading(meter_reading, fallback_multiplier)
                 for meter_reading in usage_point.meter_readings
             ],
             usage_summaries=self._merge_usage_summaries(
-                [], usage_point.usage_summaries
+                [],
+                [
+                    dataclasses.replace(
+                        summary,
+                        power_of_ten_multiplier=scaling.resolve_multiplier(
+                            summary.power_of_ten_multiplier, fallback_multiplier
+                        ),
+                        consumption_m3=(
+                            float(summary.consumption_m3)
+                            * 10
+                            ** scaling.resolve_multiplier(
+                                summary.consumption_power_of_ten_multiplier,
+                                fallback_multiplier,
+                            )
+                            if summary.consumption_m3 is not None
+                            else None
+                        ),
+                        consumption_power_of_ten_multiplier=0,
+                    )
+                    for summary in usage_point.usage_summaries
+                ],
             ),
+        )
+
+    def _configured_multiplier(self, usage_point: model.UsagePoint) -> int:
+        """Return the configured fallback for a source that omits its multiplier."""
+        if usage_point.sensor_device_class == SensorDeviceClass.GAS:
+            return scaling.configured_multiplier(
+                self.config_entry,
+                CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER,
+                DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER,
+            )
+        return scaling.configured_multiplier(
+            self.config_entry,
+            CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
+            DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
         )
 
     @staticmethod
@@ -479,9 +522,22 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return sorted(accepted, key=lambda summary: summary.start)
 
     def _normalize_meter_reading(
-        self, meter_reading: model.MeterReading
+        self,
+        meter_reading: model.MeterReading,
+        fallback_multiplier: int | None = None,
     ) -> model.MeterReading:
         """Normalize duplicate or overlapping intervals in one source."""
+        if (
+            meter_reading.reading_type.power_of_ten_multiplier is None
+            and fallback_multiplier is not None
+        ):
+            meter_reading = dataclasses.replace(
+                meter_reading,
+                reading_type=dataclasses.replace(
+                    meter_reading.reading_type,
+                    power_of_ten_multiplier=fallback_multiplier,
+                ),
+            )
         normalized, _, rejected = self._reconcile_meter_reading(None, meter_reading)
         if rejected:
             _LOGGER.warning(
@@ -658,12 +714,8 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         # Check if this reading is the latest
                         if latest_time is None or interval_reading.end > latest_time:
                             latest_time = interval_reading.end
-                            # Convert value based on power of ten multiplier and unit
-                            power_multiplier = (
-                                interval_reading.reading_type.power_of_ten_multiplier
+                            latest_value = (
+                                float(scaling.interval_value(interval_reading)) / 1000.0
                             )
-                            value = interval_reading.value * (10**power_multiplier)
-                            # Convert to kWh if needed (assuming base unit is Wh)
-                            latest_value = float(value) / 1000.0
 
         return latest_value
