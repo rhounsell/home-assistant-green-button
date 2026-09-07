@@ -86,11 +86,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Clean up coordinator
         hass.data[DOMAIN].pop(entry.entry_id, None)
 
-        # Clean up and remove XML storage instance and file if it exists
+        # Preserve source XML for reloads and future setup.
         storage_key = f"{DOMAIN}_xml_storage_{entry.entry_id}"
-        xml_storage = hass.data[DOMAIN].pop(storage_key, None)
-        if xml_storage:
-            await xml_storage.async_remove()
+        hass.data[DOMAIN].pop(storage_key, None)
 
         # If no more entries, unload services
         if not hass.data[DOMAIN]:

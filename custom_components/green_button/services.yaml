@@ -11,11 +11,11 @@ log_stored_xmls:
 
 delete_statistics:
   name: Delete Green Button Statistics
-  description: Delete all historical statistics for a Green Button sensor. This will clear the data from the Energy Dashboard. You will need to re-import your XML data after deletion.
+  description: Delete the imported Green Button statistics associated with a display sensor. Requires an administrator. Legacy sensor statistics are preserved. Re-import your XML data to rebuild the imported series.
   fields:
     statistic_id:
-      name: Statistic ID
-      description: "The statistic ID to delete (e.g., sensor.home_electricity_usage). Check Developer Tools → Statistics to find the ID."
+      name: Display sensor
+      description: "The Green Button display entity (e.g., sensor.home_electricity_usage). Its imported green_button: statistics series will be deleted."
       required: true
       example: "sensor.home_electricity_usage"
       selector:
