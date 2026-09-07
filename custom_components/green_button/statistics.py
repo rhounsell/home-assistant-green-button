@@ -1264,43 +1264,23 @@ async def _generate_statistics_data(
     )
 
     for reading in all_readings:
-        # Skip intervals that end after the cutoff if we don't include trailing hour
-        if not include_trailing_hour and reading.end > cutoff_end:
-            # If the reading overlaps the cutoff boundary, trim to cutoff
-            if reading.start < cutoff_end < reading.end:
-                # Split proportionally: keep portion up to cutoff
-                total_seconds = (reading.end - reading.start).total_seconds()
-                kept_seconds = (cutoff_end - reading.start).total_seconds()
-                if total_seconds > 0:
-                    proportion = decimal.Decimal(kept_seconds / total_seconds)
-                else:
-                    proportion = decimal.Decimal(0)
-                base_value = data_extractor.get_native_value(reading)
-                value_kwh = decimal.Decimal(
-                    _convert_to_kwh(float(base_value), source_unit)
-                )
-                kept_kwh = value_kwh * proportion
-                # Bucket kept portion into hour of cutoff_end - 1 hour
-                hour_start = (cutoff_end - datetime.timedelta(hours=1)).replace(
-                    minute=0, second=0, microsecond=0
-                )
-                hourly_kwh[hour_start] = hourly_kwh.get(hour_start, decimal.Decimal(0)) + kept_kwh
-                hourly_coverage_seconds[hour_start] = hourly_coverage_seconds.get(hour_start, 0) + int(kept_seconds)
-            # Skip the remainder
+        curr_start = reading.start
+        curr_end = (
+            reading.end
+            if include_trailing_hour
+            else min(reading.end, cutoff_end)
+        )
+        if curr_start >= curr_end:
             continue
 
-        # Potentially split a reading that spans multiple hours
-        curr_start = reading.start
-        curr_end = reading.end
         base_value = data_extractor.get_native_value(reading)
         value_kwh_total = decimal.Decimal(
             _convert_to_kwh(float(base_value), source_unit)
         )
-        total_seconds = (curr_end - curr_start).total_seconds()
+        total_seconds = reading.duration.total_seconds()
         if total_seconds <= 0:
             continue
 
-        # Iterate across hours, splitting proportionally
         while curr_start < curr_end:
             hour_start = curr_start.replace(minute=0, second=0, microsecond=0)
             hour_end = hour_start + datetime.timedelta(hours=1)
@@ -1440,34 +1420,17 @@ async def _generate_statistics_data_cost(
     hourly_coverage_seconds: dict[datetime.datetime, int] = {}
 
     for reading in all_readings:
-        # Skip intervals that end after the cutoff if not including trailing hour
-        if not include_trailing_hour and reading.end > cutoff_end:
-            if reading.start < cutoff_end < reading.end:
-                # Keep portion up to cutoff
-                total_seconds = (reading.end - reading.start).total_seconds()
-                kept_seconds = (cutoff_end - reading.start).total_seconds()
-                if total_seconds > 0:
-                    proportion = decimal.Decimal(kept_seconds / total_seconds)
-                else:
-                    proportion = decimal.Decimal(0)
-                base_value = data_extractor.get_native_value(reading)
-                kept_val = base_value * proportion
-                hour_start = (cutoff_end - datetime.timedelta(hours=1)).replace(
-                    minute=0, second=0, microsecond=0
-                )
-                hourly_cost[hour_start] = hourly_cost.get(
-                    hour_start, decimal.Decimal(0)
-                ) + kept_val
-                hourly_coverage_seconds[hour_start] = hourly_coverage_seconds.get(
-                    hour_start, 0
-                ) + int(kept_seconds)
+        curr_start = reading.start
+        curr_end = (
+            reading.end
+            if include_trailing_hour
+            else min(reading.end, cutoff_end)
+        )
+        if curr_start >= curr_end:
             continue
 
-        # Split a reading that may span multiple hours proportionally
-        curr_start = reading.start
-        curr_end = reading.end
         base_value_total = data_extractor.get_native_value(reading)
-        total_seconds = (curr_end - curr_start).total_seconds()
+        total_seconds = reading.duration.total_seconds()
         if total_seconds <= 0:
             continue
 
