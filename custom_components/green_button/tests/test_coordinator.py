@@ -3,11 +3,12 @@
 # ruff: noqa: SLF001, TID251
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from custom_components.green_button import model
 from custom_components.green_button.const import DOMAIN
 from custom_components.green_button.coordinator import GreenButtonCoordinator
+from custom_components.green_button.parsers import espi
 from custom_components.green_button.xml_storage import async_get_xml_storage
 import pytest
 
@@ -302,6 +303,41 @@ async def test_stored_reconstruction_matches_normal_canonical_merge(
         rebuilt = await reconstructed.async_reconstruct_stored_usage_points()
 
     assert rebuilt == normal.usage_points
+
+
+async def test_identical_import_is_stored_and_merged_once(
+    hass: HomeAssistant,
+) -> None:
+    """Repeated identical imports cannot grow the archive or active history."""
+    entry = MockConfigEntry(domain=DOMAIN, entry_id="test-entry")
+    entry.add_to_hass(hass)
+    coordinator = GreenButtonCoordinator(hass, entry)
+    reading_type = model.ReadingType("type", 1, "CAD", 0, "Wh", 3600)
+    meter = model.MeterReading(
+        "meter",
+        reading_type,
+        [_interval_block(reading_type, "block", datetime(2026, 7, 1, tzinfo=UTC))],
+    )
+    usage_point = model.UsagePoint("usage-point", SensorDeviceClass.ENERGY, [meter])
+    report = espi.EspiParseReport(
+        [usage_point], accepted_readings=1, skipped_readings=0
+    )
+
+    with (
+        patch.object(espi, "parse_xml_with_report", return_value=report),
+        patch.object(
+            coordinator,
+            "_trigger_statistics_update_for_all_readings",
+            new_callable=AsyncMock,
+        ) as trigger_statistics,
+    ):
+        await coordinator.async_add_xml_data("<feed />")
+        await coordinator.async_add_xml_data("<feed />")
+
+    storage = await async_get_xml_storage(hass, entry.entry_id)
+    assert storage.get_stored_xmls() == [{"label": "electricity", "xmls": ["<feed />"]}]
+    assert len(coordinator.usage_points) == 1
+    assert trigger_statistics.await_count == 1
 
 
 def test_merge_applies_configured_multiplier_only_when_source_omits_it(

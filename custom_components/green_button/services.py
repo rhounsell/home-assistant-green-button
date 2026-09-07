@@ -89,9 +89,13 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         """Log all meter readings, their interval block date ranges, and mapped sensor entities."""
         entity_registry = async_get_entity_registry(hass)
         for entry in [_config_entry(call)]:
-            coordinator: GreenButtonCoordinator | None = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("coordinator")
+            coordinator: GreenButtonCoordinator | None = (
+                hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("coordinator")
+            )
             if not coordinator or not coordinator.data:
-                _LOGGER.info("Entry %s: No coordinator or data available.", entry.entry_id)
+                _LOGGER.info(
+                    "Entry %s: No coordinator or data available.", entry.entry_id
+                )
                 continue
             usage_points = coordinator.data.get("usage_points", [])
             for up_idx, usage_point in enumerate(usage_points):
@@ -102,13 +106,28 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     len(usage_point.meter_readings),
                 )
                 for mr_idx, meter_reading in enumerate(usage_point.meter_readings):
-                    clean_id = meter_reading.id.split("/")[-1] if "/" in meter_reading.id else meter_reading.id
+                    clean_id = (
+                        meter_reading.id.split("/")[-1]
+                        if "/" in meter_reading.id
+                        else meter_reading.id
+                    )
                     unique_id = f"{entry.entry_id}_{clean_id}"
-                    entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
-                    _LOGGER.info("  MeterReading %s (id=%s): mapped entity_id=%s", mr_idx, meter_reading.id, entity_id)
-                    for ib_idx, interval_block in enumerate(meter_reading.interval_blocks):
+                    entity_id = entity_registry.async_get_entity_id(
+                        "sensor", DOMAIN, unique_id
+                    )
+                    _LOGGER.info(
+                        "  MeterReading %s (id=%s): mapped entity_id=%s",
+                        mr_idx,
+                        meter_reading.id,
+                        entity_id,
+                    )
+                    for ib_idx, interval_block in enumerate(
+                        meter_reading.interval_blocks
+                    ):
                         start = interval_block.start.isoformat()
-                        end = (interval_block.start + interval_block.duration).isoformat()
+                        end = (
+                            interval_block.start + interval_block.duration
+                        ).isoformat()
                         _LOGGER.info(
                             "    IntervalBlock %s: start=%s, end=%s, readings=%s",
                             ib_idx,
@@ -152,7 +171,13 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     xml_list = [xml_entry["xml"]]
 
                 total_size = sum(len(x) for x in xml_list if x)
-                _LOGGER.info("  [%d] Label: '%s', %d XML(s), Total size: %d bytes", idx, label, len(xml_list), total_size)
+                _LOGGER.info(
+                    "  [%d] Label: '%s', %d XML(s), Total size: %d bytes",
+                    idx,
+                    label,
+                    len(xml_list),
+                    total_size,
+                )
 
                 for xml_idx, xml_data in enumerate(xml_list):
                     if not xml_data:
@@ -169,7 +194,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                             _LOGGER.info("        UsagePoint: %s", up.id)
                             for mr in up.meter_readings:
                                 all_readings = [
-                                    ir for ib in mr.interval_blocks for ir in ib.interval_readings
+                                    ir
+                                    for ib in mr.interval_blocks
+                                    for ir in ib.interval_readings
                                 ]
                                 if all_readings:
                                     min_start = min(ir.start for ir in all_readings)
@@ -187,12 +214,14 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                                         mr.id.split("/")[-1] if "/" in mr.id else mr.id,
                                     )
                             if up.usage_summaries:
-                                _LOGGER.info("        UsageSummaries: %d", len(up.usage_summaries))
+                                _LOGGER.info(
+                                    "        UsageSummaries: %d",
+                                    len(up.usage_summaries),
+                                )
                     except Exception as e:
                         _LOGGER.error("        Failed to parse XML: %s", e)
 
             _LOGGER.info("=" * 60)
-
 
     async def import_espi_xml_service(call: ServiceCall) -> None:
         """Handle the import_espi_xml service call."""
@@ -207,7 +236,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
         # Validate that both are not provided
         if xml_path and xml_content:
-            msg = "Both xml_file_path and xml content provided. Please provide only one."
+            msg = (
+                "Both xml_file_path and xml content provided. Please provide only one."
+            )
             _LOGGER.error(msg)
             raise HomeAssistantError(msg)
 
@@ -241,21 +272,31 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             if not file_exists:
                 _LOGGER.error("Specified XML file does not exist: %s", resolved_path)
                 _LOGGER.error(
-                    "Checked paths - Original: %s, Resolved: %s", xml_path, resolved_path
+                    "Checked paths - Original: %s, Resolved: %s",
+                    xml_path,
+                    resolved_path,
                 )
-                raise HomeAssistantError(f"Specified XML file does not exist: {resolved_path}")
+                raise HomeAssistantError(
+                    f"Specified XML file does not exist: {resolved_path}"
+                )
 
             try:
-                xml_data = await hass.async_add_executor_job(_read_file_sync, resolved_path)
+                xml_data = await hass.async_add_executor_job(
+                    _read_file_sync, resolved_path
+                )
             except OSError as e:
                 _LOGGER.error("Failed to read XML file: %s", e)
                 raise HomeAssistantError(f"Failed to read XML file: {e}") from e
 
-            _LOGGER.info("Importing ESPI XML data via service from file: %s", resolved_path)
+            _LOGGER.info(
+                "Importing ESPI XML data via service from file: %s", resolved_path
+            )
         else:
             # Use the XML content provided directly
             xml_data = xml_content
-            _LOGGER.info("Importing ESPI XML data via service from provided XML content")
+            _LOGGER.info(
+                "Importing ESPI XML data via service from provided XML content"
+            )
 
         try:
             # Process the XML data for the explicitly selected entry only.
@@ -272,8 +313,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 # Let the coordinator handle all data parsing and updates
                 # Label is auto-detected from XML content (electricity or gas)
                 # Always store in config entry for persistence across restarts
-                _LOGGER.info("[SERVICE IMPORT] Importing XML data for entry %s (size: %d bytes)", 
-                            entry.entry_id, len(xml_data))
+                _LOGGER.info(
+                    "[SERVICE IMPORT] Importing XML data for entry %s (size: %d bytes)",
+                    entry.entry_id,
+                    len(xml_data),
+                )
                 report = await coordinator.async_add_xml_data(
                     xml_data, store_in_config=True
                 )
@@ -287,7 +331,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
                 # No direct entity lookup or warning needed; coordinator update will notify all entities
 
-            _LOGGER.info("ESPI XML import completed successfully (label auto-detected from commodity type)")
+            _LOGGER.info(
+                "ESPI XML import completed successfully (label auto-detected from commodity type)"
+            )
 
         except Exception as err:
             _LOGGER.error("Failed to import ESPI XML: %s", err)
@@ -328,7 +374,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             await statistics.clear_statistic(hass, statistic_id)
             _LOGGER.info("✅ Successfully deleted statistics for %s", statistic_id)
         except Exception as err:
-            _LOGGER.error("❌ Failed to delete statistics for %s: %s", statistic_id, err)
+            _LOGGER.error(
+                "❌ Failed to delete statistics for %s: %s", statistic_id, err
+            )
             raise HomeAssistantError(f"Failed to delete statistics: {err}") from err
 
     async def clear_stored_xml_service(call: ServiceCall) -> None:
@@ -340,7 +388,14 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         for entry in [_config_entry(call)]:
             # Use new separate storage file
             xml_storage = await async_get_xml_storage(hass, entry.entry_id)
-            removed_count, remaining_count = await xml_storage.async_clear_label(label_to_clear)
+            removed_count, remaining_count = await xml_storage.async_clear_label(
+                label_to_clear
+            )
+            coordinator: GreenButtonCoordinator | None = (
+                hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("coordinator")
+            )
+            if coordinator is not None:
+                await coordinator.async_sync_stored_usage_points()
 
             if label_to_clear:
                 if removed_count > 0:
@@ -375,38 +430,58 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
         for entry in [_config_entry(call)]:
             coordinator_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
-            coordinator: GreenButtonCoordinator | None = coordinator_data.get("coordinator")
+            coordinator: GreenButtonCoordinator | None = coordinator_data.get(
+                "coordinator"
+            )
 
             if not coordinator:
                 _LOGGER.warning("No coordinator for entry %s", entry.title)
                 continue
 
             usage_points = await coordinator.async_reconstruct_stored_usage_points()
-            
+
             if not usage_points:
-                _LOGGER.warning("No canonical source data found for entry %s", entry.title)
+                _LOGGER.warning(
+                    "No canonical source data found for entry %s", entry.title
+                )
                 continue
 
             # Get the entity registry to find sensor entities
             entity_registry = async_get_entity_registry(hass)
-            
+
             # Log usage point types for debugging
-            gas_count = sum(1 for up in usage_points if up.sensor_device_class == SensorDeviceClass.GAS)
-            elec_count = sum(1 for up in usage_points if up.sensor_device_class != SensorDeviceClass.GAS)
-            _LOGGER.info("Found %d usage point(s): %d electricity, %d gas", 
-                        len(usage_points), elec_count, gas_count)
+            gas_count = sum(
+                1
+                for up in usage_points
+                if up.sensor_device_class == SensorDeviceClass.GAS
+            )
+            elec_count = sum(
+                1
+                for up in usage_points
+                if up.sensor_device_class != SensorDeviceClass.GAS
+            )
+            _LOGGER.info(
+                "Found %d usage point(s): %d electricity, %d gas",
+                len(usage_points),
+                elec_count,
+                gas_count,
+            )
 
             for usage_point in usage_points:
                 is_gas = usage_point.sensor_device_class == SensorDeviceClass.GAS
 
                 # Skip if commodity filter doesn't match
                 if commodity == "electricity" and is_gas:
-                    _LOGGER.debug("Skipping gas usage point %s (filtering for electricity only)", 
-                                usage_point.id)
+                    _LOGGER.debug(
+                        "Skipping gas usage point %s (filtering for electricity only)",
+                        usage_point.id,
+                    )
                     continue
                 if commodity == "gas" and not is_gas:
-                    _LOGGER.debug("Skipping electricity usage point %s (filtering for gas only)", 
-                                usage_point.id)
+                    _LOGGER.debug(
+                        "Skipping electricity usage point %s (filtering for gas only)",
+                        usage_point.id,
+                    )
                     continue
 
                 # Find cost sensor entities for this usage point
@@ -419,7 +494,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     )
 
                     # Determine the meter_reading_id based on allocation mode
-                    if allocation_mode == "monthly_increment" and usage_point.usage_summaries:
+                    if (
+                        allocation_mode == "monthly_increment"
+                        and usage_point.usage_summaries
+                    ):
                         meter_reading_id = usage_point.id
                     elif usage_point.meter_readings:
                         # Find the primary meter reading (same logic as sensor creation)
@@ -434,7 +512,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                             )
                         ]
                         if not eligible_mrs:
-                            _LOGGER.debug("No eligible gas meter readings for %s", usage_point.id)
+                            _LOGGER.debug(
+                                "No eligible gas meter readings for %s", usage_point.id
+                            )
                             continue
                         primary_mr = sorted(eligible_mrs, key=lambda mr: mr.id)[0]
                         meter_reading_id = primary_mr.id
@@ -443,9 +523,15 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                         continue
 
                     # Find the gas cost sensor entity
-                    clean_id = meter_reading_id.split("/")[-1] if "/" in meter_reading_id else meter_reading_id
+                    clean_id = (
+                        meter_reading_id.split("/")[-1]
+                        if "/" in meter_reading_id
+                        else meter_reading_id
+                    )
                     unique_id = f"{entry.entry_id}_{clean_id}_gas_cost"
-                    entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+                    entity_id = entity_registry.async_get_entity_id(
+                        "sensor", DOMAIN, unique_id
+                    )
 
                     if not entity_id:
                         _LOGGER.warning("Gas cost sensor not found for %s", unique_id)
@@ -454,7 +540,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     # Get the entity state object
                     entity_state = hass.states.get(entity_id)
                     if not entity_state:
-                        _LOGGER.warning("Gas cost sensor state not found for %s", entity_id)
+                        _LOGGER.warning(
+                            "Gas cost sensor state not found for %s", entity_id
+                        )
                         continue
 
                     # Trigger statistics recalculation
@@ -463,7 +551,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     # Get gas cost multiplier
                     _LOGGER.debug("entry.options: %s", entry.options)
                     _LOGGER.debug("entry.data: %s", entry.data)
-                    
+
                     gas_multiplier = scaling.configured_multiplier(
                         entry,
                         CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER,
@@ -475,7 +563,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
                     # Get meter reading if available
                     meter_reading = None
-                    if allocation_mode != "monthly_increment" or not usage_point.usage_summaries:
+                    if (
+                        allocation_mode != "monthly_increment"
+                        or not usage_point.usage_summaries
+                    ):
                         for mr in usage_point.meter_readings:
                             if mr.id == meter_reading_id:
                                 meter_reading = mr
@@ -484,7 +575,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     # Create a mock entity object for statistics
                     class MockGasCostEntity:
                         """Mock entity for gas cost statistics recalculation."""
-                        def __init__(self, entity_id: str, name: str, unit: str, unique_id: str):
+
+                        def __init__(
+                            self, entity_id: str, name: str, unit: str, unique_id: str
+                        ):
                             self.entity_id = entity_id
                             self._statistic_id = statistic_id_from_unique_id(unique_id)
                             self.name = name
@@ -524,30 +618,56 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                             gas_cost_multiplier=gas_multiplier,
                             merge_with_existing=False,  # Recalculate ALL from scratch
                         )
-                        _LOGGER.info("✅ Recalculated gas cost statistics for %s", entity_id)
+                        _LOGGER.info(
+                            "✅ Recalculated gas cost statistics for %s", entity_id
+                        )
                         recalculated_count += 1
                     except Exception as e:
-                        _LOGGER.error("❌ Failed to recalculate gas cost statistics for %s: %s", entity_id, e)
+                        _LOGGER.error(
+                            "❌ Failed to recalculate gas cost statistics for %s: %s",
+                            entity_id,
+                            e,
+                        )
 
                 else:
                     # Electricity cost sensor
-                    _LOGGER.info("Examining electricity UsagePoint %s: found %d total meter readings", 
-                                usage_point.id, len(usage_point.meter_readings))
-                    
+                    _LOGGER.info(
+                        "Examining electricity UsagePoint %s: found %d total meter readings",
+                        usage_point.id,
+                        len(usage_point.meter_readings),
+                    )
+
                     # Log details about each meter reading for debugging
                     for idx, mr in enumerate(usage_point.meter_readings, 1):
-                        num_blocks = len(mr.interval_blocks) if mr.interval_blocks else 0
-                        total_intervals = sum(len(blk.interval_readings) for blk in mr.interval_blocks) if mr.interval_blocks else 0
-                        has_cost_data = any(
-                            hasattr(ir, "cost") and ir.cost is not None
-                            for blk in mr.interval_blocks
-                            for ir in blk.interval_readings
-                        ) if mr.interval_blocks else False
-                        _LOGGER.info("  Meter reading %d/%d: ID=%s, blocks=%d, intervals=%d, has_cost=%s", 
-                                    idx, len(usage_point.meter_readings), 
-                                    mr.id.split("/")[-1] if "/" in mr.id else mr.id,
-                                    num_blocks, total_intervals, has_cost_data)
-                    
+                        num_blocks = (
+                            len(mr.interval_blocks) if mr.interval_blocks else 0
+                        )
+                        total_intervals = (
+                            sum(
+                                len(blk.interval_readings) for blk in mr.interval_blocks
+                            )
+                            if mr.interval_blocks
+                            else 0
+                        )
+                        has_cost_data = (
+                            any(
+                                hasattr(ir, "cost") and ir.cost is not None
+                                for blk in mr.interval_blocks
+                                for ir in blk.interval_readings
+                            )
+                            if mr.interval_blocks
+                            else False
+                        )
+                        _LOGGER.info(
+                            "  Meter reading %d/%d: ID=%s, blocks=%d, intervals=%d, has_cost=%s",
+                            idx,
+                            len(usage_point.meter_readings),
+                            mr.id.split("/")[-1] if "/" in mr.id else mr.id,
+                            num_blocks,
+                            total_intervals,
+                            has_cost_data,
+                        )
+
                     # Find eligible meter readings (cost sensors check for 'cost' attribute, not 'value')
                     eligible_electric_mrs = [
                         mr
@@ -561,25 +681,40 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     ]
 
                     if not eligible_electric_mrs:
-                        _LOGGER.info("Skipping electricity UsagePoint %s: no eligible meter readings with cost data", usage_point.id)
+                        _LOGGER.info(
+                            "Skipping electricity UsagePoint %s: no eligible meter readings with cost data",
+                            usage_point.id,
+                        )
                         continue
 
                     # Pick the primary meter reading (matches sensor creation: sorted by ID, first one)
-                    primary_electric_mr = sorted(eligible_electric_mrs, key=lambda mr: mr.id)[0]
-                    
+                    primary_electric_mr = sorted(
+                        eligible_electric_mrs, key=lambda mr: mr.id
+                    )[0]
+
                     # Get the cost sensor entity ID based on the primary meter reading
-                    clean_id = primary_electric_mr.id.split("/")[-1] if "/" in primary_electric_mr.id else primary_electric_mr.id
+                    clean_id = (
+                        primary_electric_mr.id.split("/")[-1]
+                        if "/" in primary_electric_mr.id
+                        else primary_electric_mr.id
+                    )
                     unique_id = f"{entry.entry_id}_{clean_id}_cost"
-                    entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+                    entity_id = entity_registry.async_get_entity_id(
+                        "sensor", DOMAIN, unique_id
+                    )
 
                     if not entity_id:
-                        _LOGGER.warning("Electricity cost sensor not found for %s", unique_id)
+                        _LOGGER.warning(
+                            "Electricity cost sensor not found for %s", unique_id
+                        )
                         continue
 
                     # Get the entity state object
                     entity_state = hass.states.get(entity_id)
                     if not entity_state:
-                        _LOGGER.warning("Electricity cost sensor state not found for %s", entity_id)
+                        _LOGGER.warning(
+                            "Electricity cost sensor state not found for %s", entity_id
+                        )
                         continue
 
                     # Get electricity cost multiplier
@@ -588,13 +723,22 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                         CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
                         DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
                     )
-                    _LOGGER.info("Recalculating electricity cost statistics for %s", entity_id)
-                    _LOGGER.info("Processing canonical meter reading %s for entity %s", primary_electric_mr.id, entity_id)
+                    _LOGGER.info(
+                        "Recalculating electricity cost statistics for %s", entity_id
+                    )
+                    _LOGGER.info(
+                        "Processing canonical meter reading %s for entity %s",
+                        primary_electric_mr.id,
+                        entity_id,
+                    )
 
                     # Create a mock entity object for statistics
                     class MockElectricityCostEntity:
                         """Mock entity for electricity cost statistics recalculation."""
-                        def __init__(self, entity_id: str, name: str, unit: str, unique_id: str):
+
+                        def __init__(
+                            self, entity_id: str, name: str, unit: str, unique_id: str
+                        ):
                             self.entity_id = entity_id
                             self._statistic_id = statistic_id_from_unique_id(unique_id)
                             self.name = name
@@ -623,14 +767,23 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                             primary_electric_mr,
                             merge_with_existing=False,
                         )
-                        
-                        _LOGGER.info("✅ Recalculated electricity cost statistics for %s", entity_id)
+
+                        _LOGGER.info(
+                            "✅ Recalculated electricity cost statistics for %s",
+                            entity_id,
+                        )
                         recalculated_count += 1
                     except Exception as e:
-                        _LOGGER.error("❌ Failed to recalculate electricity cost statistics for %s: %s", entity_id, e)
+                        _LOGGER.error(
+                            "❌ Failed to recalculate electricity cost statistics for %s: %s",
+                            entity_id,
+                            e,
+                        )
 
         if recalculated_count > 0:
-            _LOGGER.info("✅ Successfully recalculated %d cost statistic(s)", recalculated_count)
+            _LOGGER.info(
+                "✅ Successfully recalculated %d cost statistic(s)", recalculated_count
+            )
         else:
             _LOGGER.warning("No cost statistics were recalculated")
 
