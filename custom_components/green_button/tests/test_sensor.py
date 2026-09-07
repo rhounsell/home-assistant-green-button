@@ -49,7 +49,7 @@ def _gas_usage_point() -> model.UsagePoint:
     )
 
 
-async def test_stream_entities_use_full_provider_identity_and_stable_discovery(
+async def test_stream_entities_are_added_once_per_discovery(
     hass: HomeAssistant,
 ) -> None:
     """Same path suffixes and arrival order cannot hide or replace a stream."""
@@ -62,13 +62,16 @@ async def test_stream_entities_use_full_provider_identity_and_stable_discovery(
     coordinator.async_set_updated_data({"usage_points": coordinator.usage_points})
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"coordinator": coordinator}
     added: list[SensorEntity] = []
+    add_calls: list[list[SensorEntity]] = []
 
     def async_add_entities(entities: list[SensorEntity]) -> None:
         added.extend(entities)
+        add_calls.append(entities)
 
     await sensor.async_setup_entry(hass, entry, async_add_entities)
 
     assert len(added) == 4
+    assert [len(entities) for entities in add_calls] == [4]
     assert len({entity.unique_id for entity in added}) == 4
     assert {entity._meter_reading_id for entity in added} == {"/MeterReading/1"}
     assert {entity._usage_point_id for entity in added} == {
@@ -80,12 +83,14 @@ async def test_stream_entities_use_full_provider_identity_and_stable_discovery(
     coordinator.usage_points = [first, second]
     coordinator.async_set_updated_data({"usage_points": coordinator.usage_points})
     assert {entity.unique_id for entity in added} == first_discovery
+    assert [len(entities) for entities in add_calls] == [4]
 
     third = _usage_point("/UsagePoint/gamma", "/MeterReading/1", 3000)
     coordinator.usage_points = [third, second, first]
     coordinator.async_set_updated_data({"usage_points": coordinator.usage_points})
     assert len(added) == 6
     assert len({entity.unique_id for entity in added}) == 6
+    assert [len(entities) for entities in add_calls] == [4, 2]
 
 
 async def test_unambiguous_legacy_stream_migrates_entity_and_external_series(
