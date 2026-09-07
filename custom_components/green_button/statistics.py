@@ -3,33 +3,33 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Sequence
 import dataclasses
 import datetime
 import decimal
 import logging
-from collections.abc import Callable
-from collections.abc import Sequence
-from typing import Any
-from typing import cast
-from typing import final
-from typing import Literal
-from typing import Protocol
-from typing import TypeVar
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, cast, final
 
 from homeassistant import exceptions
-from homeassistant.components.recorder import db_schema as recorder_db_schema
-from homeassistant.components.recorder import statistics
-from homeassistant.components.recorder.statistics import async_import_statistics
+from homeassistant.components.recorder import (
+    db_schema as recorder_db_schema,
+    statistics,
+    tasks,
+)
 from homeassistant.components.recorder.models import StatisticData, StatisticMeanType
 from homeassistant.components.recorder.models.statistics import StatisticMetaData
-from homeassistant.components.recorder import tasks
+from homeassistant.components.recorder.statistics import async_add_external_statistics
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import recorder as recorder_helper
+from homeassistant.util.unit_conversion import EnergyConverter, VolumeConverter
 
 from . import model
-from .const import DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER, DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER
+from .const import (
+    DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
+    DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER,
+    DOMAIN,
+)
 
 if TYPE_CHECKING:
     from homeassistant.components.recorder.core import Recorder
@@ -1206,11 +1206,14 @@ def create_metadata(entity: GreenButtonEntity) -> StatisticMetaData:
     return {
         "mean_type": StatisticMeanType.NONE,
         "has_sum": True,
-        "name": entity.name,
-        "source": "recorder",  # Must be "recorder" - HA validates this
+        "name": f"{entity.name} ({entity.entity_id}, imported)",
+        "source": DOMAIN,
         "statistic_id": entity.long_term_statistics_id,
         "unit_of_measurement": entity.native_unit_of_measurement,
-        "unit_class": None,
+        "unit_class": {
+            "kWh": EnergyConverter.UNIT_CLASS,
+            "m³": VolumeConverter.UNIT_CLASS,
+        }.get(entity.native_unit_of_measurement),
     }
 
 
@@ -1646,7 +1649,7 @@ async def update_cost_statistics(
 
         # Import cost statistics using the proper Home Assistant API
         try:
-            async_import_statistics(hass, metadata, statistics_data)
+            async_add_external_statistics(hass, metadata, statistics_data)
             _LOGGER.info(
                 "✅ Imported %d cost records for entity %s",
                 len(statistics_data),
@@ -1719,9 +1722,9 @@ async def update_statistics(
 
         # Import historical statistics using the proper Home Assistant API
         try:
-            async_import_statistics(hass, metadata, statistics_data)
+            async_add_external_statistics(hass, metadata, statistics_data)
             _LOGGER.debug(
-                "✅ Successfully called async_import_statistics with %d records for entity %s",
+                "Queued %d external statistics records for entity %s",
                 len(statistics_data),
                 entity.entity_id,
             )
@@ -2001,7 +2004,7 @@ async def update_gas_statistics(
             _LOGGER.exception("Failed truncating gas stats for %s", entity.entity_id)
 
         try:
-            async_import_statistics(hass, metadata, records)
+            async_add_external_statistics(hass, metadata, records)
             _LOGGER.info(
                 "Imported %d gas usage records for %s (total: %.1f m³)",
                 len(records),
@@ -2041,7 +2044,7 @@ async def update_gas_statistics(
         _LOGGER.exception("Failed to clear gas stats for %s", entity.entity_id)
 
     try:
-        async_import_statistics(hass, metadata, data)
+        async_add_external_statistics(hass, metadata, data)
         _LOGGER.info("Imported %d gas daily records for %s", len(data), entity.entity_id)
     except Exception:
         _LOGGER.exception("Failed to import gas stats for %s", entity.entity_id)
@@ -2238,7 +2241,7 @@ async def update_gas_cost_statistics(
         _LOGGER.exception("Failed to clear gas cost stats for %s", entity.entity_id)
 
     try:
-        async_import_statistics(hass, metadata, records)
+        async_add_external_statistics(hass, metadata, records)
         _LOGGER.info("Imported %d gas cost records for %s", len(records), entity.entity_id)
     except Exception:
         _LOGGER.exception("Failed to import gas cost stats for %s", entity.entity_id)

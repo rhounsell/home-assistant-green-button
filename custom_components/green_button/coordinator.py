@@ -404,22 +404,28 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if new_up.id in existing_up_map:
                 # Merge meter readings for existing usage point
                 existing_up = existing_up_map[new_up.id]
-                self._merge_meter_readings(existing_up, list(new_up.meter_readings))
+                merged_meter_readings = self._merge_meter_readings(
+                    existing_up, list(new_up.meter_readings)
+                )
                 # Merge usage summaries (unique by id)
                 existing_summaries = {us.id: us for us in existing_up.usage_summaries}
                 merged_summaries = list(existing_up.usage_summaries)
-                added = 0
                 for us in new_up.usage_summaries:
                     if us.id not in existing_summaries:
                         merged_summaries.append(us)
-                        added += 1
-                if added:
-                    merged_up = dataclasses.replace(existing_up, usage_summaries=merged_summaries)
-                    self.usage_points = [merged_up if up.id == existing_up.id else up for up in self.usage_points]
+                merged_up = dataclasses.replace(
+                    existing_up,
+                    meter_readings=merged_meter_readings,
+                    usage_summaries=merged_summaries,
+                )
+                self.usage_points = [
+                    merged_up if up.id == existing_up.id else up
+                    for up in self.usage_points
+                ]
                 _LOGGER.info(
                     "[MERGE] Merged usage point %s: %d meter readings, %d usage summaries",
                     new_up.id,
-                    len(existing_up.meter_readings),
+                    len(merged_meter_readings),
                     len(merged_summaries),
                 )
             else:
@@ -436,7 +442,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self,
         existing_up: model.UsagePoint,
         new_meter_readings: list[model.MeterReading],
-    ) -> None:
+    ) -> list[model.MeterReading]:
         """Merge new meter readings with existing ones in a usage point."""
         # Since objects are immutable, we need to rebuild everything
         existing_mr_map = {mr.id: mr for mr in existing_up.meter_readings}
@@ -527,13 +533,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             new_mr.id,
                         )
 
-        # Replace usage point with merged meter readings
-        merged_up = dataclasses.replace(
-            existing_up, meter_readings=merged_meter_readings
-        )
-        self.usage_points = [
-            merged_up if up.id == existing_up.id else up for up in self.usage_points
-        ]
+        return merged_meter_readings
 
     def get_meter_readings(self) -> list[model.MeterReading]:
         """Get all meter readings from usage points."""

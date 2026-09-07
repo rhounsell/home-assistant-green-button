@@ -6,11 +6,7 @@ import asyncio
 import logging
 from typing import Any
 
-from homeassistant.components.sensor import (
-    SensorDeviceClass,
-    SensorEntity,
-    SensorStateClass,
-)
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -18,16 +14,16 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import model
-from . import statistics
-from .coordinator import GreenButtonCoordinator
+from . import model, statistics
 from .const import (
-    DOMAIN,
-    DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
-    DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER,
     CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
     CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER,
+    DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
+    DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER,
+    DOMAIN,
 )
+from .coordinator import GreenButtonCoordinator
+from .statistic_ids import statistic_id_from_unique_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,14 +44,26 @@ def _schedule_hass_task_from_any_thread(hass: HomeAssistant, coro) -> None:
         loop.call_soon_threadsafe(lambda: hass.async_create_task(coro))
 
 
-class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
+class GreenButtonStatisticsSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
+    """Display imported totals without automatic sensor statistics."""
+
+    _attr_state_class = None
+
+    @property
+    def long_term_statistics_id(self) -> str:
+        """Return the external series associated with this display entity."""
+        return statistic_id_from_unique_id(self._attr_unique_id)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose the series to select in the Energy dashboard."""
+        return {"statistic_id": self.long_term_statistics_id}
+
+
+class GreenButtonSensor(GreenButtonStatisticsSensor):
     """A sensor for Green Button energy data."""
 
     _attr_device_class = SensorDeviceClass.ENERGY
-    # We set state_class to satisfy HA's validation (prevents "fix issue" warnings)
-    # but we return None from native_value so there's no state history for HA
-    # to auto-compile. We manually import statistics via async_import_statistics().
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = "kWh"
     _attr_has_entity_name = True
 
@@ -91,14 +99,7 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         )
     @property
     def native_value(self) -> float:
-        """Return the last imported statistics sum value.
-        
-        Returns the cached value from the last statistics import. This prevents
-        Energy Dashboard from showing "Entity unavailable" warnings while still
-        avoiding automatic statistics compilation (since we don't write states on updates).
-        
-        The state only updates when statistics are manually imported.
-        """
+        """Return the cached total for display."""
         return self._cached_native_value
 
     @property
@@ -120,9 +121,10 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         """Return extra state attributes."""
         meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
         if not meter_reading:
-            return {}
+            return super().extra_state_attributes
 
         attributes = {
+            **super().extra_state_attributes,
             "meter_reading_id": meter_reading.id,
             "interval_blocks_count": len(meter_reading.interval_blocks),
         }
@@ -151,11 +153,6 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         return attributes
 
     @property
-    def long_term_statistics_id(self) -> str:
-        """Return the statistic ID associated with the entity."""
-        return self.entity_id
-
-    @property
     def name(self) -> str:
         """Return the entity name (delegates to parent SensorEntity for automatic composition)."""
         return super().name  # type: ignore[misc]
@@ -166,28 +163,14 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
         return self._attr_native_unit_of_measurement or "kWh"
 
     async def async_added_to_hass(self) -> None:
-        """When entity is added to hass, trigger statistics generation without updating sensor state.
-        
-        IMPORTANT: We do NOT call async_write_ha_state() here!
-        This integration manually imports historical statistics via async_import_statistics().
-        If we write a cumulative total as the sensor state, HA's automatic statistics
-        compilation (in homeassistant/components/sensor/recorder.py) would see a massive
-        state jump and generate a corrupted statistics record for "today's date" showing
-        fake consumption equal to the difference from the last recorded state.
-        
-        The Energy Dashboard uses the statistics we import, not the sensor state.
-        The sensor state is only used by HA's automatic statistics compilation, which
-        we want to avoid since we manage statistics manually.
-        """
+        """Initialize the display sensor and schedule imported statistics."""
         await super().async_added_to_hass()
 
         _LOGGER.debug(
-            "Sensor %s: Entity added to Home Assistant (NOT writing state to avoid recorder auto-statistics)",
+            "Sensor %s: Entity added to Home Assistant (preparing imported statistics)",
             self.entity_id,
         )
 
-        # Set the internal value for reference but DON'T call async_write_ha_state()
-        # This prevents HA's recorder from auto-generating statistics from state changes
         meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
         if meter_reading:
             # Calculate total energy from all interval blocks (for internal tracking only)
@@ -202,9 +185,8 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
                 self._attr_native_value = total_energy / 1000.0
             else:
                 self._attr_native_value = 0.0
-            # DO NOT call async_write_ha_state() - see docstring above
             _LOGGER.info(
-                "Sensor %s: Internal state set to %.2f kWh (NOT written to HA to avoid recorder spike)",
+                "Sensor %s: Internal state set to %.2f kWh (cached for display)",
                 self.entity_id,
                 self._attr_native_value,
             )
@@ -212,15 +194,11 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
             # If no data, set to 0.0 for internal reference
             if self._attr_native_value is None:
                 self._attr_native_value = 0.0
-            # DO NOT call async_write_ha_state() - see docstring above
             _LOGGER.info(
                 "Sensor %s: Internal state set to 0.0 (no meter reading found, NOT written to HA)",
                     self.entity_id,
                 )
 
-        # Don't generate statistics during bootstrap - rely on _handle_coordinator_update
-        # which will be called after bootstrap completes
-        # This prevents "Setup timed out for bootstrap" warnings
 
         # Kick off a statistics update if data already exists (e.g., after import)
         if self.coordinator.data and self.coordinator.data.get("usage_points"):
@@ -228,12 +206,6 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
 
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        # DO NOT call super()._handle_coordinator_update()!
-        # That would call async_write_ha_state(), which triggers HA's Recorder
-        # to auto-generate statistics using the cumulative sensor value,
-        # creating corrupted records (state/sum swap, negative sums).
-        # We manually manage statistics in update_sensor_and_statistics(),
-        # so we only need to mark the entity as available for updates.
 
         # Update statistics for all meter readings in coordinator data
         if self.coordinator.data and "usage_points" in self.coordinator.data:
@@ -264,7 +236,7 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
     async def update_sensor_and_statistics(
         self, meter_reading: model.MeterReading
     ) -> None:
-        """Update the entity's state and statistics to match the reading."""
+        """Update cached values and schedule historical statistics."""
         # Calculate total energy from all interval blocks
         total_energy = 0
         for interval_block in meter_reading.interval_blocks:
@@ -289,11 +261,6 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
             self._attr_native_value,
         )
 
-        # NOTE: Do NOT call async_write_ha_state() here!
-        # Calling it before statistics update causes HA's Recorder to automatically
-        # create a statistics record using the sensor's cumulative state value,
-        # which creates corrupted records (state/sum swap, massive consumption values).
-        # The coordinator will handle state updates, and we manually manage statistics below.
 
         # Update statistics for Energy Dashboard (run in background to not block startup)
         if hasattr(self, "hass") and self.hass is not None:
@@ -341,14 +308,10 @@ class GreenButtonSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity)
             )
 
 
-class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
+class GreenButtonCostSensor(GreenButtonStatisticsSensor):
     """A sensor for Green Button monetary cost data (total)."""
 
     _attr_device_class = SensorDeviceClass.MONETARY
-    # Set state_class to TOTAL (not TOTAL_INCREASING) for monetary sensors
-    # Monetary values can decrease (refunds, adjustments), so use TOTAL
-    # We disable recorder statistics for this entity and manually manage via async_import_statistics
-    _attr_state_class = SensorStateClass.TOTAL
     _attr_has_entity_name = True
 
     def __init__(
@@ -426,9 +389,10 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
     def extra_state_attributes(self) -> dict[str, Any]:
         meter_reading = self.coordinator.get_meter_reading_by_id(self._meter_reading_id)
         if not meter_reading:
-            return {}
+            return super().extra_state_attributes
 
         attributes = {
+            **super().extra_state_attributes,
             "meter_reading_id": meter_reading.id,
             "interval_blocks_count": len(meter_reading.interval_blocks),
         }
@@ -446,10 +410,6 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
         return attributes
 
     @property
-    def long_term_statistics_id(self) -> str:
-        return self.entity_id
-
-    @property
     def name(self) -> str:
         """Return the entity name (delegates to parent SensorEntity for automatic composition)."""
         return super().name  # type: ignore[misc]
@@ -459,31 +419,21 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
         return self._attr_native_unit_of_measurement or "CAD"
 
     async def async_added_to_hass(self) -> None:
-        """When entity is added to hass, trigger statistics generation without updating sensor state.
-
-        See GreenButtonSensor.async_added_to_hass() for detailed explanation.
-        We avoid calling async_write_ha_state() to prevent HA's automatic statistics
-        compilation from generating corrupted records.
-        """
+        """Initialize the display sensor and schedule imported statistics."""
         await super().async_added_to_hass()
 
         _LOGGER.debug(
-            "Cost Sensor %s: Entity added to Home Assistant (NOT writing state to avoid recorder auto-statistics)",
+            "Cost Sensor %s: Entity added to Home Assistant (preparing imported statistics)",
             self.entity_id,
         )
 
-        # DO NOT call async_write_ha_state() - see GreenButtonSensor docstring
 
-        # Don't generate statistics during bootstrap - rely on _handle_coordinator_update
-        # which will be called after bootstrap completes
-        # This prevents "Setup timed out for bootstrap" warnings
 
         # Kick off a statistics update if data already exists (e.g., after import)
         if self.coordinator.data and self.coordinator.data.get("usage_points"):
             self._handle_coordinator_update()
 
     def _handle_coordinator_update(self) -> None:
-        # DO NOT call super()._handle_coordinator_update()! (See GreenButtonSensor for explanation)
 
         if self.coordinator.data and "usage_points" in self.coordinator.data:
             usage_points = self.coordinator.data["usage_points"]
@@ -495,42 +445,7 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
                         )
 
     async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
-        """
-        Update the sensor's displayed value and long-term cost statistics from a MeterReading.
-
-        This coroutine computes the total cost from the provided MeterReading and updates
-        the sensor instance attributes accordingly, without calling async_write_ha_state().
-        It also triggers updating of Home Assistant's long-term statistics (cost statistics)
-        when a Home Assistant instance is available on the sensor.
-
-        Behavior:
-        - Iterates all interval_blocks and their interval_readings in meter_reading.
-        - For each interval_reading, reads the "cost" attribute (treating missing or None as 0)
-            and scales it by the reading_type.power_of_ten_multiplier (10 ** power_of_ten_multiplier).
-        - Sums the scaled costs to produce total_cost.
-        - If meter_reading.reading_type.currency is present, sets the sensor's
-            _attr_native_unit_of_measurement to that currency.
-        - Sets the sensor's _attr_native_value to float(total_cost).
-        - Does NOT call async_write_ha_state() here — the caller is responsible for writing state
-            to Home Assistant if needed.
-        - If the sensor has a non-None hass attribute, calls statistics.update_cost_statistics(...)
-            with statistics.CostDataExtractor() to refresh long-term statistics.
-
-        Parameters:
-        - meter_reading (model.MeterReading): Meter reading data containing interval_blocks,
-            interval_readings, and reading_type metadata (including currency and power_of_ten_multiplier).
-
-        Returns:
-        - None
-
-        Notes:
-        - This is an async function and must be awaited.
-        - Side effects: mutates sensor instance attributes:
-                - _attr_native_unit_of_measurement (may be set to currency)
-                - _attr_native_value (set to computed total cost as float)
-            and may update Home Assistant long-term statistics.
-        - Designed to be called from within Home Assistant's async context.
-        """
+        """Update cached values and schedule historical statistics."""
         # Update state
         total_cost = 0.0
         for interval_block in meter_reading.interval_blocks:
@@ -546,8 +461,6 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
 
         self._attr_native_value = float(total_cost)
 
-        # NOTE: Do NOT call async_write_ha_state() here!
-        # See explanation in GreenButtonSensor class above.
 
         # Update long-term statistics (run in background to not block startup)
         if hasattr(self, "hass") and self.hass is not None:
@@ -586,14 +499,10 @@ class GreenButtonCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnt
             )
 
 
-class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
-    """Gas consumption sensor (m³, total increasing)."""
+class GreenButtonGasSensor(GreenButtonStatisticsSensor):
+    """Display imported gas consumption in m³."""
 
     _attr_device_class = SensorDeviceClass.GAS
-    # We set state_class to satisfy HA's validation (prevents "fix issue" warnings)
-    # but we return None from native_value so there's no state history for HA
-    # to auto-compile. We manually import statistics via async_import_statistics().
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = "m³"
     _attr_has_entity_name = True
 
@@ -618,19 +527,8 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
 
     @property
     def native_value(self) -> float:
-        """Return the last imported statistics sum value.
-        
-        Returns the cached value from the last statistics import. This prevents
-        Energy Dashboard from showing "Entity unavailable" warnings while still
-        avoiding automatic statistics compilation (since we don't write states on updates).
-        
-        The state only updates when statistics are manually imported.
-        """
+        """Return the cached total for display."""
         return self._cached_native_value
-
-    @property
-    def long_term_statistics_id(self) -> str:
-        return self.entity_id
 
     @property
     def name(self) -> str:
@@ -642,30 +540,20 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
         return self._attr_native_unit_of_measurement or "m³"
 
     async def async_added_to_hass(self) -> None:
-        """When entity is added to hass, trigger statistics generation without updating sensor state.
-        
-        See GreenButtonSensor.async_added_to_hass() for detailed explanation.
-        We avoid calling async_write_ha_state() to prevent HA's automatic statistics
-        compilation from generating corrupted records.
-        """
+        """Initialize the display sensor and schedule imported statistics."""
         await super().async_added_to_hass()
 
         _LOGGER.debug(
-            "Gas Sensor %s: Entity added to Home Assistant (NOT writing state to avoid recorder auto-statistics)",
+            "Gas Sensor %s: Entity added to Home Assistant (preparing imported statistics)",
             self.entity_id,
         )
 
-        # DO NOT call async_write_ha_state() - see GreenButtonSensor docstring
 
         # Kick off a statistics update if data already exists (e.g., after import)
         if self.coordinator.data and self.coordinator.data.get("usage_points"):
             self._handle_coordinator_update()
 
     def _handle_coordinator_update(self) -> None:
-        # DO NOT call super()._handle_coordinator_update()!
-        # That would call async_write_ha_state(), which triggers HA's Recorder
-        # to auto-generate statistics using the cumulative sensor value.
-        # We manually manage statistics via async_import_statistics().
 
         if self.coordinator.data and "usage_points" in self.coordinator.data:
             # Try to find as meter reading first
@@ -690,53 +578,7 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
                         )
                         break
     async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
-        """
-        Asynchronously update the sensor's native value from a MeterReading and import
-        gas usage statistics for the entity.
-
-        This coroutine computes the total measured value by iterating over
-        meter_reading.interval_blocks and summing each interval_reading.value scaled by
-        its reading_type.power_of_ten_multiplier (value * 10**power_of_ten_multiplier).
-        The computed total is stored on the entity as self._attr_native_value. This
-        function intentionally does not call async_write_ha_state(); the caller is
-        responsible for writing the entity state to Home Assistant.
-
-        After updating the sensor value, the function retrieves usage summaries for the
-        current meter reading from the coordinator and determines the gas usage
-        allocation mode from the config entry (options first, then data, falling back
-        to "daily_readings"). It then awaits statistics.update_gas_statistics to import
-        or update Home Assistant statistics for this entity.
-
-        Parameters
-        ----------
-        meter_reading : model.MeterReading
-            The Green Button MeterReading object containing interval_blocks and
-            interval_readings used to compute the total consumption for this sensor.
-
-        Returns
-        -------
-        None
-
-        Side effects
-        ------------
-        - Mutates self._attr_native_value with the computed total.
-        - Calls coordinator.get_usage_summaries_for_meter_reading(...) and may access
-          coordinator.config_entry to determine allocation mode.
-        - Awaits statistics.update_gas_statistics(...), which updates Home Assistant's
-          recorded statistics for this entity.
-
-        Raises
-        ------
-        Any exception raised by coordinator methods or statistics.update_gas_statistics
-        is propagated to the caller.
-
-        Notes
-        -----
-        - This is an async coroutine and must be awaited or scheduled on the Home
-          Assistant event loop.
-        - Do NOT call async_write_ha_state() inside this method; that is handled
-          elsewhere by the integration.
-        """
+        """Update cached values and schedule historical statistics."""
         # Update entity state
         total = 0.0
         for block in meter_reading.interval_blocks:
@@ -744,8 +586,6 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
                 total += float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
         self._attr_native_value = total
 
-        # NOTE: Do NOT call async_write_ha_state() here!
-        # See explanation in GreenButtonSensor class above.
 
         # Import gas m³ statistics per selected allocation mode
         summaries = self.coordinator.get_usage_summaries_for_meter_reading(self._meter_reading_id)
@@ -808,8 +648,6 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
         total = sum(us.consumption_m3 or 0.0 for us in usage_point.usage_summaries)
         self._attr_native_value = total if total > 0 else 0.0
 
-        # NOTE: Do NOT call async_write_ha_state() here!
-        # See explanation in GreenButtonSensor class above.
 
         # Import gas statistics in monthly_increment mode (UsageSummaries only)
         # Run in background to not block startup
@@ -873,14 +711,10 @@ class GreenButtonGasSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEnti
             )
 
 
-class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
+class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
     """Gas cost sensor (monetary total) using UsageSummary pro-rated per day."""
 
     _attr_device_class = SensorDeviceClass.MONETARY
-    # Set state_class to TOTAL (not TOTAL_INCREASING) for monetary sensors
-    # Monetary values can decrease (refunds, adjustments), so use TOTAL
-    # We disable recorder statistics for this entity and manually manage via async_import_statistics
-    _attr_state_class = SensorStateClass.TOTAL
     _attr_has_entity_name = True
 
     def __init__(self, coordinator: GreenButtonCoordinator, meter_reading_id: str) -> None:
@@ -911,10 +745,6 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
         return float(sum(us.total_cost for us in summaries))
 
     @property
-    def long_term_statistics_id(self) -> str:
-        return self.entity_id
-
-    @property
     def name(self) -> str:
         """Return the entity name (delegates to parent SensorEntity for automatic composition)."""
         return super().name  # type: ignore[misc]
@@ -924,30 +754,20 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
         return self._attr_native_unit_of_measurement or "CAD"
 
     async def async_added_to_hass(self) -> None:
-        """When entity is added to hass, trigger statistics generation without updating sensor state.
-        
-        See GreenButtonSensor.async_added_to_hass() for detailed explanation.
-        We avoid calling async_write_ha_state() to prevent HA's automatic statistics
-        compilation from generating corrupted records.
-        """
+        """Initialize the display sensor and schedule imported statistics."""
         await super().async_added_to_hass()
 
         _LOGGER.debug(
-            "Gas Cost Sensor %s: Entity added to Home Assistant (NOT writing state to avoid recorder auto-statistics)",
+            "Gas Cost Sensor %s: Entity added to Home Assistant (preparing imported statistics)",
             self.entity_id,
         )
 
-        # DO NOT call async_write_ha_state() - see GreenButtonSensor docstring
 
         # Kick off a statistics update if data already exists (e.g., after import)
         if self.coordinator.data and self.coordinator.data.get("usage_points"):
             self._handle_coordinator_update()
 
     def _handle_coordinator_update(self) -> None:
-        # DO NOT call super()._handle_coordinator_update()!
-        # That would call async_write_ha_state(), which triggers HA's Recorder
-        # to auto-generate statistics using the cumulative sensor value.
-        # We manually manage statistics via async_import_statistics().
 
         if self.coordinator.data and "usage_points" in self.coordinator.data:
             # Try to find as meter reading first
@@ -976,8 +796,6 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
         # Update state
         self._attr_native_value = self.native_value
 
-        # NOTE: Do NOT call async_write_ha_state() here!
-        # See explanation in GreenButtonSensor class above.
 
         # Update long-term statistics with pro-rated daily cost
         # Run in background to not block startup
@@ -1034,8 +852,6 @@ class GreenButtonGasCostSensor(CoordinatorEntity[GreenButtonCoordinator], Sensor
         total = sum(us.total_cost for us in usage_point.usage_summaries)
         self._attr_native_value = total if total > 0 else 0.0
 
-        # NOTE: Do NOT call async_write_ha_state() here!
-        # See explanation in GreenButtonSensor class above.
 
         # Import gas cost statistics
         allocation_mode = (

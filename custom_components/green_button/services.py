@@ -7,20 +7,23 @@ from pathlib import Path
 
 import voluptuous as vol
 
+from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
-from homeassistant.exceptions import HomeAssistantError
-from homeassistant.components.sensor import SensorDeviceClass
-from .parsers import espi
-from .xml_storage import async_get_xml_storage
+from homeassistant.helpers.service import async_register_admin_service
+
 from . import statistics
 from .const import (
-    DOMAIN,
     CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
     CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER,
+    DOMAIN,
 )
 from .coordinator import GreenButtonCoordinator
+from .parsers import espi
+from .statistic_ids import statistic_id_from_unique_id
+from .xml_storage import async_get_xml_storage
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -287,8 +290,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
         if entity_entry.platform != DOMAIN:
             msg = f"Entity {statistic_id} is not a Green Button entity (platform: {entity_entry.platform})"
-            _LOGGER.warning(msg)
-            # Allow it anyway, but warn the user
+            raise HomeAssistantError(msg)
+
+        statistic_id = statistic_id_from_unique_id(entity_entry.unique_id)
 
         try:
             await statistics.clear_statistic(hass, statistic_id)
@@ -546,20 +550,21 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     # Create a mock entity object for statistics
                     class MockGasCostEntity:
                         """Mock entity for gas cost statistics recalculation."""
-                        def __init__(self, entity_id: str, name: str, unit: str):
+                        def __init__(self, entity_id: str, name: str, unit: str, unique_id: str):
                             self.entity_id = entity_id
+                            self._statistic_id = statistic_id_from_unique_id(unique_id)
                             self.name = name
                             self._attr_native_unit_of_measurement = unit
 
                         @property
                         def long_term_statistics_id(self) -> str:
-                            return self.entity_id
+                            return self._statistic_id
 
                         @property
                         def native_unit_of_measurement(self) -> str:
                             return self._attr_native_unit_of_measurement
 
-                    mock_entity = MockGasCostEntity(entity_id, entity_state.name or "Gas Cost", "CAD")
+                    mock_entity = MockGasCostEntity(entity_id, entity_state.name or "Gas Cost", "CAD", unique_id)
 
                     try:
                         cost_allocation_mode = (
@@ -649,20 +654,21 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     # Create a mock entity object for statistics
                     class MockElectricityCostEntity:
                         """Mock entity for electricity cost statistics recalculation."""
-                        def __init__(self, entity_id: str, name: str, unit: str):
+                        def __init__(self, entity_id: str, name: str, unit: str, unique_id: str):
                             self.entity_id = entity_id
+                            self._statistic_id = statistic_id_from_unique_id(unique_id)
                             self.name = name
                             self._attr_native_unit_of_measurement = unit
 
                         @property
                         def long_term_statistics_id(self) -> str:
-                            return self.entity_id
+                            return self._statistic_id
 
                         @property
                         def native_unit_of_measurement(self) -> str:
                             return self._attr_native_unit_of_measurement
 
-                    mock_entity = MockElectricityCostEntity(entity_id, entity_state.name or "Electricity Cost", "CAD")
+                    mock_entity = MockElectricityCostEntity(entity_id, entity_state.name or "Electricity Cost", "CAD", unique_id)
 
                     try:
                         # Process all meter readings for this entity
@@ -702,7 +708,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             schema=IMPORT_ESPI_XML_SCHEMA,
         )
 
-        hass.services.async_register(
+        async_register_admin_service(
+            hass,
             DOMAIN,
             SERVICE_DELETE_STATISTICS,
             delete_statistics_service,
