@@ -8,6 +8,7 @@ from pathlib import Path
 import voluptuous as vol
 
 from homeassistant.components.sensor import SensorDeviceClass
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
@@ -36,8 +37,11 @@ SERVICE_LOG_STORED_XMLS = "log_stored_xmls"
 SERVICE_CLEAR_STORED_XML = "clear_stored_xml"
 SERVICE_RECALCULATE_COST_STATISTICS = "recalculate_cost_statistics"
 
+CONF_CONFIG_ENTRY_ID = "config_entry_id"
+
 IMPORT_ESPI_XML_SCHEMA = vol.Schema(
     {
+        vol.Required(CONF_CONFIG_ENTRY_ID): cv.string,
         vol.Optional("xml_file_path"): cv.string,
         vol.Optional("xml"): cv.string,
     }
@@ -45,18 +49,21 @@ IMPORT_ESPI_XML_SCHEMA = vol.Schema(
 
 DELETE_STATISTICS_SCHEMA = vol.Schema(
     {
+        vol.Required(CONF_CONFIG_ENTRY_ID): cv.string,
         vol.Required("statistic_id"): cv.entity_id,
     }
 )
 
 CLEAR_STORED_XML_SCHEMA = vol.Schema(
     {
+        vol.Required(CONF_CONFIG_ENTRY_ID): cv.string,
         vol.Optional("commodity"): vol.In(["electricity", "gas"]),
     }
 )
 
 RECALCULATE_COST_STATISTICS_SCHEMA = vol.Schema(
     {
+        vol.Required(CONF_CONFIG_ENTRY_ID): cv.string,
         vol.Optional("commodity"): vol.In(["electricity", "gas", "both"]),
     }
 )
@@ -68,11 +75,20 @@ def _read_file_sync(file_path: Path) -> str:
 
 
 async def async_setup_services(hass: HomeAssistant) -> None:
+    def _config_entry(call: ServiceCall) -> ConfigEntry:
+        """Return the Green Button entry explicitly selected by a service call."""
+        entry_id = call.data[CONF_CONFIG_ENTRY_ID]
+        entry = hass.config_entries.async_get_entry(entry_id)
+        if entry is None or entry.domain != DOMAIN:
+            raise HomeAssistantError(
+                f"Config entry {entry_id} is not a Green Button entry"
+            )
+        return entry
+
     async def log_meter_reading_intervals_service(call: ServiceCall) -> None:
         """Log all meter readings, their interval block date ranges, and mapped sensor entities."""
         entity_registry = async_get_entity_registry(hass)
-        entries = list(hass.config_entries.async_entries(DOMAIN))
-        for entry in entries:
+        for entry in [_config_entry(call)]:
             coordinator: GreenButtonCoordinator | None = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("coordinator")
             if not coordinator or not coordinator.data:
                 _LOGGER.info("Entry %s: No coordinator or data available.", entry.entry_id)
@@ -104,8 +120,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     async def log_stored_xmls_service(call: ServiceCall) -> None:
         """Log information about stored XMLs in storage files."""
 
-        entries = list(hass.config_entries.async_entries(DOMAIN))
-        for entry in entries:
+        for entry in [_config_entry(call)]:
             _LOGGER.info("=" * 60)
             _LOGGER.info("Config Entry: %s (entry_id: %s)", entry.title, entry.entry_id)
 
@@ -212,6 +227,15 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 resolved_path = xml_path_obj
                 _LOGGER.debug("Using absolute path: %s", resolved_path)
 
+            path_is_allowed = await hass.async_add_executor_job(
+                hass.config.is_allowed_path, str(resolved_path)
+            )
+            if not path_is_allowed:
+                raise HomeAssistantError(
+                    "XML file path is not allowed; use the Home Assistant config "
+                    "directory or add its directory to allowlist_external_dirs"
+                )
+
             # Check if file exists using async executor to avoid blocking I/O
             file_exists = await hass.async_add_executor_job(resolved_path.is_file)
             if not file_exists:
@@ -234,15 +258,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             _LOGGER.info("Importing ESPI XML data via service from provided XML content")
 
         try:
-            # Get all Green Button config entries
-            entries = list(hass.config_entries.async_entries(DOMAIN))
-
-            if not entries:
-                _LOGGER.warning("No Green Button integrations found")
-                return
-
-            # Process the XML data for each entry
-            for entry in entries:
+            # Process the XML data for the explicitly selected entry only.
+            for entry in [_config_entry(call)]:
                 coordinator_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
                 coordinator: GreenButtonCoordinator | None = coordinator_data.get(
                     "coordinator"
@@ -282,6 +299,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     async def delete_statistics_service(call: ServiceCall) -> None:
         """Handle the delete_statistics service call."""
         statistic_id = call.data["statistic_id"]
+        config_entry = _config_entry(call)
 
         _LOGGER.info("Deleting statistics for ID: %s", statistic_id)
 
@@ -298,6 +316,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             msg = f"Entity {statistic_id} is not a Green Button entity (platform: {entity_entry.platform})"
             raise HomeAssistantError(msg)
 
+        if entity_entry.config_entry_id != config_entry.entry_id:
+            raise HomeAssistantError(
+                f"Entity {statistic_id} does not belong to config entry "
+                f"{config_entry.entry_id}"
+            )
+
         statistic_id = statistic_id_from_unique_id(entity_entry.unique_id)
 
         try:
@@ -313,13 +337,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         # commodity maps directly to label (electricity or gas)
         label_to_clear = call.data.get("commodity")
 
-        entries = list(hass.config_entries.async_entries(DOMAIN))
-
-        if not entries:
-            _LOGGER.warning("No Green Button integrations found")
-            return
-
-        for entry in entries:
+        for entry in [_config_entry(call)]:
             # Use new separate storage file
             xml_storage = await async_get_xml_storage(hass, entry.entry_id)
             removed_count, remaining_count = await xml_storage.async_clear_label(label_to_clear)
@@ -353,15 +371,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
         _LOGGER.info("Recalculating cost statistics for commodity: %s", commodity)
 
-        entries = list(hass.config_entries.async_entries(DOMAIN))
-
-        if not entries:
-            _LOGGER.warning("No Green Button integrations found")
-            return
-
         recalculated_count = 0
 
-        for entry in entries:
+        for entry in [_config_entry(call)]:
             coordinator_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
             coordinator: GreenButtonCoordinator | None = coordinator_data.get("coordinator")
 
@@ -624,7 +636,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     # Register services
     try:
-        hass.services.async_register(
+        async_register_admin_service(
+            hass,
             DOMAIN,
             SERVICE_IMPORT_ESPI_XML,
             import_espi_xml_service,
@@ -643,22 +656,26 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             DOMAIN,
             SERVICE_LOG_METER_READING_INTERVALS,
             log_meter_reading_intervals_service,
+            schema=vol.Schema({vol.Required(CONF_CONFIG_ENTRY_ID): cv.string}),
         )
 
         hass.services.async_register(
             DOMAIN,
             SERVICE_LOG_STORED_XMLS,
             log_stored_xmls_service,
+            schema=vol.Schema({vol.Required(CONF_CONFIG_ENTRY_ID): cv.string}),
         )
 
-        hass.services.async_register(
+        async_register_admin_service(
+            hass,
             DOMAIN,
             SERVICE_CLEAR_STORED_XML,
             clear_stored_xml_service,
             schema=CLEAR_STORED_XML_SCHEMA,
         )
 
-        hass.services.async_register(
+        async_register_admin_service(
+            hass,
             DOMAIN,
             SERVICE_RECALCULATE_COST_STATISTICS,
             recalculate_cost_statistics_service,
