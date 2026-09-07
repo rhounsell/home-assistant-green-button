@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
+from . import statistics
 from .const import DOMAIN
 from .coordinator import GreenButtonCoordinator
 from .services import async_setup_services, async_unload_services
@@ -83,6 +84,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
+        await statistics.async_cancel_statistics_tasks(hass, entry.entry_id)
+
         # Clean up coordinator
         hass.data[DOMAIN].pop(entry.entry_id, None)
 
