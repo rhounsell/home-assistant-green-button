@@ -35,6 +35,8 @@ def interval_cost(
     reading: model.IntervalReading, fallback_multiplier: int
 ) -> decimal.Decimal:
     """Scale a raw interval cost using its ReadingType multiplier."""
+    if reading.cost is None:
+        raise ValueError("Interval cost is missing")
     multiplier = resolve_multiplier(
         reading.reading_type.power_of_ten_multiplier, fallback_multiplier
     )
@@ -45,6 +47,8 @@ def usage_summary_cost(
     summary: model.UsageSummary, fallback_multiplier: int
 ) -> decimal.Decimal:
     """Scale a raw usage-summary cost using its declared multiplier."""
+    if summary.total_cost is None:
+        raise ValueError("Usage summary cost is missing")
     multiplier = resolve_multiplier(
         summary.power_of_ten_multiplier, fallback_multiplier
     )

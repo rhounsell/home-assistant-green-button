@@ -699,13 +699,7 @@ def _convert_to_kwh(value: float, source_unit: Any) -> float:
     elif source_unit == UnitOfEnergy.MEGA_WATT_HOUR or unit_str in {"megawatt-hour", "mwh"}:
         # Convert MWh to kWh
         return value * 1000.0
-    else:
-        # Unknown unit, assume it's already in the correct unit
-        _LOGGER.warning(
-            "Unknown energy unit '%s', assuming value is already in kWh",
-            source_unit,
-        )
-        return value
+    raise ValueError(f"Unsupported energy unit: {source_unit!r}")
 
 
 class _StatsDao:

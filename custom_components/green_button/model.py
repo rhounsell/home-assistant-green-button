@@ -6,11 +6,10 @@ North American Energy Standards Board.
 
 from __future__ import annotations
 
+from collections.abc import Collection, Sequence
 import dataclasses
 import datetime
 import functools
-from collections.abc import Collection
-from collections.abc import Sequence
 from typing import final
 
 from homeassistant.components import sensor
@@ -23,7 +22,7 @@ class IntervalReading:
     """An object representing a specific meter reading over some time interval."""
 
     reading_type: ReadingType
-    cost: int
+    cost: int | None
     start: datetime.datetime
     duration: datetime.timedelta
     value: int
@@ -112,7 +111,7 @@ class UsageSummary:
     id: str
     start: datetime.datetime
     duration: datetime.timedelta
-    total_cost: float
+    total_cost: float | None
     currency: str
     # Optional total consumption for the billing period in m³ (if provided)
     consumption_m3: float | None = None

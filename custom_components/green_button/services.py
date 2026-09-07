@@ -257,11 +257,15 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 # Always store in config entry for persistence across restarts
                 _LOGGER.info("[SERVICE IMPORT] Importing XML data for entry %s (size: %d bytes)", 
                             entry.entry_id, len(xml_data))
-                await coordinator.async_add_xml_data(xml_data, store_in_config=True)
+                report = await coordinator.async_add_xml_data(
+                    xml_data, store_in_config=True
+                )
 
                 _LOGGER.info(
-                    "[SERVICE IMPORT] Updated coordinator and refreshed entities for entry %s",
+                    "[SERVICE IMPORT] Entry %s accepted %d interval readings and skipped %d",
                     entry.entry_id,
+                    report.accepted_readings,
+                    report.skipped_readings,
                 )
 
                 # No direct entity lookup or warning needed; coordinator update will notify all entities
