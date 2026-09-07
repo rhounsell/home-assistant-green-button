@@ -680,19 +680,25 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             meter_readings.extend(usage_point.meter_readings)
         return meter_readings
 
-    def get_usage_summaries_for_meter_reading(self, meter_reading_id: str) -> list[model.UsageSummary]:
+    def get_usage_summaries_for_meter_reading(
+        self, meter_reading_id: str, usage_point_id: str | None = None
+    ) -> list[model.UsageSummary]:
         """Get usage summaries for the usage point that owns the meter reading."""
         for usage_point in self.usage_points:
+            if usage_point_id is not None and usage_point.id != usage_point_id:
+                continue
             for meter_reading in usage_point.meter_readings:
                 if meter_reading.id == meter_reading_id:
                     return list(getattr(usage_point, "usage_summaries", []) or [])
         return []
 
     def get_meter_reading_by_id(
-        self, meter_reading_id: str
+        self, meter_reading_id: str, usage_point_id: str | None = None
     ) -> model.MeterReading | None:
         """Get a specific meter reading by ID."""
         for usage_point in self.usage_points:
+            if usage_point_id is not None and usage_point.id != usage_point_id:
+                continue
             for meter_reading in usage_point.meter_readings:
                 if meter_reading.id == meter_reading_id:
                     return meter_reading
