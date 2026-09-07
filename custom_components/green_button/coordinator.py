@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import logging
+from bisect import bisect_left
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass
@@ -373,7 +375,10 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Merge new usage points with existing ones, combining interval blocks."""
         if not self.usage_points:
             # No existing data, just use new data
-            self.usage_points = new_usage_points
+            self.usage_points = [
+                self._normalize_usage_point(usage_point)
+                for usage_point in new_usage_points
+            ]
             _LOGGER.info("[MERGE] No existing usage points, using new data only.")
             for up in new_usage_points:
                 for mr in up.meter_readings:
@@ -430,7 +435,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             else:
                 # Add new usage point
-                self.usage_points.append(new_up)
+                self.usage_points.append(self._normalize_usage_point(new_up))
                 _LOGGER.info(
                     "[MERGE] Added new usage point %s: %d meter readings, %d usage summaries",
                     new_up.id,
@@ -443,97 +448,197 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         existing_up: model.UsagePoint,
         new_meter_readings: list[model.MeterReading],
     ) -> list[model.MeterReading]:
-        """Merge new meter readings with existing ones in a usage point."""
-        # Since objects are immutable, we need to rebuild everything
+        """Merge new meter readings by their individual intervals."""
         existing_mr_map = {mr.id: mr for mr in existing_up.meter_readings}
-        merged_meter_readings = []
+        new_mr_map = {mr.id: mr for mr in new_meter_readings}
+        merged_meter_readings: list[model.MeterReading] = []
 
-        # Process existing meter readings
         for existing_mr in existing_up.meter_readings:
-            # Check if this meter reading has new data to merge
-            matching_new_mr = None
-            for new_mr in new_meter_readings:
-                if new_mr.id == existing_mr.id:
-                    matching_new_mr = new_mr
-                    break
-
-            if matching_new_mr:
-                # Merge interval blocks, avoiding duplicates by time period
-                existing_blocks = {
-                    (ib.start, ib.duration): ib for ib in existing_mr.interval_blocks
-                }
-                merged_blocks = list(existing_mr.interval_blocks)
-                new_blocks_added = 0
-
-                for new_block in matching_new_mr.interval_blocks:
-                    block_key = (new_block.start, new_block.duration)
-                    if block_key not in existing_blocks:
-                        merged_blocks.append(new_block)
-                        new_blocks_added += 1
-                        # Log interval block date range for merged block
-                        if new_block.interval_readings:
-                            start = new_block.interval_readings[0].start
-                            end = new_block.interval_readings[-1].end
-                            _LOGGER.debug(
-                                "[MERGE] MeterReading %s: Merged IntervalBlock %s - %s (%d readings)",
-                                existing_mr.id,
-                                start,
-                                end,
-                                len(new_block.interval_readings),
-                            )
-                        else:
-                            _LOGGER.debug(
-                                "[MERGE] MeterReading %s: Merged IntervalBlock with no readings",
-                                existing_mr.id,
-                            )
-
-                if new_blocks_added > 0:
-                    # Sort blocks by start time to maintain chronological order
-                    merged_blocks.sort(key=lambda block: block.start)
-                    # Create new meter reading with merged blocks
-                    merged_mr = dataclasses.replace(
-                        existing_mr, interval_blocks=merged_blocks
-                    )
-                    merged_meter_readings.append(merged_mr)
-                    _LOGGER.info(
-                        "Merged %d new interval blocks into meter reading %s",
-                        new_blocks_added,
+            matching_new_mr = new_mr_map.get(existing_mr.id)
+            if matching_new_mr is None:
+                merged_meter_readings.append(
+                    self._normalize_meter_reading(existing_mr)
+                )
+            else:
+                merged_mr, replaced, rejected = self._reconcile_meter_reading(
+                    existing_mr, matching_new_mr
+                )
+                merged_meter_readings.append(merged_mr)
+                if rejected:
+                    _LOGGER.warning(
+                        "[MERGE] Reconciled meter reading %s: %d interval replacements, %d ambiguous overlaps rejected",
                         existing_mr.id,
+                        replaced,
+                        rejected,
                     )
                 else:
-                    # No new blocks, keep existing
-                    merged_meter_readings.append(existing_mr)
-            else:
-                # No matching new data, keep existing
-                merged_meter_readings.append(existing_mr)
+                    _LOGGER.info(
+                        "[MERGE] Reconciled meter reading %s: %d interval replacements",
+                        existing_mr.id,
+                        replaced,
+                    )
 
-        # Add completely new meter readings (not in existing)
         for new_mr in new_meter_readings:
             if new_mr.id not in existing_mr_map:
-                merged_meter_readings.append(new_mr)
+                merged_meter_readings.append(self._normalize_meter_reading(new_mr))
                 _LOGGER.info(
-                    "[MERGE] Added new meter reading: %s to usage point %s",
+                    "[MERGE] Added meter reading: %s to usage point %s",
                     new_mr.id,
                     existing_up.id,
                 )
-                for ib in new_mr.interval_blocks:
-                    if ib.interval_readings:
-                        start = ib.interval_readings[0].start
-                        end = ib.interval_readings[-1].end
-                        _LOGGER.debug(
-                            "[MERGE] MeterReading %s: Added IntervalBlock %s - %s (%d readings)",
-                            new_mr.id,
-                            start,
-                            end,
-                            len(ib.interval_readings),
-                        )
-                    else:
-                        _LOGGER.debug(
-                            "[MERGE] MeterReading %s: Added IntervalBlock with no readings",
-                            new_mr.id,
-                        )
 
         return merged_meter_readings
+
+    def _normalize_usage_point(
+        self, usage_point: model.UsagePoint
+    ) -> model.UsagePoint:
+        """Normalize interval data in a newly discovered usage point."""
+        return dataclasses.replace(
+            usage_point,
+            meter_readings=[
+                self._normalize_meter_reading(meter_reading)
+                for meter_reading in usage_point.meter_readings
+            ],
+        )
+
+    def _normalize_meter_reading(
+        self, meter_reading: model.MeterReading
+    ) -> model.MeterReading:
+        """Normalize duplicate or overlapping intervals in one source."""
+        normalized, _, rejected = self._reconcile_meter_reading(None, meter_reading)
+        if rejected:
+            _LOGGER.warning(
+                "[MERGE] Meter reading %s contains %d ambiguous overlapping intervals; retaining the first intervals",
+                meter_reading.id,
+                rejected,
+            )
+        return normalized
+
+    def _reconcile_meter_reading(
+        self,
+        existing_mr: model.MeterReading | None,
+        new_mr: model.MeterReading,
+    ) -> tuple[model.MeterReading, int, int]:
+        """Apply latest-import precedence to identical intervals."""
+        existing_records = (
+            self._interval_records(existing_mr) if existing_mr is not None else []
+        )
+        new_records = self._interval_records(new_mr)
+        existing_by_key = {
+            self._interval_key(reading): (reading, block_id)
+            for reading, block_id in existing_records
+        }
+        new_by_key = {
+            self._interval_key(reading): (reading, block_id)
+            for reading, block_id in new_records
+        }
+        replacement_keys = existing_by_key.keys() & new_by_key.keys()
+        retained_existing = [
+            record
+            for key, record in existing_by_key.items()
+            if key not in replacement_keys
+        ]
+        accepted: list[tuple[model.IntervalReading, str]] = []
+        starts = []
+        rejected = 0
+
+        for record in sorted(retained_existing, key=lambda item: item[0].start):
+            if self._insert_non_overlapping(record, accepted, starts):
+                continue
+            rejected += 1
+
+        for record in sorted(new_by_key.values(), key=lambda item: item[0].start):
+            if self._insert_non_overlapping(record, accepted, starts):
+                continue
+            rejected += 1
+
+        return (
+            dataclasses.replace(
+                new_mr,
+                interval_blocks=self._records_to_interval_blocks(accepted),
+            ),
+            len(replacement_keys),
+            rejected,
+        )
+
+    @staticmethod
+    def _interval_records(
+        meter_reading: model.MeterReading,
+    ) -> list[tuple[model.IntervalReading, str]]:
+        """Return interval readings with their source block IDs."""
+        return [
+            (reading, block.id)
+            for block in meter_reading.interval_blocks
+            for reading in block.interval_readings
+        ]
+
+    @staticmethod
+    def _interval_key(
+        reading: model.IntervalReading,
+    ) -> tuple[datetime.datetime, datetime.timedelta]:
+        """Return the identity used for an interval correction."""
+        return reading.start, reading.duration
+
+    @staticmethod
+    def _insert_non_overlapping(
+        record: tuple[model.IntervalReading, str],
+        accepted: list[tuple[model.IntervalReading, str]],
+        starts: list[datetime.datetime],
+    ) -> bool:
+        """Insert a reading unless it overlaps a different accepted interval."""
+        reading, _ = record
+        index = bisect_left(starts, reading.start)
+        for candidate_index in (index - 1, index):
+            if candidate_index < 0 or candidate_index >= len(accepted):
+                continue
+            candidate, _ = accepted[candidate_index]
+            if reading.start < candidate.end and candidate.start < reading.end:
+                return False
+        accepted.insert(index, record)
+        starts.insert(index, reading.start)
+        return True
+
+    @staticmethod
+    def _records_to_interval_blocks(
+        records: list[tuple[model.IntervalReading, str]],
+    ) -> list[model.IntervalBlock]:
+        """Build non-overlapping blocks from canonical interval readings."""
+        if not records:
+            return []
+
+        blocks: list[model.IntervalBlock] = []
+        block_records: list[model.IntervalReading] = []
+        block_id = records[0][1]
+
+        def append_block() -> None:
+            first = block_records[0]
+            last = block_records[-1]
+            blocks.append(
+                model.IntervalBlock(
+                    block_id,
+                    first.reading_type,
+                    first.start,
+                    last.end - first.start,
+                    block_records.copy(),
+                )
+            )
+
+        for reading, source_block_id in records:
+            if (
+                block_records
+                and (
+                    source_block_id != block_id
+                    or reading.reading_type != block_records[0].reading_type
+                    or reading.start != block_records[-1].end
+                )
+            ):
+                append_block()
+                block_records = []
+                block_id = source_block_id
+            block_records.append(reading)
+
+        append_block()
+        return blocks
 
     def get_meter_readings(self) -> list[model.MeterReading]:
         """Get all meter readings from usage points."""
