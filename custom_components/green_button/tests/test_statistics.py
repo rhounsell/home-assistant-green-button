@@ -5,10 +5,11 @@ PYTHONPATH=.:config uv run --no-sync pytest -p tests.conftest \
     config/custom_components/green_button/tests/test_statistics.py
 """
 
-# ruff: noqa: TID251
+# ruff: noqa: SLF001, TID251
 
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, patch
 
 from custom_components.green_button import model, statistics
 from custom_components.green_button.const import DOMAIN
@@ -37,6 +38,115 @@ from tests.components.recorder.common import (
 )
 
 HISTORICAL = datetime(2026, 7, 1, tzinfo=UTC)
+
+
+class _StatisticsEntity:
+    """Minimal entity used by pure statistics-generation tests."""
+
+    entity_id = "sensor.imported_display"
+    long_term_statistics_id = "green_button:test"
+
+
+def _partial_hour_meter(include_completion: bool) -> model.MeterReading:
+    """Create a 2.5-hour interval and an optional trailing half-hour."""
+    reading_type = model.ReadingType("type", 1, "CAD", 0, "Wh", 3600)
+    long_reading = model.IntervalReading(
+        reading_type, 250, HISTORICAL, timedelta(hours=2, minutes=30), 2500
+    )
+    blocks = [
+        model.IntervalBlock(
+            "long",
+            reading_type,
+            HISTORICAL,
+            timedelta(hours=2, minutes=30),
+            [long_reading],
+        )
+    ]
+    if include_completion:
+        completion_start = HISTORICAL + timedelta(hours=2, minutes=30)
+        completion = model.IntervalReading(
+            reading_type, 50, completion_start, timedelta(minutes=30), 500
+        )
+        blocks.append(
+            model.IntervalBlock(
+                "completion",
+                reading_type,
+                completion_start,
+                timedelta(minutes=30),
+                [completion],
+            )
+        )
+    return model.MeterReading("meter", reading_type, blocks)
+
+
+def _assert_hourly_statistics(
+    records: list[StatisticData],
+    expected_hours: int,
+) -> None:
+    """Assert complete hours receive one unit and a running cumulative sum."""
+    assert [record["start"] for record in records] == [
+        HISTORICAL + timedelta(hours=hour) for hour in range(expected_hours)
+    ]
+    assert [record["state"] for record in records] == pytest.approx(
+        [1.0] * expected_hours
+    )
+    assert [record["sum"] for record in records] == pytest.approx(
+        list(range(1, expected_hours + 1))
+    )
+
+
+async def test_energy_statistics_split_trimmed_multi_hour_intervals(
+    hass: HomeAssistant,
+) -> None:
+    """A trailing partial hour cannot move earlier energy into its last hour."""
+    entity = _StatisticsEntity()
+    with patch.object(
+        statistics, "_get_all_existing_statistics", new_callable=AsyncMock
+    ) as get_existing:
+        get_existing.return_value = []
+        initial = await statistics._generate_statistics_data(
+            hass,
+            entity,  # type: ignore[arg-type]
+            statistics.DefaultDataExtractor(),
+            _partial_hour_meter(False),
+        )
+        get_existing.return_value = initial
+        completed = await statistics._generate_statistics_data(
+            hass,
+            entity,  # type: ignore[arg-type]
+            statistics.DefaultDataExtractor(),
+            _partial_hour_meter(True),
+        )
+
+    _assert_hourly_statistics(initial, 2)
+    _assert_hourly_statistics(completed, 3)
+
+
+async def test_cost_statistics_split_trimmed_multi_hour_intervals(
+    hass: HomeAssistant,
+) -> None:
+    """A trailing partial hour cannot move earlier cost into its last hour."""
+    entity = _StatisticsEntity()
+    with patch.object(
+        statistics, "_get_all_existing_statistics", new_callable=AsyncMock
+    ) as get_existing:
+        get_existing.return_value = []
+        initial = await statistics._generate_statistics_data_cost(
+            hass,
+            entity,  # type: ignore[arg-type]
+            statistics.CostDataExtractor(-2),
+            _partial_hour_meter(False),
+        )
+        get_existing.return_value = initial
+        completed = await statistics._generate_statistics_data_cost(
+            hass,
+            entity,  # type: ignore[arg-type]
+            statistics.CostDataExtractor(-2),
+            _partial_hour_meter(True),
+        )
+
+    _assert_hourly_statistics(initial, 2)
+    _assert_hourly_statistics(completed, 3)
 
 
 async def _energy(hass: HomeAssistant, entity: GreenButtonStatisticsSensor) -> None:
