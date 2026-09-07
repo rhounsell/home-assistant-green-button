@@ -423,6 +423,8 @@ class GreenButtonCostSensor(GreenButtonStatisticsSensor):
         fallback_multiplier = _cost_multiplier(self.coordinator)
         for interval_block in meter_reading.interval_blocks:
             for interval_reading in interval_block.interval_readings:
+                if interval_reading.cost is None:
+                    return None
                 total_cost += float(
                     scaling.interval_cost(interval_reading, fallback_multiplier)
                 )
@@ -515,6 +517,9 @@ class GreenButtonCostSensor(GreenButtonStatisticsSensor):
         fallback_multiplier = _cost_multiplier(self.coordinator)
         for interval_block in meter_reading.interval_blocks:
             for interval_reading in interval_block.interval_readings:
+                if interval_reading.cost is None:
+                    self._attr_native_value = None
+                    return
                 total_cost += float(
                     scaling.interval_cost(interval_reading, fallback_multiplier)
                 )
@@ -849,6 +854,8 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
         )
         if not summaries:
             return 0.0
+        if any(summary.total_cost is None for summary in summaries):
+            return None
         self._attr_native_unit_of_measurement = summaries[0].currency
         return float(
             sum(
@@ -967,6 +974,9 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
     async def update_sensor_and_statistics_from_summaries(self, usage_point: model.UsagePoint) -> None:
         """Update sensor and statistics when only UsageSummaries are available (no MeterReadings)."""
         # Update entity state (sum of all UsageSummary total_cost values)
+        if any(us.total_cost is None for us in usage_point.usage_summaries):
+            self._attr_native_value = None
+            return
         total = sum(us.total_cost for us in usage_point.usage_summaries)
         self._attr_native_value = total if total > 0 else 0.0
 

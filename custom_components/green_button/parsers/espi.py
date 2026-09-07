@@ -1,13 +1,14 @@
 """Module containing parsers for the Energy Services Provider Interface (ESPI) Atom feed defined by the North American Energy Standards Board."""
 
+from collections.abc import Callable
+import dataclasses
 import datetime
 import logging
-from collections.abc import Callable
-from typing import Final
-from typing import TypeVar
+from typing import Final, TypeVar
 from xml.etree import ElementTree as ET
 
 from defusedxml import ElementTree as defusedET
+
 from homeassistant.components import sensor
 
 from .. import model
@@ -67,7 +68,7 @@ def _parse_child_text(elem: ET.Element, xpath: str, parser: Callable[[str], T]) 
         return parser(text)
     except ValueError as ex:
         raise EspiXmlParseError(
-            f"Invalid value {text!r} at path '{xpath}' of entry:\n{_pretty_print(elem)}"
+            f"Invalid value {text!r} at path '{xpath}': {ex}\n{_pretty_print(elem)}"
         ) from ex
     except KeyError as ex:  # For Mappings.
         raise EspiXmlParseError(
@@ -96,7 +97,7 @@ def _parse_optional_child_text(
         return parser(text)
     except ValueError as ex:
         raise EspiXmlParseError(
-            f"Invalid value {text!r} at path '{xpath}' of entry:\n{_pretty_print(elem)}"
+            f"Invalid value {text!r} at path '{xpath}': {ex}\n{_pretty_print(elem)}"
         ) from ex
     except KeyError as ex:
         raise EspiXmlParseError(
@@ -123,7 +124,27 @@ def _to_utc_datetime(timestamp: str) -> datetime.datetime:
 
 
 def _to_timedelta(duration: str) -> datetime.timedelta:
-    return datetime.timedelta(seconds=int(duration))
+    seconds = int(duration)
+    if seconds <= 0:
+        raise ValueError("duration must be positive")
+    return datetime.timedelta(seconds=seconds)
+
+
+def _to_non_negative_int(value: str) -> int:
+    """Parse a non-negative ESPI interval reading value."""
+    parsed = int(value)
+    if parsed < 0:
+        raise ValueError("value must not be negative")
+    return parsed
+
+
+@dataclasses.dataclass(frozen=True)
+class EspiParseReport:
+    """Accepted and skipped interval counts from one ESPI document."""
+
+    usage_points: list[model.UsagePoint]
+    accepted_readings: int
+    skipped_readings: int
 
 
 class GreenButtonFeed:
@@ -409,15 +430,15 @@ class EspiEntry:
         def parser(elem: ET.Element) -> model.IntervalReading:
             return model.IntervalReading(
                 reading_type=reading_type,
-                # 'cost' is optional in some feeds; default to 0 if missing
-                cost=_parse_optional_child_text(elem, "./espi:cost", int, 0),
+                # Cost is optional, but absence must not become a free interval.
+                cost=_parse_optional_child_text(elem, "./espi:cost", int, None),
                 start=_parse_child_text(
                     elem, "./espi:timePeriod/espi:start", _to_utc_datetime
                 ),
                 duration=_parse_child_text(
                     elem, "./espi:timePeriod/espi:duration", _to_timedelta
                 ),
-                value=_parse_child_text(elem, "./espi:value", int),
+                value=_parse_child_text(elem, "./espi:value", _to_non_negative_int),
             )
 
         return parser
@@ -447,6 +468,16 @@ class EspiEntry:
 
     def to_reading_type(self) -> model.ReadingType:
         """Parse this entry as a ReadingType."""
+        unit_of_measurement = self.parse_child_text("espi:uom", _UOM_MAP.__getitem__)
+        if unit_of_measurement not in {"Wh", "m³"}:
+            raise EspiXmlParseError(
+                f"Unsupported measurement unit {unit_of_measurement!r} for {self.find_self_href()}"
+            )
+        interval_length = self.parse_child_text("espi:intervalLength", int)
+        if interval_length <= 0:
+            raise EspiXmlParseError(
+                f"Interval length must be positive for {self.find_self_href()}"
+            )
         return model.ReadingType(
             id=self.find_self_href(),
             commodity=_parse_optional_child_text(
@@ -458,9 +489,9 @@ class EspiEntry:
                 int,
                 None,
             ),
-            unit_of_measurement=self.parse_child_text("espi:uom", _UOM_MAP.__getitem__),
+            unit_of_measurement=unit_of_measurement,
             currency=self.parse_child_text("espi:currency", _CURRENCY_MAP.__getitem__),
-            interval_length=self.parse_child_text("espi:intervalLength", int),
+            interval_length=interval_length,
         )
 
     def to_meter_reading(self) -> model.MeterReading:
@@ -630,14 +661,14 @@ class EspiEntry:
                         try:
                             raw = us_entry.parse_child_text("espi:billLastPeriod", float)
                             total_cost = raw
-                        except Exception:
-                            total_cost = 0.0
+                        except (EspiXmlParseError, ValueError):
+                            total_cost = None
                     usage_summaries.append(
                         model.UsageSummary(
                             id=us_entry.find_self_href(),
                             start=start,
                             duration=duration,
-                            total_cost=float(total_cost or 0.0),
+                            total_cost=total_cost,
                             currency=currency,
                             consumption_m3=consumption_m3,
                             power_of_ten_multiplier=cost_multiplier,
@@ -660,8 +691,8 @@ class EspiEntry:
         )
 
 
-def parse_xml(value: str) -> list[model.UsagePoint]:
-    """Parse an ESPI atom feed XML string."""
+def parse_xml_with_report(value: str) -> EspiParseReport:
+    """Parse an ESPI feed and report the accepted interval coverage."""
     logger = logging.getLogger(__name__)
 
     try:
@@ -716,4 +747,20 @@ def parse_xml(value: str) -> list[model.UsagePoint]:
                             first_reading.value,
                         )
 
-        return usage_points
+        accepted_readings = sum(
+            len(interval_block.interval_readings)
+            for usage_point in usage_points
+            for meter_reading in usage_point.meter_readings
+            for interval_block in meter_reading.interval_blocks
+        )
+        source_readings = len(root.findall(".//espi:IntervalReading", _NAMESPACE_MAP))
+        return EspiParseReport(
+            usage_points=usage_points,
+            accepted_readings=accepted_readings,
+            skipped_readings=max(0, source_readings - accepted_readings),
+        )
+
+
+def parse_xml(value: str) -> list[model.UsagePoint]:
+    """Parse an ESPI atom feed XML string."""
+    return parse_xml_with_report(value).usage_points

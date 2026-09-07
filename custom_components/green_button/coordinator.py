@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 import dataclasses
 import datetime
 import logging
-from bisect import bisect_left
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from .xml_storage import async_get_xml_storage
 
-from . import model
+from . import model, scaling
 from .const import (
     CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
     CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER,
@@ -23,7 +22,7 @@ from .const import (
     DOMAIN,
 )
 from .parsers import espi
-from . import scaling
+from .xml_storage import async_get_xml_storage
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,7 +58,9 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.usage_points = usage_points or []
             return {"usage_points": usage_points or []}
 
-    async def async_add_xml_data(self, xml_data: str, store_in_config: bool = True) -> None:
+    async def async_add_xml_data(
+        self, xml_data: str, store_in_config: bool = True
+    ) -> espi.EspiParseReport:
         """Add new Green Button XML data and update entities.
         
         Args:
@@ -74,10 +75,21 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         try:
             # Parse XML first to detect commodity type for auto-labeling
-            usage_points = await self.hass.async_add_executor_job(
-                espi.parse_xml, xml_data
+            report = await self.hass.async_add_executor_job(
+                espi.parse_xml_with_report, xml_data
             )
-            new_usage_points = usage_points or []
+            new_usage_points = report.usage_points
+            summary_count = sum(
+                len(usage_point.usage_summaries)
+                for usage_point in new_usage_points
+            )
+            if not report.accepted_readings and not summary_count:
+                raise ValueError("XML contains no supported interval readings or summaries")
+            _LOGGER.info(
+                "ESPI parse accepted %d interval readings and skipped %d",
+                report.accepted_readings,
+                report.skipped_readings,
+            )
 
             # Auto-detect label from commodity type
             label = self._detect_label_from_usage_points(new_usage_points)
@@ -159,6 +171,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             # Trigger statistics generation for all meter readings after import
             await self._trigger_statistics_update_for_all_readings()
+            return report
 
         except Exception as err:
             _LOGGER.error("Error adding Green Button XML data: %s", err)
