@@ -10,7 +10,7 @@ PYTHONPATH=.:config uv run --no-sync pytest -p tests.conftest \
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from custom_components.green_button import model, scaling, statistics
 from custom_components.green_button.const import DOMAIN
@@ -120,6 +120,183 @@ def test_source_multiplier_precedes_configured_cost_fallback() -> None:
     assert float(scaling.interval_cost(missing, -3)) == pytest.approx(0.8)
     assert float(scaling.usage_summary_cost(declared_summary, -5)) == pytest.approx(0.8)
     assert float(scaling.usage_summary_cost(missing_summary, -3)) == pytest.approx(0.8)
+
+
+@pytest.mark.parametrize(
+    ("time_zone", "start", "duration", "value", "expected"),
+    [
+        pytest.param(
+            "America/Toronto",
+            datetime(2026, 1, 2, 5, tzinfo=UTC),
+            timedelta(days=1),
+            24,
+            [("2026-01-02", 24.0)],
+            id="negative-utc-offset",
+        ),
+        pytest.param(
+            "Asia/Tokyo",
+            datetime(2026, 1, 1, 15, tzinfo=UTC),
+            timedelta(days=1),
+            24,
+            [("2026-01-02", 24.0)],
+            id="positive-utc-offset",
+        ),
+        pytest.param(
+            "America/Toronto",
+            datetime(2026, 1, 2, 4, tzinfo=UTC),
+            timedelta(hours=2),
+            2,
+            [("2026-01-01", 1.0), ("2026-01-02", 1.0)],
+            id="local-midnight-overlap",
+        ),
+        pytest.param(
+            "America/Toronto",
+            datetime(2026, 2, 1, 4, tzinfo=UTC),
+            timedelta(hours=2),
+            2,
+            [("2026-01-31", 1.0), ("2026-02-01", 1.0)],
+            id="month-boundary",
+        ),
+        pytest.param(
+            "America/Toronto",
+            datetime(2026, 3, 8, 5, tzinfo=UTC),
+            timedelta(hours=23),
+            23,
+            [("2026-03-08", 23.0)],
+            id="dst-short-day",
+        ),
+    ],
+)
+async def test_gas_daily_totals_use_local_dates_and_interval_overlap(
+    hass: HomeAssistant,
+    time_zone: str,
+    start: datetime,
+    duration: timedelta,
+    value: int,
+    expected: list[tuple[str, float]],
+) -> None:
+    """Gas intervals use local days and their physical duration on each day."""
+    await hass.config.async_set_time_zone(time_zone)
+    reading_type = model.ReadingType("type", 7, "CAD", 0, "m³", 3600)
+    reading = model.IntervalReading(reading_type, 0, start, duration, value)
+
+    totals = statistics._gas_daily_totals(
+        [reading], statistics._billing_timezone()
+    )
+
+    assert [day.isoformat() for day in totals] == [day for day, _ in expected]
+    assert list(totals.values()) == pytest.approx([total for _, total in expected])
+
+
+async def test_gas_cost_allocation_clips_to_billing_period_boundaries(
+    hass: HomeAssistant,
+) -> None:
+    """A partial local day receives only its physical share of the billed cost."""
+    await hass.config.async_set_time_zone("America/Toronto")
+    reading_type = model.ReadingType("type", 7, "CAD", 0, "m³", 3600)
+    reading = model.IntervalReading(
+        reading_type, 0, datetime(2026, 1, 2, 4, tzinfo=UTC), timedelta(hours=2), 2
+    )
+    meter = model.MeterReading(
+        "meter",
+        reading_type,
+        [
+            model.IntervalBlock(
+                "block", reading_type, reading.start, reading.duration, [reading]
+            )
+        ],
+    )
+    summary = model.UsageSummary(
+        "summary",
+        datetime(2026, 1, 2, 4, 30, tzinfo=UTC),
+        timedelta(hours=1),
+        100,
+        "CAD",
+        power_of_ten_multiplier=0,
+    )
+
+    with patch.object(
+        statistics, "_async_replace_statistics", new_callable=AsyncMock
+    ) as replace_statistics:
+        await statistics._async_update_gas_cost_statistics(
+            hass,
+            _StatisticsEntity(),  # type: ignore[arg-type]
+            meter,
+            [summary],
+            merge_with_existing=False,
+        )
+
+    records = replace_statistics.await_args.args[2]
+    assert [record["start"].isoformat() for record in records] == [
+        "2026-01-01T00:00:00-05:00",
+        "2026-01-02T00:00:00-05:00",
+    ]
+    assert [record["state"] for record in records] == pytest.approx([50.0, 50.0])
+
+
+async def test_summary_only_gas_cost_uses_local_billing_end_date(
+    hass: HomeAssistant,
+) -> None:
+    """Summary-only monthly cost records use the local billing end date."""
+    await hass.config.async_set_time_zone("America/Toronto")
+    summary = model.UsageSummary(
+        "summary",
+        datetime(2026, 1, 31, 5, tzinfo=UTC),
+        timedelta(days=1),
+        100,
+        "CAD",
+        power_of_ten_multiplier=0,
+    )
+
+    with patch.object(
+        statistics, "_async_replace_statistics", new_callable=AsyncMock
+    ) as replace_statistics:
+        await statistics._async_update_gas_cost_statistics(
+            hass,
+            _StatisticsEntity(),  # type: ignore[arg-type]
+            None,
+            [summary],
+            allocation_mode="monthly_increment",
+            merge_with_existing=False,
+        )
+
+    records = replace_statistics.await_args.args[2]
+    assert records[0]["start"].isoformat() == "2026-02-01T00:00:00-05:00"
+
+
+async def test_summary_only_gas_usage_uses_local_billing_end_date(
+    hass: HomeAssistant,
+) -> None:
+    """Summary-only monthly usage records use the local billing end date."""
+    await hass.config.async_set_time_zone("America/Toronto")
+    summary = model.UsageSummary(
+        "summary",
+        datetime(2026, 1, 31, 5, tzinfo=UTC),
+        timedelta(days=1),
+        0,
+        "CAD",
+        consumption_m3=10,
+    )
+    recorder = Mock()
+    recorder.async_add_executor_job = AsyncMock(return_value=None)
+
+    with (
+        patch.object(statistics.recorder_helper, "get_instance", return_value=recorder),
+        patch.object(
+            statistics, "_async_replace_statistics", new_callable=AsyncMock
+        ) as replace_statistics,
+    ):
+        await statistics._async_update_gas_statistics(
+            hass,
+            _StatisticsEntity(),  # type: ignore[arg-type]
+            None,
+            [summary],
+            allocation_mode="monthly_increment",
+        )
+
+    records = replace_statistics.await_args.args[2]
+    assert records[0]["start"].isoformat() == "2026-02-01T00:00:00-05:00"
+    assert records[0]["state"] == pytest.approx(10.0)
 
 
 async def test_energy_statistics_split_trimmed_multi_hour_intervals(

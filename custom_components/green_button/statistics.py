@@ -22,6 +22,7 @@ from homeassistant.components.recorder.models.statistics import StatisticMetaDat
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import recorder as recorder_helper
+from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import EnergyConverter, VolumeConverter
 
 from . import model, scaling
@@ -1769,6 +1770,70 @@ async def clear_statistic(hass: HomeAssistant, statistic_id: str) -> None:
 
 # -------------------- GAS (m³) DAILY STATISTICS --------------------
 
+
+def _billing_timezone() -> datetime.tzinfo:
+    """Return the configured Home Assistant timezone for billing dates."""
+    return dt_util.get_default_time_zone()
+
+
+def _local_days_in_interval(
+    start: datetime.datetime,
+    end: datetime.datetime,
+    time_zone: datetime.tzinfo,
+) -> list[datetime.date]:
+    """Return local calendar dates with physical overlap with an interval."""
+    if start >= end:
+        return []
+
+    day = start.astimezone(time_zone).date()
+    last_day = (end - datetime.timedelta(microseconds=1)).astimezone(time_zone).date()
+    days: list[datetime.date] = []
+    while day <= last_day:
+        days.append(day)
+        day += datetime.timedelta(days=1)
+    return days
+
+
+def _gas_daily_totals(
+    readings: Sequence[model.IntervalReading],
+    time_zone: datetime.tzinfo,
+    range_start: datetime.datetime | None = None,
+    range_end: datetime.datetime | None = None,
+) -> dict[datetime.date, float]:
+    """Allocate gas interval overlap across local calendar days."""
+    daily_totals: dict[datetime.date, float] = {}
+    for reading in readings:
+        total_seconds = reading.duration.total_seconds()
+        if total_seconds <= 0:
+            continue
+
+        interval_start = (
+            max(reading.start, range_start) if range_start else reading.start
+        )
+        interval_end = min(reading.end, range_end) if range_end else reading.end
+        if interval_start >= interval_end:
+            continue
+
+        cursor = interval_start
+        value = float(scaling.interval_value(reading))
+        while cursor < interval_end:
+            local_cursor = cursor.astimezone(time_zone)
+            next_local_midnight = datetime.datetime.combine(
+                local_cursor.date() + datetime.timedelta(days=1),
+                datetime.time.min,
+                tzinfo=time_zone,
+            )
+            next_boundary = next_local_midnight.astimezone(datetime.UTC)
+            segment_end = min(interval_end, next_boundary)
+            segment_seconds = (segment_end - cursor).total_seconds()
+            daily_totals[local_cursor.date()] = (
+                daily_totals.get(local_cursor.date(), 0.0)
+                + value * segment_seconds / total_seconds
+            )
+            cursor = segment_end
+
+    return daily_totals
+
 async def _generate_daily_m3_statistics(
     hass: HomeAssistant,
     entity: GreenButtonEntity,
@@ -1789,13 +1854,8 @@ async def _generate_daily_m3_statistics(
 
     # Sort readings by start
     readings.sort(key=lambda r: r.start)
-    # Expect daily intervals; compute daily totals in native m³
-    daily_totals: dict[datetime.date, float] = {}
-    for rd in readings:
-        # Apply multiplier
-        val = float(scaling.interval_value(rd))
-        day = rd.start.date()
-        daily_totals[day] = daily_totals.get(day, 0.0) + val
+    time_zone = _billing_timezone()
+    daily_totals = _gas_daily_totals(readings, time_zone)
 
     if not daily_totals:
         return []
@@ -1804,7 +1864,7 @@ async def _generate_daily_m3_statistics(
     new_statistics_data: list[StatisticData] = []
     for day in sorted(daily_totals.keys()):
         day_val = daily_totals[day]
-        start = datetime.datetime.combine(day, datetime.time.min, tzinfo=readings[0].start.tzinfo)
+        start = datetime.datetime.combine(day, datetime.time.min, tzinfo=time_zone)
         new_statistics_data.append({
             "start": start,
             "state": day_val,
@@ -1860,13 +1920,10 @@ async def _async_update_gas_statistics(
             entity.entity_id,
             len(summaries),
         )
-        # Determine tzinfo from readings if present
+        time_zone = _billing_timezone()
         if meter_reading and meter_reading.interval_blocks:
             readings = [r for b in meter_reading.interval_blocks for r in b.interval_readings]
-            tzinfo = readings[0].start.tzinfo if readings else datetime.timezone.utc
         else:
-            # No meter reading available - use UTC as default
-            tzinfo = datetime.timezone.utc
             readings = []
 
         # Build a list of billing periods from both UsageSummaries and long IntervalReadings
@@ -1925,9 +1982,14 @@ async def _async_update_gas_statistics(
         first_start: datetime.datetime | None = None
         existing_sum = 0.0
 
-        for period_start, period_end, consumption_m3, source in periods_to_process:
-            # Place the increment at 00:00 of the period end date (the day the period ends)
-            rec_start = datetime.datetime.combine(period_end.date(), datetime.time.min, tzinfo=tzinfo)
+        for period_start, period_end, consumption_m3, _source in periods_to_process:
+            # Monthly increments belong to the local billing end date, not the
+            # last covered day, even when the period ends at local midnight.
+            rec_start = datetime.datetime.combine(
+                period_end.astimezone(time_zone).date(),
+                datetime.time.min,
+                tzinfo=time_zone,
+            )
             if first_start is None:
                 first_start = rec_start
                 rec = recorder_helper.get_instance(hass)
@@ -1947,20 +2009,9 @@ async def _async_update_gas_statistics(
             period_m3 = consumption_m3
             if period_m3 is None:
                 # Fallback: sum any daily readings within this period if present
-                period_days: list[datetime.date] = []
-                day = period_start.date()
-                end_day = (period_end - datetime.timedelta(seconds=1)).date()
-                while day <= end_day:
-                    period_days.append(day)
-                    day = day + datetime.timedelta(days=1)
-                # Build a daily map from readings
-                daily_m3: dict[datetime.date, float] = {}
-                for rd in readings:
-                    d = rd.start.date()
-                    if d < period_days[0] or d > period_days[-1]:
-                        continue
-                    val = float(scaling.interval_value(rd))
-                    daily_m3[d] = daily_m3.get(d, 0.0) + val
+                daily_m3 = _gas_daily_totals(
+                    readings, time_zone, period_start, period_end
+                )
                 total = sum(daily_m3.values())
                 period_m3 = total if total > 0 else None
 
@@ -2030,9 +2081,7 @@ async def _async_update_gas_cost_statistics(
         meter_reading: MeterReading containing interval data (optional for monthly mode)
         usage_summaries: List of UsageSummary with billing totals
         allocation_mode: Either "pro_rate_daily" or "monthly_increment"
-        gas_cost_multiplier: Power of ten multiplier for gas costs (default -5)
-            Note: UsageSummary.total_cost is parsed with 10^-3, so we apply
-            10^(gas_cost_multiplier + 3) to get the final scaling.
+        gas_cost_multiplier: Fallback power-of-ten multiplier for gas costs.
         merge_with_existing: If True, merge with existing statistics. If False, regenerate all from scratch.
     """
     metadata = create_metadata(entity)
@@ -2049,19 +2098,20 @@ async def _async_update_gas_cost_statistics(
         if not usage_summaries:
             _LOGGER.info("No usage summaries for monthly gas cost on %s", entity.entity_id)
             return
-        # Determine tzinfo from readings if available; otherwise UTC
-        readings = []
-        if meter_reading:
-            readings = [r for b in meter_reading.interval_blocks for r in b.interval_readings]
-        tzinfo = readings[0].start.tzinfo if readings else datetime.timezone.utc
+        time_zone = _billing_timezone()
 
         # Build records sorted by period end
         summaries_sorted = sorted(usage_summaries, key=lambda s: s.start + s.duration)
         new_statistics_data: list[StatisticData] = []
         for us in summaries_sorted:
             period_end = us.start + us.duration
-            # Place the increment at 00:00 of the period end date (the day the period ends)
-            rec_start = datetime.datetime.combine(period_end.date(), datetime.time.min, tzinfo=tzinfo)
+            # Monthly increments belong to the local billing end date, not the
+            # last covered day, even when the period ends at local midnight.
+            rec_start = datetime.datetime.combine(
+                period_end.astimezone(time_zone).date(),
+                datetime.time.min,
+                tzinfo=time_zone,
+            )
             new_statistics_data.append({
                 "start": rec_start,
                 "state": float(scaling.usage_summary_cost(us, gas_cost_multiplier)),
@@ -2110,13 +2160,7 @@ async def _async_update_gas_cost_statistics(
         if not readings:
             _LOGGER.info("No gas readings for cost distribution on %s", entity.entity_id)
             return
-        tzinfo = readings[0].start.tzinfo
-        daily_m3: dict[datetime.date, float] = {}
-        for rd in readings:
-            val = float(scaling.interval_value(rd))
-            day = rd.start.date()
-            daily_m3[day] = daily_m3.get(day, 0.0) + val
-
+        time_zone = _billing_timezone()
         if not usage_summaries:
             _LOGGER.info("No gas usage summaries provided for %s", entity.entity_id)
             return
@@ -2126,15 +2170,12 @@ async def _async_update_gas_cost_statistics(
         for us in usage_summaries:
             period_start = us.start
             period_end = us.start + us.duration
-            # Collect days in period
-            day = period_start.date()
-            end_day = (period_end - datetime.timedelta(seconds=1)).date()
-            period_days: list[datetime.date] = []
-            while day <= end_day:
-                period_days.append(day)
-                day = day + datetime.timedelta(days=1)
+            period_days = _local_days_in_interval(period_start, period_end, time_zone)
+            period_m3 = _gas_daily_totals(
+                readings, time_zone, period_start, period_end
+            )
             # Sum m3 in period
-            total_m3 = sum(daily_m3.get(d, 0.0) for d in period_days)
+            total_m3 = sum(period_m3.values())
             if total_m3 <= 0:
                 # Even split if no consumption data
                 per_day = float(scaling.usage_summary_cost(us, gas_cost_multiplier)) / max(1, len(period_days))
@@ -2142,7 +2183,7 @@ async def _async_update_gas_cost_statistics(
                     daily_cost[d] = daily_cost.get(d, 0.0) + per_day
             else:
                 for d in period_days:
-                    frac = daily_m3.get(d, 0.0) / total_m3
+                    frac = period_m3.get(d, 0.0) / total_m3
                     daily_cost[d] = daily_cost.get(d, 0.0) + (float(scaling.usage_summary_cost(us, gas_cost_multiplier)) * frac)
 
         if not daily_cost:
@@ -2153,7 +2194,7 @@ async def _async_update_gas_cost_statistics(
         new_statistics_data = []
         for d in sorted(daily_cost.keys()):
             val = daily_cost[d]
-            start = datetime.datetime.combine(d, datetime.time.min, tzinfo=tzinfo)
+            start = datetime.datetime.combine(d, datetime.time.min, tzinfo=time_zone)
             new_statistics_data.append({
                 "start": start,
                 "state": val,
