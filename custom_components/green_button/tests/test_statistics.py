@@ -7,6 +7,7 @@ PYTHONPATH=.:config uv run --no-sync pytest -p tests.conftest \
 
 # ruff: noqa: SLF001, TID251
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
@@ -45,6 +46,8 @@ class _StatisticsEntity:
 
     entity_id = "sensor.imported_display"
     long_term_statistics_id = "green_button:test"
+    name = "Imported display"
+    native_unit_of_measurement = "kWh"
 
 
 def _partial_hour_meter(include_completion: bool) -> model.MeterReading:
@@ -147,6 +150,189 @@ async def test_cost_statistics_split_trimmed_multi_hour_intervals(
 
     _assert_hourly_statistics(initial, 2)
     _assert_hourly_statistics(completed, 3)
+
+
+@pytest.mark.usefixtures("recorder_mock")
+async def test_statistics_read_failure_preserves_existing_history(
+    hass: HomeAssistant,
+) -> None:
+    """A failed read cannot turn existing history into an empty replacement."""
+    entity = _StatisticsEntity()
+    existing = StatisticData(start=HISTORICAL, state=1.0, sum=1.0)
+    recorder_statistics.async_add_external_statistics(
+        hass,
+        {
+            "statistic_id": entity.long_term_statistics_id,
+            "source": DOMAIN,
+            "name": entity.name,
+            "unit_of_measurement": entity.native_unit_of_measurement,
+            "unit_class": "energy",
+            "has_sum": True,
+            "mean_type": StatisticMeanType.NONE,
+        },
+        [existing],
+    )
+    await async_wait_recording_done(hass)
+    before = statistics_during_period(
+        hass,
+        HISTORICAL - timedelta(hours=1),
+        statistic_ids={entity.long_term_statistics_id},
+    )
+
+    with (
+        patch.object(
+            statistics,
+            "_get_all_existing_statistics",
+            new=AsyncMock(side_effect=RuntimeError("database unavailable")),
+        ),
+        pytest.raises(RuntimeError, match="database unavailable"),
+    ):
+        await statistics.update_statistics(
+            hass,
+            entity,  # type: ignore[arg-type]
+            statistics.DefaultDataExtractor(),
+            _partial_hour_meter(False),
+        )
+
+    assert (
+        statistics_during_period(
+            hass,
+            HISTORICAL - timedelta(hours=1),
+            statistic_ids={entity.long_term_statistics_id},
+        )
+        == before
+    )
+
+
+@pytest.mark.parametrize(
+    ("records", "error"),
+    [
+        pytest.param(
+            [
+                StatisticData(
+                    start=HISTORICAL + timedelta(minutes=1), state=1.0, sum=1.0
+                )
+            ],
+            "Invalid statistic timestamp",
+            id="invalid-timestamp",
+        ),
+        pytest.param([], "with no records", id="empty-replacement"),
+    ],
+)
+async def test_statistics_validation_failure_does_not_queue_replacement(
+    hass: HomeAssistant, records: list[StatisticData], error: str
+) -> None:
+    """Reject an invalid replacement before it reaches the recorder."""
+    with patch.object(
+        statistics._ReplaceStatisticsTask,
+        "queue_task",
+        new_callable=AsyncMock,
+    ) as queue_task:
+        with pytest.raises(ValueError, match=error):
+            await statistics._async_replace_statistics(
+                hass,
+                statistics.create_metadata(_StatisticsEntity()),  # type: ignore[arg-type]
+                records,
+            )
+
+    queue_task.assert_not_awaited()
+
+
+@pytest.mark.usefixtures("recorder_mock")
+async def test_statistics_write_failure_rolls_back_replacement(
+    hass: HomeAssistant,
+) -> None:
+    """A recorder write failure preserves the series that was being replaced."""
+    entity = _StatisticsEntity()
+    existing = StatisticData(start=HISTORICAL, state=1.0, sum=1.0)
+    metadata = statistics.create_metadata(entity)  # type: ignore[arg-type]
+    recorder_statistics.async_add_external_statistics(hass, metadata, [existing])
+    await async_wait_recording_done(hass)
+    before = statistics_during_period(
+        hass,
+        HISTORICAL - timedelta(hours=1),
+        statistic_ids={entity.long_term_statistics_id},
+    )
+
+    replacement = StatisticData(
+        start=HISTORICAL + timedelta(hours=1), state=2.0, sum=3.0
+    )
+    with (
+        patch.object(
+            recorder_statistics,
+            "_import_statistics_with_session",
+            side_effect=RuntimeError("write failure"),
+        ),
+        pytest.raises(RuntimeError, match="write failure"),
+    ):
+        await statistics._async_replace_statistics(hass, metadata, [replacement])
+
+    assert (
+        statistics_during_period(
+            hass,
+            HISTORICAL - timedelta(hours=1),
+            statistic_ids={entity.long_term_statistics_id},
+        )
+        == before
+    )
+
+
+async def test_statistics_writers_serialize_a_series(
+    hass: HomeAssistant,
+) -> None:
+    """A later writer waits until the current series replacement finishes."""
+    entity = _StatisticsEntity()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls: list[str] = []
+
+    async def update(*_args: object) -> None:
+        calls.append("start")
+        started.set()
+        await release.wait()
+        calls.append("end")
+
+    with patch.object(statistics, "_async_update_statistics", side_effect=update):
+        first = hass.async_create_task(
+            statistics.update_statistics(
+                hass,
+                entity,  # type: ignore[arg-type]
+                statistics.DefaultDataExtractor(),
+                _partial_hour_meter(False),
+            )
+        )
+        await started.wait()
+        second = hass.async_create_task(
+            statistics.update_statistics(
+                hass,
+                entity,  # type: ignore[arg-type]
+                statistics.DefaultDataExtractor(),
+                _partial_hour_meter(False),
+            )
+        )
+        await asyncio.sleep(0)
+        assert calls == ["start"]
+        release.set()
+        await asyncio.gather(first, second)
+
+    assert calls == ["start", "end", "start", "end"]
+
+
+async def test_statistics_tasks_are_cancelled_on_unload(
+    hass: HomeAssistant,
+) -> None:
+    """Tracked sensor jobs are cancelled and drained by config-entry unload."""
+    started = asyncio.Event()
+
+    async def wait_forever() -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    task = statistics.async_schedule_statistics_update(hass, "entry", wait_forever())
+    await started.wait()
+    await statistics.async_cancel_statistics_tasks(hass, "entry")
+
+    assert task.cancelled()
 
 
 async def _energy(hass: HomeAssistant, entity: GreenButtonStatisticsSensor) -> None:

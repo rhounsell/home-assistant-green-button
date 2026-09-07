@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Coroutine, Sequence
 import dataclasses
 import datetime
 import decimal
 import logging
+import math
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, cast, final
 
 from homeassistant import exceptions
@@ -18,7 +19,6 @@ from homeassistant.components.recorder import (
 )
 from homeassistant.components.recorder.models import StatisticData, StatisticMeanType
 from homeassistant.components.recorder.models.statistics import StatisticMetaData
-from homeassistant.components.recorder.statistics import async_add_external_statistics
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import recorder as recorder_helper
@@ -67,6 +67,9 @@ class GreenButtonEntity(Protocol):
 _LOGGER = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+_DATA_STATISTICS_LOCKS = f"{DOMAIN}_statistics_locks"
+_DATA_STATISTICS_TASKS = f"{DOMAIN}_statistics_tasks"
 
 # Notes on statistic behavior:
 #
@@ -292,7 +295,153 @@ def _queue_task(
 
 
 def _complete_future(future: asyncio.Future[T], value: T) -> None:
-    future.get_loop().call_soon_threadsafe(future.set_result, value)
+    def _set_result() -> None:
+        if not future.done():
+            future.set_result(value)
+
+    future.get_loop().call_soon_threadsafe(_set_result)
+
+
+def _complete_future_exception(
+    future: asyncio.Future[T], err: Exception
+) -> None:
+    def _set_exception() -> None:
+        if not future.done():
+            future.set_exception(err)
+
+    future.get_loop().call_soon_threadsafe(_set_exception)
+
+
+def _statistics_lock(hass: HomeAssistant, statistic_id: str) -> asyncio.Lock:
+    """Return the lock serializing one statistics series."""
+    locks = cast(
+        dict[str, asyncio.Lock],
+        hass.data.setdefault(_DATA_STATISTICS_LOCKS, {}),
+    )
+    return locks.setdefault(statistic_id, asyncio.Lock())
+
+
+def async_schedule_statistics_update(
+    hass: HomeAssistant,
+    entry_id: str,
+    coro: Coroutine[Any, Any, None],
+) -> asyncio.Task[None]:
+    """Schedule a statistics update that can be cancelled during unload."""
+    task = hass.async_create_task(coro)
+    tasks_by_entry = cast(
+        dict[str, set[asyncio.Task[None]]],
+        hass.data.setdefault(_DATA_STATISTICS_TASKS, {}),
+    )
+    entry_tasks = tasks_by_entry.setdefault(entry_id, set())
+    entry_tasks.add(task)
+
+    def _discard(completed: asyncio.Task[None]) -> None:
+        entry_tasks.discard(completed)
+        if not entry_tasks:
+            tasks_by_entry.pop(entry_id, None)
+
+    task.add_done_callback(_discard)
+    return task
+
+
+async def async_cancel_statistics_tasks(
+    hass: HomeAssistant, entry_id: str
+) -> None:
+    """Cancel and drain statistics updates belonging to an unloaded entry."""
+    tasks_by_entry = cast(
+        dict[str, set[asyncio.Task[None]]],
+        hass.data.get(_DATA_STATISTICS_TASKS, {}),
+    )
+    entry_tasks = tasks_by_entry.pop(entry_id, set())
+    for task in entry_tasks:
+        task.cancel()
+    if entry_tasks:
+        await asyncio.gather(*entry_tasks, return_exceptions=True)
+
+
+def _validated_statistics(
+    metadata: StatisticMetaData,
+    records: list[StatisticData],
+) -> list[StatisticData]:
+    """Validate a complete replacement before scheduling any mutation."""
+    statistic_id = metadata["statistic_id"]
+    if metadata["source"] != DOMAIN or not statistic_id.startswith(f"{DOMAIN}:"):
+        raise ValueError(f"Invalid external statistic metadata for {statistic_id}")
+    if not records:
+        raise ValueError(f"Refusing to replace {statistic_id} with no records")
+
+    validated: list[StatisticData] = []
+    previous_start: datetime.datetime | None = None
+    for record in records:
+        start = record["start"]
+        if (
+            start.tzinfo is None
+            or start.utcoffset() is None
+            or start.minute
+            or start.second
+            or start.microsecond
+        ):
+            raise ValueError(f"Invalid statistic timestamp for {statistic_id}: {start}")
+        if previous_start is not None and start <= previous_start:
+            raise ValueError(f"Statistics for {statistic_id} are not strictly ordered")
+        if not all(
+            math.isfinite(float(record[key])) for key in ("state", "sum")
+        ):
+            raise ValueError(f"Statistics for {statistic_id} contain a non-finite value")
+        validated.append({**record, "start": start.astimezone(datetime.UTC)})
+        previous_start = start
+    return validated
+
+
+@final
+@dataclasses.dataclass(frozen=False)
+class _ReplaceStatisticsTask(tasks.RecorderTask):
+    """Replace a series in one recorder transaction."""
+
+    metadata: StatisticMetaData
+    records: list[StatisticData]
+    future: asyncio.Future[None]
+
+    def run(self, instance: Recorder) -> None:
+        statistic_id = self.metadata["statistic_id"]
+        try:
+            with recorder_helper.session_scope(session=instance.get_session()) as session:
+                instance.statistics_meta_manager.delete(session, [statistic_id])
+                statistics._import_statistics_with_session(  # noqa: SLF001
+                    instance,
+                    session,
+                    self.metadata,
+                    self.records,
+                    recorder_db_schema.Statistics,
+                )
+        except Exception as err:
+            _complete_future_exception(self.future, err)
+            return
+        _complete_future(self.future, None)
+
+    @classmethod
+    def queue_task(
+        cls,
+        hass: HomeAssistant,
+        metadata: StatisticMetaData,
+        records: list[StatisticData],
+    ) -> asyncio.Future[None]:
+        """Queue an atomic replacement and return its completion future."""
+
+        def ctor(future: asyncio.Future[None]) -> _ReplaceStatisticsTask:
+            return cls(metadata=metadata, records=records, future=future)
+
+        return _queue_task(hass, ctor)
+
+
+async def _async_replace_statistics(
+    hass: HomeAssistant,
+    metadata: StatisticMetaData,
+    records: list[StatisticData],
+) -> None:
+    """Validate and atomically replace an external statistics series."""
+    validated = _validated_statistics(metadata, records)
+    await _ReplaceStatisticsTask.queue_task(hass, metadata, validated)
 
 
 async def _get_all_existing_statistics(
@@ -303,58 +452,40 @@ async def _get_all_existing_statistics(
     
     Returns a list of StatisticData dictionaries sorted by start time.
     """
-    try:
-        rec = recorder_helper.get_instance(hass)
+    rec = recorder_helper.get_instance(hass)
 
-        # Define a wrapper to call with keyword arguments
-        # Use a very wide date range to get all statistics
-        def _get_stats() -> dict[str, list[Any]]:
-            return statistics.statistics_during_period(
-                hass=hass,
-                start_time=datetime.datetime(2000, 1, 1, tzinfo=datetime.timezone.utc),  # earliest possible date
-                end_time=datetime.datetime(2100, 1, 1, tzinfo=datetime.timezone.utc),  # far future date
-                statistic_ids={statistic_id},
-                period="hour",
-                types={"sum", "state"},
-                units=None,
-            )
+    def _get_stats() -> dict[str, list[Any]]:
+        return statistics.statistics_during_period(
+            hass=hass,
+            start_time=datetime.datetime(2000, 1, 1, tzinfo=datetime.timezone.utc),
+            end_time=datetime.datetime(2100, 1, 1, tzinfo=datetime.timezone.utc),
+            statistic_ids={statistic_id},
+            period="hour",
+            types={"sum", "state"},
+            units=None,
+        )
 
-        # Get all statistics
-        raw_stats = await rec.async_add_executor_job(_get_stats)
-
-        stats_list = raw_stats.get(statistic_id, [])
-        if not stats_list:
-            return []
-
-        # Convert to StatisticData format
-        result: list[StatisticData] = []
-        for stat in stats_list:
-            stat_dict = cast(dict[str, Any], stat)
-            # Convert start time - it may be a datetime or a timestamp float
-            start_val = stat_dict["start"]
-            if isinstance(start_val, datetime.datetime):
-                start_dt = start_val
-            else:
-                # It's a Unix timestamp (float)
-                start_dt = datetime.datetime.fromtimestamp(start_val, tz=datetime.timezone.utc)
-
-            stat_data: StatisticData = {
+    raw_stats = await rec.async_add_executor_job(_get_stats)
+    stats_list = raw_stats.get(statistic_id, [])
+    result: list[StatisticData] = []
+    for stat in stats_list:
+        stat_dict = cast(dict[str, Any], stat)
+        start_val = stat_dict["start"]
+        start_dt = (
+            start_val
+            if isinstance(start_val, datetime.datetime)
+            else datetime.datetime.fromtimestamp(start_val, tz=datetime.timezone.utc)
+        )
+        result.append(
+            {
                 "start": start_dt,
                 "state": float(stat_dict.get("state", 0.0)),
                 "sum": float(stat_dict.get("sum", 0.0)),
             }
-            result.append(stat_data)
-
-        # Sort by start time
-        result.sort(key=lambda s: s["start"])
-        return result
-    except Exception:
-        _LOGGER.warning(
-            "Could not retrieve existing statistics for %s",
-            statistic_id,
-            exc_info=True,
         )
-        return []
+
+    result.sort(key=lambda statistic: statistic["start"])
+    return result
 
 
 def _find_last_statistic_before(
@@ -1548,7 +1679,7 @@ async def _generate_statistics_data_cost(
     return merged_stats
 
 
-async def update_cost_statistics(
+async def _async_update_cost_statistics(
     hass: HomeAssistant,
     entity: GreenButtonEntity,
     data_extractor: DataExtractor,
@@ -1581,51 +1712,19 @@ async def update_cost_statistics(
         entity.entity_id,
     )
 
-    if statistics_data:
-        # Log first and last records for debugging
-        first_record = statistics_data[0]
-        last_record = statistics_data[-1]
-        _LOGGER.info(
-            "Cost statistics range: %s (sum=%s) to %s (sum=%s)",
-            first_record["start"],
-            first_record.get("sum"),
-            last_record["start"],
-            last_record.get("sum"),
-        )
+    if not statistics_data:
+        _LOGGER.warning("No cost statistics data generated for entity %s", entity.entity_id)
+        return
 
-        # Clear all existing statistics and reimport with the merged data
-        # This ensures the database is consistent with our calculated sums
-        try:
-            await _ClearStatisticsTask.queue_task(
-                hass=hass,
-                statistic_id=entity.long_term_statistics_id,
-            )
-            _LOGGER.info(
-                "Cleared existing cost statistics for entity %s before reimporting",
-                entity.entity_id,
-            )
-        except Exception:
-            _LOGGER.exception(
-                "Failed to clear cost statistics for entity %s",
-                entity.entity_id,
-            )
-
-        # Import cost statistics using the proper Home Assistant API
-        try:
-            async_add_external_statistics(hass, metadata, statistics_data)
-            _LOGGER.info(
-                "✅ Imported %d cost records for entity %s",
-                len(statistics_data),
-                entity.entity_id,
-            )
-        except Exception:
-            _LOGGER.exception(
-                "❌ Failed to import cost statistics for entity %s",
-                entity.entity_id,
-            )
+    await _async_replace_statistics(hass, metadata, statistics_data)
+    _LOGGER.info(
+        "Replaced %d cost records for entity %s",
+        len(statistics_data),
+        entity.entity_id,
+    )
 
 
-async def update_statistics(
+async def _async_update_statistics(
     hass: HomeAssistant,
     entity: GreenButtonEntity,
     data_extractor: DataExtractor,
@@ -1654,67 +1753,19 @@ async def update_statistics(
         entity.entity_id,
     )
 
-    if statistics_data:
-        # Log first and last records for debugging
-        first_record = statistics_data[0]
-        last_record = statistics_data[-1]
-        _LOGGER.info(
-            "Statistics range: %s (sum=%s) to %s (sum=%s)",
-            first_record["start"],
-            first_record.get("sum"),
-            last_record["start"],
-            last_record.get("sum"),
-        )
-
-        # Clear all existing statistics and reimport with the merged data
-        # This ensures the database is consistent with our calculated sums
-        try:
-            await _ClearStatisticsTask.queue_task(
-                hass=hass,
-                statistic_id=entity.long_term_statistics_id,
-            )
-            _LOGGER.info(
-                "Cleared existing statistics for entity %s before reimporting",
-                entity.entity_id,
-            )
-        except Exception:
-            _LOGGER.exception(
-                "Failed to clear statistics for entity %s",
-                entity.entity_id,
-            )
-
-        # Import historical statistics using the proper Home Assistant API
-        try:
-            async_add_external_statistics(hass, metadata, statistics_data)
-            _LOGGER.debug(
-                "Queued %d external statistics records for entity %s",
-                len(statistics_data),
-                entity.entity_id,
-            )
-
-            # Log some sample records for debugging
-            if statistics_data:
-                first = statistics_data[0]
-                last = statistics_data[-1]
-                _LOGGER.info(
-                    "📊 Statistics range: %s (state=%.3f, sum=%.3f) → %s (state=%.3f, sum=%.3f)",
-                    first["start"].isoformat(),
-                    first.get("state", 0.0),
-                    first.get("sum", 0.0),
-                    last["start"].isoformat(),
-                    last.get("state", 0.0),
-                    last.get("sum", 0.0),
-                )
-        except Exception:
-            _LOGGER.exception(
-                "❌ Failed to import statistics for entity %s",
-                entity.entity_id,
-            )
-    else:
+    if not statistics_data:
         _LOGGER.warning(
             "No statistics data generated for entity %s",
             entity.entity_id,
         )
+        return
+
+    await _async_replace_statistics(hass, metadata, statistics_data)
+    _LOGGER.info(
+        "Replaced %d statistics records for entity %s",
+        len(statistics_data),
+        entity.entity_id,
+    )
 
 
 async def clear_statistic(hass: HomeAssistant, statistic_id: str) -> None:
@@ -1785,7 +1836,7 @@ async def _generate_daily_m3_statistics(
     return merged_stats
 
 
-async def update_gas_statistics(
+async def _async_update_gas_statistics(
     hass: HomeAssistant,
     entity: GreenButtonEntity,
     meter_reading: model.MeterReading | None,
@@ -1815,12 +1866,6 @@ async def update_gas_statistics(
             entity.entity_id,
             len(summaries),
         )
-        # Clear existing statistics to avoid residual daily bars or negative corrections
-        try:
-            await clear_statistic(hass, entity.long_term_statistics_id)
-        except Exception:
-            _LOGGER.exception("Failed to clear existing gas usage stats for %s", entity.entity_id)
-
         # Determine tzinfo from readings if present
         if meter_reading and meter_reading.interval_blocks:
             readings = [r for b in meter_reading.interval_blocks for r in b.interval_readings]
@@ -1891,22 +1936,18 @@ async def update_gas_statistics(
             rec_start = datetime.datetime.combine(period_end.date(), datetime.time.min, tzinfo=tzinfo)
             if first_start is None:
                 first_start = rec_start
-                # Existing cumulative before first record
-                try:
-                    rec = recorder_helper.get_instance(hass)
-                    existing_stats = await rec.async_add_executor_job(
-                        statistics.statistic_during_period,
-                        hass,
-                        None,
-                        first_start,
-                        entity.long_term_statistics_id,
-                        {"change"},
-                        None,
-                    )
-                    if existing_stats and existing_stats.get("change") is not None:
-                        existing_sum = float(existing_stats["change"])  # type: ignore[assignment]
-                except Exception:
-                    _LOGGER.debug("Unable to query existing sum for gas usage %s", entity.entity_id, exc_info=True)
+                rec = recorder_helper.get_instance(hass)
+                existing_stats = await rec.async_add_executor_job(
+                    statistics.statistic_during_period,
+                    hass,
+                    None,
+                    first_start,
+                    entity.long_term_statistics_id,
+                    {"change"},
+                    None,
+                )
+                if existing_stats and existing_stats.get("change") is not None:
+                    existing_sum = float(existing_stats["change"])
 
             # Use the consumption_m3 if available, otherwise fallback to summing daily readings
             period_m3 = consumption_m3
@@ -1947,35 +1988,13 @@ async def update_gas_statistics(
             cumulative += recd.get("state", 0.0)
             recd["sum"] = cumulative
 
-        # Truncate and import: choose earliest cutoff between our first record and
-        # the earliest reading day (to ensure any previously-imported daily m³ are removed)
-        cutoff = records[0]["start"]
-        try:
-            if readings:
-                earliest_day = min(r.start.date() for r in readings)
-                tzinfo_cut = readings[0].start.tzinfo
-                earliest_midnight = datetime.datetime.combine(earliest_day, datetime.time.min, tzinfo=tzinfo_cut)
-                if earliest_midnight < cutoff:
-                    cutoff = earliest_midnight
-            await _TruncateStatisticsAfterTask.queue_task(
-                hass=hass,
-                statistic_id=entity.long_term_statistics_id,
-                cutoff_start=cutoff,
-                table=recorder_db_schema.Statistics,
-            )
-        except Exception:
-            _LOGGER.exception("Failed truncating gas stats for %s", entity.entity_id)
-
-        try:
-            async_add_external_statistics(hass, metadata, records)
-            _LOGGER.info(
-                "Imported %d gas usage records for %s (total: %.1f m³)",
-                len(records),
-                entity.entity_id,
-                records[-1].get("sum", 0.0),
-            )
-        except Exception:
-            _LOGGER.exception("Failed to import gas stats for %s", entity.entity_id)
+        await _async_replace_statistics(hass, metadata, records)
+        _LOGGER.info(
+            "Replaced %d gas usage records for %s (total: %.1f m³)",
+            len(records),
+            entity.entity_id,
+            records[-1].get("sum", 0.0),
+        )
 
         return
 
@@ -1993,27 +2012,11 @@ async def update_gas_statistics(
         _LOGGER.info("No gas statistics to import for %s", entity.entity_id)
         return
 
-    # Clear all existing statistics and reimport with the merged data
-    try:
-        await _ClearStatisticsTask.queue_task(
-            hass=hass,
-            statistic_id=entity.long_term_statistics_id,
-        )
-        _LOGGER.info(
-            "Cleared existing gas statistics for entity %s before reimporting",
-            entity.entity_id,
-        )
-    except Exception:
-        _LOGGER.exception("Failed to clear gas stats for %s", entity.entity_id)
-
-    try:
-        async_add_external_statistics(hass, metadata, data)
-        _LOGGER.info("Imported %d gas daily records for %s", len(data), entity.entity_id)
-    except Exception:
-        _LOGGER.exception("Failed to import gas stats for %s", entity.entity_id)
+    await _async_replace_statistics(hass, metadata, data)
+    _LOGGER.info("Replaced %d gas daily records for %s", len(data), entity.entity_id)
 
 
-async def update_gas_cost_statistics(
+async def _async_update_gas_cost_statistics(
     hass: HomeAssistant,
     entity: GreenButtonEntity,
     meter_reading: model.MeterReading | None,
@@ -2190,21 +2193,66 @@ async def update_gas_cost_statistics(
     if not records:
         return
 
-    # Clear all existing statistics and reimport with the merged data
-    try:
-        await _ClearStatisticsTask.queue_task(
-            hass=hass,
-            statistic_id=entity.long_term_statistics_id,
-        )
-        _LOGGER.info(
-            "Cleared existing gas cost statistics for entity %s before reimporting",
-            entity.entity_id,
-        )
-    except Exception:
-        _LOGGER.exception("Failed to clear gas cost stats for %s", entity.entity_id)
+    await _async_replace_statistics(hass, metadata, records)
+    _LOGGER.info("Replaced %d gas cost records for %s", len(records), entity.entity_id)
 
-    try:
-        async_add_external_statistics(hass, metadata, records)
-        _LOGGER.info("Imported %d gas cost records for %s", len(records), entity.entity_id)
-    except Exception:
-        _LOGGER.exception("Failed to import gas cost stats for %s", entity.entity_id)
+
+async def update_statistics(
+    hass: HomeAssistant,
+    entity: GreenButtonEntity,
+    data_extractor: DataExtractor,
+    meter_reading: model.MeterReading,
+) -> None:
+    """Serialize and replace electricity usage statistics."""
+    async with _statistics_lock(hass, entity.long_term_statistics_id):
+        await _async_update_statistics(hass, entity, data_extractor, meter_reading)
+
+
+async def update_cost_statistics(
+    hass: HomeAssistant,
+    entity: GreenButtonEntity,
+    data_extractor: DataExtractor,
+    meter_reading: model.MeterReading,
+    merge_with_existing: bool = True,
+) -> None:
+    """Serialize and replace electricity cost statistics."""
+    async with _statistics_lock(hass, entity.long_term_statistics_id):
+        await _async_update_cost_statistics(
+            hass, entity, data_extractor, meter_reading, merge_with_existing
+        )
+
+
+async def update_gas_statistics(
+    hass: HomeAssistant,
+    entity: GreenButtonEntity,
+    meter_reading: model.MeterReading | None,
+    usage_summaries: list[model.UsageSummary] | None = None,
+    allocation_mode: str = "daily_readings",
+) -> None:
+    """Serialize and replace gas usage statistics."""
+    async with _statistics_lock(hass, entity.long_term_statistics_id):
+        await _async_update_gas_statistics(
+            hass, entity, meter_reading, usage_summaries, allocation_mode
+        )
+
+
+async def update_gas_cost_statistics(
+    hass: HomeAssistant,
+    entity: GreenButtonEntity,
+    meter_reading: model.MeterReading | None,
+    usage_summaries: list[model.UsageSummary],
+    allocation_mode: str = "pro_rate_daily",
+    gas_cost_multiplier: int = DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER,
+    merge_with_existing: bool = True,
+) -> None:
+    """Serialize and replace gas cost statistics."""
+    async with _statistics_lock(hass, entity.long_term_statistics_id):
+        await _async_update_gas_cost_statistics(
+            hass,
+            entity,
+            meter_reading,
+            usage_summaries,
+            allocation_mode,
+            gas_cost_multiplier,
+            merge_with_existing,
+        )

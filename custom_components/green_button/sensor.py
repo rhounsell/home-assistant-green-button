@@ -264,9 +264,10 @@ class GreenButtonSensor(GreenButtonStatisticsSensor):
 
         # Update statistics for Energy Dashboard (run in background to not block startup)
         if hasattr(self, "hass") and self.hass is not None:
-            asyncio.create_task(
+            statistics.async_schedule_statistics_update(
+                self.hass,
+                self.coordinator.config_entry.entry_id,
                 self._update_statistics_async(meter_reading),
-                name=f"green_button_stats_{self.entity_id}"
             )
             _LOGGER.debug(
                 "%s: Statistics update scheduled in background.",
@@ -464,9 +465,10 @@ class GreenButtonCostSensor(GreenButtonStatisticsSensor):
 
         # Update long-term statistics (run in background to not block startup)
         if hasattr(self, "hass") and self.hass is not None:
-            asyncio.create_task(
+            statistics.async_schedule_statistics_update(
+                self.hass,
+                self.coordinator.config_entry.entry_id,
                 self._update_cost_statistics_async(meter_reading),
-                name=f"green_button_cost_stats_{self.entity_id}"
             )
             _LOGGER.debug(
                 "%s: Cost statistics update scheduled in background.",
@@ -595,9 +597,10 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
             or "daily_readings"
         )
         # Run statistics update in background to not block startup
-        asyncio.create_task(
+        statistics.async_schedule_statistics_update(
+            self.hass,
+            self.coordinator.config_entry.entry_id,
             self._update_gas_statistics_async(meter_reading, summaries, usage_allocation_mode),
-            name=f"green_button_gas_stats_{self.entity_id}"
         )
         _LOGGER.debug(
             "%s: Gas statistics update scheduled in background.",
@@ -663,9 +666,10 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
                 self.entity_id,
             )
             # Call update_gas_statistics in background - no meter reading available
-            asyncio.create_task(
+            statistics.async_schedule_statistics_update(
+                self.hass,
+                self.coordinator.config_entry.entry_id,
                 self._update_gas_statistics_from_summaries_async(usage_point, usage_allocation_mode),
-                name=f"green_button_gas_stats_summaries_{self.entity_id}"
             )
             _LOGGER.debug(
                 "%s: Gas statistics update (from summaries) scheduled in background.",
@@ -805,9 +809,10 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
             or self.coordinator.config_entry.data.get("gas_cost_allocation")
             or "pro_rate_daily"
         )
-        asyncio.create_task(
+        statistics.async_schedule_statistics_update(
+            self.hass,
+            self.coordinator.config_entry.entry_id,
             self._update_gas_cost_statistics_async(meter_reading, summaries, allocation_mode),
-            name=f"green_button_gas_cost_stats_{self.entity_id}"
         )
         _LOGGER.debug(
             "%s: Gas cost statistics update scheduled in background.",
@@ -875,9 +880,10 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
         )
 
         # Call update_gas_cost_statistics in background - no meter reading available
-        asyncio.create_task(
+        statistics.async_schedule_statistics_update(
+            self.hass,
+            self.coordinator.config_entry.entry_id,
             self._update_gas_cost_statistics_from_summaries_async(usage_point, allocation_mode),
-            name=f"green_button_gas_cost_stats_summaries_{self.entity_id}"
         )
         _LOGGER.debug(
             "%s: Gas cost statistics update (from summaries) scheduled in background.",
