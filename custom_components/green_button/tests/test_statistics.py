@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
-from custom_components.green_button import model, statistics
+from custom_components.green_button import model, scaling, statistics
 from custom_components.green_button.const import DOMAIN
 from custom_components.green_button.coordinator import GreenButtonCoordinator
 from custom_components.green_button.sensor import (
@@ -28,7 +28,7 @@ import pytest
 
 from homeassistant.components.recorder import statistics as recorder_statistics
 from homeassistant.components.recorder.models import StatisticData, StatisticMeanType
-from homeassistant.components.sensor import DATA_COMPONENT
+from homeassistant.components.sensor import DATA_COMPONENT, SensorDeviceClass
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 from tests.common import MockConfigEntry
@@ -50,9 +50,13 @@ class _StatisticsEntity:
     native_unit_of_measurement = "kWh"
 
 
-def _partial_hour_meter(include_completion: bool) -> model.MeterReading:
+def _partial_hour_meter(
+    include_completion: bool, power_of_ten_multiplier: int | None = 0
+) -> model.MeterReading:
     """Create a 2.5-hour interval and an optional trailing half-hour."""
-    reading_type = model.ReadingType("type", 1, "CAD", 0, "Wh", 3600)
+    reading_type = model.ReadingType(
+        "type", 1, "CAD", power_of_ten_multiplier, "Wh", 3600
+    )
     long_reading = model.IntervalReading(
         reading_type, 250, HISTORICAL, timedelta(hours=2, minutes=30), 2500
     )
@@ -98,6 +102,26 @@ def _assert_hourly_statistics(
     )
 
 
+def test_source_multiplier_precedes_configured_cost_fallback() -> None:
+    """A declared source multiplier wins; the fallback covers only its absence."""
+    start = HISTORICAL
+    declared_type = model.ReadingType("type", 1, "CAD", -3, "Wh", 3600)
+    missing_type = model.ReadingType("type", 1, "CAD", None, "Wh", 3600)
+    declared = model.IntervalReading(declared_type, 800, start, timedelta(hours=1), 1)
+    missing = model.IntervalReading(missing_type, 800, start, timedelta(hours=1), 1)
+    declared_summary = model.UsageSummary(
+        "declared", start, timedelta(days=1), 800, "CAD", power_of_ten_multiplier=-3
+    )
+    missing_summary = model.UsageSummary(
+        "missing", start, timedelta(days=1), 800, "CAD"
+    )
+
+    assert float(scaling.interval_cost(declared, -5)) == pytest.approx(0.8)
+    assert float(scaling.interval_cost(missing, -3)) == pytest.approx(0.8)
+    assert float(scaling.usage_summary_cost(declared_summary, -5)) == pytest.approx(0.8)
+    assert float(scaling.usage_summary_cost(missing_summary, -3)) == pytest.approx(0.8)
+
+
 async def test_energy_statistics_split_trimmed_multi_hour_intervals(
     hass: HomeAssistant,
 ) -> None:
@@ -111,14 +135,14 @@ async def test_energy_statistics_split_trimmed_multi_hour_intervals(
             hass,
             entity,  # type: ignore[arg-type]
             statistics.DefaultDataExtractor(),
-            _partial_hour_meter(False),
+            _partial_hour_meter(False, None),
         )
         get_existing.return_value = initial
         completed = await statistics._generate_statistics_data(
             hass,
             entity,  # type: ignore[arg-type]
             statistics.DefaultDataExtractor(),
-            _partial_hour_meter(True),
+            _partial_hour_meter(True, None),
         )
 
     _assert_hourly_statistics(initial, 2)
@@ -138,14 +162,14 @@ async def test_cost_statistics_split_trimmed_multi_hour_intervals(
             hass,
             entity,  # type: ignore[arg-type]
             statistics.CostDataExtractor(-2),
-            _partial_hour_meter(False),
+            _partial_hour_meter(False, None),
         )
         get_existing.return_value = initial
         completed = await statistics._generate_statistics_data_cost(
             hass,
             entity,  # type: ignore[arg-type]
             statistics.CostDataExtractor(-2),
-            _partial_hour_meter(True),
+            _partial_hour_meter(True, None),
         )
 
     _assert_hourly_statistics(initial, 2)
@@ -336,7 +360,7 @@ async def test_statistics_tasks_are_cancelled_on_unload(
 
 
 async def _energy(hass: HomeAssistant, entity: GreenButtonStatisticsSensor) -> None:
-    reading_type = model.ReadingType("type", 1, "CAD", 0, "Wh", 3600)
+    reading_type = model.ReadingType("type", 1, "CAD", None, "Wh", 3600)
     reading = model.IntervalReading(
         reading_type, 125, HISTORICAL, timedelta(hours=1), 1000
     )
@@ -355,7 +379,7 @@ async def _energy(hass: HomeAssistant, entity: GreenButtonStatisticsSensor) -> N
 
 
 async def _cost(hass: HomeAssistant, entity: GreenButtonStatisticsSensor) -> None:
-    reading_type = model.ReadingType("type", 1, "CAD", 0, "Wh", 3600)
+    reading_type = model.ReadingType("type", 1, "CAD", None, "Wh", 3600)
     reading = model.IntervalReading(
         reading_type, 125, HISTORICAL, timedelta(hours=1), 1000
     )
@@ -392,7 +416,7 @@ async def _gas(hass: HomeAssistant, entity: GreenButtonStatisticsSensor) -> None
 
 async def _gas_cost(hass: HomeAssistant, entity: GreenButtonStatisticsSensor) -> None:
     summary = model.UsageSummary(
-        "summary", HISTORICAL, timedelta(days=30), 2.5, "CAD", 1
+        "summary", HISTORICAL, timedelta(days=30), 2.5, "CAD", 1, 0
     )
     await statistics.update_gas_cost_statistics(
         hass, entity, None, [summary], "monthly_increment", -3
@@ -520,3 +544,39 @@ def test_external_ids_do_not_collide() -> None:
     }
     assert len(ids) == 6
     assert all(recorder_statistics.valid_statistic_id(value) for value in ids)
+
+
+def test_cost_display_uses_source_multiplier_before_configured_fallback(
+    hass: HomeAssistant,
+) -> None:
+    """The displayed total follows the same source-first scaling as statistics."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        entry_id="test-entry",
+        options={"electricity_cost_power_of_ten_multiplier": -3},
+    )
+    start = HISTORICAL
+
+    def total_for(multiplier: int | None) -> float:
+        coordinator = GreenButtonCoordinator(hass, entry)
+        reading_type = model.ReadingType("type", 1, "CAD", multiplier, "Wh", 3600)
+        reading = model.IntervalReading(
+            reading_type, 800, start, timedelta(hours=1), 1000
+        )
+        meter = model.MeterReading(
+            "meter",
+            reading_type,
+            [
+                model.IntervalBlock(
+                    "block", reading_type, start, timedelta(hours=1), [reading]
+                )
+            ],
+        )
+        coordinator._merge_usage_points(
+            [model.UsagePoint("electricity", SensorDeviceClass.ENERGY, [meter])]
+        )
+        coordinator.async_set_updated_data({"usage_points": coordinator.usage_points})
+        return float(GreenButtonCostSensor(coordinator, "meter").native_value)
+
+    assert total_for(-5) == pytest.approx(0.008)
+    assert total_for(None) == pytest.approx(0.8)

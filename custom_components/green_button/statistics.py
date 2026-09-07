@@ -24,7 +24,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import recorder as recorder_helper
 from homeassistant.util.unit_conversion import EnergyConverter, VolumeConverter
 
-from . import model
+from . import model, scaling
 from .const import (
     DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
     DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER,
@@ -1296,18 +1296,13 @@ class DefaultDataExtractor:
         if interval_reading.value is None:
             return decimal.Decimal(0)
 
-        # Apply power of ten multiplier
-        power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
-        value = interval_reading.value * (10**power_multiplier)
-        return decimal.Decimal(value)
+        return scaling.interval_value(interval_reading)
 
 
 class CostDataExtractor:
     """DataExtractor that pulls monetary cost from IntervalReading.
 
-    Applies a configurable cost power_of_ten_multiplier to the cost value.
-    Defaults to DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER (-5) when no override is provided
-    (e.g., a cost of 12345 becomes $0.12345).
+    Uses the source multiplier when declared, otherwise the configured fallback.
     """
 
     def __init__(self, cost_power_of_ten_multiplier: int = DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER) -> None:
@@ -1320,16 +1315,15 @@ class CostDataExtractor:
         self, interval_reading: model.IntervalReading
     ) -> decimal.Decimal:
         """
-        Calculates the native value for a given interval reading by applying the cost power of ten multiplier.
+        Calculate the native value with source-first power-of-ten scaling.
 
         Args:
             interval_reading (model.IntervalReading): The interval reading object containing cost information.
 
         Returns:
-            decimal.Decimal: The calculated native value as a decimal, representing the cost adjusted by the power of ten multiplier.
+            decimal.Decimal: The scaled monetary value.
         """
-        cost = interval_reading.cost if interval_reading.cost is not None else 0
-        return decimal.Decimal(cost * (10**self._multiplier))
+        return scaling.interval_cost(interval_reading, self._multiplier)
 
 
 def create_metadata(entity: GreenButtonEntity) -> StatisticMetaData:
@@ -1799,7 +1793,7 @@ async def _generate_daily_m3_statistics(
     daily_totals: dict[datetime.date, float] = {}
     for rd in readings:
         # Apply multiplier
-        val = float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
+        val = float(scaling.interval_value(rd))
         day = rd.start.date()
         daily_totals[day] = daily_totals.get(day, 0.0) + val
 
@@ -1913,7 +1907,7 @@ async def _async_update_gas_statistics(
 
                 if not overlaps:
                     # This is a billing-period-length reading not covered by UsageSummary
-                    consumption_m3 = float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
+                    consumption_m3 = float(scaling.interval_value(rd))
                     source = f"IntervalReading:{rd_start.isoformat()}"
                     periods_to_process.append((rd_start, rd_end, consumption_m3, source))
                     _LOGGER.info(
@@ -1965,7 +1959,7 @@ async def _async_update_gas_statistics(
                     d = rd.start.date()
                     if d < period_days[0] or d > period_days[-1]:
                         continue
-                    val = float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
+                    val = float(scaling.interval_value(rd))
                     daily_m3[d] = daily_m3.get(d, 0.0) + val
                 total = sum(daily_m3.values())
                 period_m3 = total if total > 0 else None
@@ -2049,10 +2043,6 @@ async def _async_update_gas_cost_statistics(
         merge_with_existing,
     )
     
-    # Calculate the adjustment multiplier
-    # Parser applies 10^-3, user wants 10^gas_cost_multiplier
-    # So we apply 10^(gas_cost_multiplier - (-3)) = 10^(gas_cost_multiplier + 3)
-    adjustment_multiplier = 10 ** (gas_cost_multiplier + 3)
 
     if allocation_mode == "monthly_increment":
         # One increment per usage summary at the period end (00:00 of end day)
@@ -2074,7 +2064,7 @@ async def _async_update_gas_cost_statistics(
             rec_start = datetime.datetime.combine(period_end.date(), datetime.time.min, tzinfo=tzinfo)
             new_statistics_data.append({
                 "start": rec_start,
-                "state": float(us.total_cost * adjustment_multiplier),
+                "state": float(scaling.usage_summary_cost(us, gas_cost_multiplier)),
                 "sum": 0.0,  # Will be calculated during merge
             })
 
@@ -2123,7 +2113,7 @@ async def _async_update_gas_cost_statistics(
         tzinfo = readings[0].start.tzinfo
         daily_m3: dict[datetime.date, float] = {}
         for rd in readings:
-            val = float(rd.value) * (10 ** rd.reading_type.power_of_ten_multiplier)
+            val = float(scaling.interval_value(rd))
             day = rd.start.date()
             daily_m3[day] = daily_m3.get(day, 0.0) + val
 
@@ -2147,13 +2137,13 @@ async def _async_update_gas_cost_statistics(
             total_m3 = sum(daily_m3.get(d, 0.0) for d in period_days)
             if total_m3 <= 0:
                 # Even split if no consumption data
-                per_day = float(us.total_cost * adjustment_multiplier) / max(1, len(period_days))
+                per_day = float(scaling.usage_summary_cost(us, gas_cost_multiplier)) / max(1, len(period_days))
                 for d in period_days:
                     daily_cost[d] = daily_cost.get(d, 0.0) + per_day
             else:
                 for d in period_days:
                     frac = daily_m3.get(d, 0.0) / total_m3
-                    daily_cost[d] = daily_cost.get(d, 0.0) + (float(us.total_cost * adjustment_multiplier) * frac)
+                    daily_cost[d] = daily_cost.get(d, 0.0) + (float(scaling.usage_summary_cost(us, gas_cost_multiplier)) * frac)
 
         if not daily_cost:
             _LOGGER.info("No daily cost allocations computed for %s", entity.entity_id)
