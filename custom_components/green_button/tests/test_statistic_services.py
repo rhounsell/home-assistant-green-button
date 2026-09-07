@@ -211,7 +211,10 @@ async def test_import_targets_only_the_selected_config_entry(
 
     with (
         patch.object(
-            first_coordinator, "async_add_xml_data", new_callable=AsyncMock, return_value=report
+            first_coordinator,
+            "async_add_xml_data",
+            new_callable=AsyncMock,
+            return_value=report,
         ) as first_import,
         patch.object(
             second_coordinator, "async_add_xml_data", new_callable=AsyncMock
@@ -255,6 +258,77 @@ async def test_clear_stored_xml_targets_only_the_selected_config_entry(
     ]
 
 
+async def test_clear_archive_resets_active_history_before_a_new_import(
+    hass: HomeAssistant,
+) -> None:
+    """Cleared source data cannot be merged back by the next import."""
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+    coordinator = GreenButtonCoordinator(hass, entry)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"coordinator": coordinator}
+    reading_type = model.ReadingType("type", 1, "CAD", 0, "Wh", 3600)
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    old_meter = model.MeterReading(
+        "old-meter",
+        reading_type,
+        [
+            model.IntervalBlock(
+                "old",
+                reading_type,
+                start,
+                timedelta(hours=1),
+                [model.IntervalReading(reading_type, 0, start, timedelta(hours=1), 1)],
+            )
+        ],
+    )
+    coordinator.usage_points = [
+        model.UsagePoint("usage-point", SensorDeviceClass.ENERGY, [old_meter])
+    ]
+    coordinator.async_set_updated_data({"usage_points": coordinator.usage_points})
+    storage = await async_get_xml_storage(hass, entry.entry_id)
+    await storage.async_add_xml("<old />", "electricity")
+    await services.async_setup_services(hass)
+
+    await hass.services.async_call(
+        DOMAIN,
+        "clear_stored_xml",
+        {"config_entry_id": entry.entry_id, "commodity": "electricity"},
+        blocking=True,
+    )
+
+    new_meter = model.MeterReading(
+        "new-meter",
+        reading_type,
+        [
+            model.IntervalBlock(
+                "new",
+                reading_type,
+                start,
+                timedelta(hours=1),
+                [model.IntervalReading(reading_type, 0, start, timedelta(hours=1), 2)],
+            )
+        ],
+    )
+    report = espi.EspiParseReport(
+        [model.UsagePoint("usage-point", SensorDeviceClass.ENERGY, [new_meter])],
+        accepted_readings=1,
+        skipped_readings=0,
+    )
+    with (
+        patch.object(espi, "parse_xml_with_report", return_value=report),
+        patch.object(
+            coordinator,
+            "_trigger_statistics_update_for_all_readings",
+            new_callable=AsyncMock,
+        ),
+    ):
+        await coordinator.async_add_xml_data("<new />")
+
+    assert [meter.id for meter in coordinator.usage_points[0].meter_readings] == [
+        "new-meter"
+    ]
+
+
 async def test_delete_rejects_a_green_button_entity_from_another_entry(
     hass: HomeAssistant,
 ) -> None:
@@ -288,9 +362,7 @@ async def test_delete_rejects_a_green_button_entity_from_another_entry(
 @pytest.mark.parametrize(
     ("service", "data"),
     [
-        pytest.param(
-            "import_espi_xml", {"xml": "<feed />"}, id="import"
-        ),
+        pytest.param("import_espi_xml", {"xml": "<feed />"}, id="import"),
         pytest.param("clear_stored_xml", {}, id="clear-archive"),
         pytest.param("recalculate_cost_statistics", {}, id="recalculate"),
         pytest.param(

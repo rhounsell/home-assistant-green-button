@@ -4,6 +4,7 @@ Run from the core workspace with:
 uv run --no-sync pytest -o pythonpath=config config/custom_components/green_button/tests
 """
 
+import asyncio
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from types import MappingProxyType
@@ -135,3 +136,23 @@ async def test_options_reload_preserves_xml(hass: HomeAssistant) -> None:
     assert reloaded is not storage
     assert reloaded.get_stored_xmls() == [{"label": "electricity", "xmls": [XML]}]
     assert hass.data[DOMAIN][entry.entry_id]["coordinator"].usage_points
+
+
+async def test_concurrent_first_storage_imports_share_one_serialized_archive(
+    hass: HomeAssistant,
+) -> None:
+    """Concurrent first access cannot create competing caches or duplicate XML."""
+    entry = _create_entry()
+
+    first_storage, second_storage = await asyncio.gather(
+        async_get_xml_storage(hass, entry.entry_id),
+        async_get_xml_storage(hass, entry.entry_id),
+    )
+    stored = await asyncio.gather(
+        first_storage.async_add_xml(XML, "electricity"),
+        second_storage.async_add_xml(XML, "electricity"),
+    )
+
+    assert first_storage is second_storage
+    assert sorted(stored) == [False, True]
+    assert first_storage.get_stored_xmls() == [{"label": "electricity", "xmls": [XML]}]

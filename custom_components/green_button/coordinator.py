@@ -62,12 +62,12 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self, xml_data: str, store_in_config: bool = True
     ) -> espi.EspiParseReport:
         """Add new Green Button XML data and update entities.
-        
+
         Args:
             xml_data: The XML data to parse and add
             store_in_config: If True, store the XML in a separate storage file.
                            If False, just merge the data without persisting (for service imports).
-        
+
         The label is auto-detected from the XML content based on commodity type:
         - Electricity (ServiceCategory kind=0) -> 'electricity'
         - Gas (ServiceCategory kind=1) -> 'gas'
@@ -80,11 +80,12 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             new_usage_points = report.usage_points
             summary_count = sum(
-                len(usage_point.usage_summaries)
-                for usage_point in new_usage_points
+                len(usage_point.usage_summaries) for usage_point in new_usage_points
             )
             if not report.accepted_readings and not summary_count:
-                raise ValueError("XML contains no supported interval readings or summaries")
+                raise ValueError(
+                    "XML contains no supported interval readings or summaries"
+                )
             _LOGGER.info(
                 "ESPI parse accepted %d interval readings and skipped %d",
                 report.accepted_readings,
@@ -99,13 +100,26 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # NOTE: We use a separate Store instance instead of config entry data because
             # config entries use delayed writes and are not designed for multi-MB data storage.
             if store_in_config:
-                _LOGGER.info("Storing XML data to dedicated storage file for entry %s with label '%s'", 
-                            self.config_entry.entry_id, label)
+                _LOGGER.info(
+                    "Storing XML data to dedicated storage file for entry %s with label '%s'",
+                    self.config_entry.entry_id,
+                    label,
+                )
                 # Use dedicated XML storage (immediate save for reliability)
-                xml_storage = await async_get_xml_storage(self.hass, self.config_entry.entry_id)
-                await xml_storage.async_add_xml(xml_data, label)
-                _LOGGER.info("Successfully stored XML data to .storage/green_button_xml_%s", 
-                            self.config_entry.entry_id)
+                xml_storage = await async_get_xml_storage(
+                    self.hass, self.config_entry.entry_id
+                )
+                stored = await xml_storage.async_add_xml(xml_data, label)
+                if not stored:
+                    _LOGGER.info(
+                        "Ignoring duplicate XML import for entry %s",
+                        self.config_entry.entry_id,
+                    )
+                    return report
+                _LOGGER.info(
+                    "Successfully stored XML data to .storage/green_button_xml_%s",
+                    self.config_entry.entry_id,
+                )
 
             # Log what we're processing (usage_points already parsed above for label detection)
             total_readings = sum(len(up.meter_readings) for up in new_usage_points)
@@ -177,9 +191,11 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.error("Error adding Green Button XML data: %s", err)
             raise UpdateFailed(f"Error adding Green Button XML data: {err}") from err
 
-    def _detect_label_from_usage_points(self, usage_points: list[model.UsagePoint]) -> str:
+    def _detect_label_from_usage_points(
+        self, usage_points: list[model.UsagePoint]
+    ) -> str:
         """Detect label from usage points based on commodity type.
-        
+
         Returns:
             'electricity' if any usage point is ENERGY type
             'gas' if any usage point is GAS type
@@ -196,7 +212,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _trigger_statistics_update_for_all_readings(self) -> None:
         """Trigger statistics update for all meter readings in coordinator data.
-        
+
         This ensures that after import, statistics are generated for every meter reading,
         including newly merged ones from imports. The coordinator update listeners
         (entity sensors) will be notified and will generate statistics automatically.
@@ -213,11 +229,16 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for usage_point in self.usage_points:
                 for meter_reading in usage_point.meter_readings:
                     total_meter_readings += 1
-                    interval_count = sum(len(blk.interval_readings) for blk in meter_reading.interval_blocks)
+                    interval_count = sum(
+                        len(blk.interval_readings)
+                        for blk in meter_reading.interval_blocks
+                    )
                     if interval_count > 0:
                         _LOGGER.debug(
                             "Will generate statistics for meter reading %s: %d total readings across %d interval blocks",
-                            meter_reading.id.split("/")[-1] if "/" in meter_reading.id else meter_reading.id,
+                            meter_reading.id.split("/")[-1]
+                            if "/" in meter_reading.id
+                            else meter_reading.id,
                             interval_count,
                             len(meter_reading.interval_blocks),
                         )
@@ -234,7 +255,10 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             else:
                                 _LOGGER.debug("  IntervalBlock: No readings")
 
-            _LOGGER.info("Statistics update scheduled for %d meter readings", total_meter_readings)
+            _LOGGER.info(
+                "Statistics update scheduled for %d meter readings",
+                total_meter_readings,
+            )
 
     def has_existing_entities(self) -> bool:
         """Check if entities already exist for the current data."""
@@ -242,7 +266,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_load_stored_data(self) -> None:
         """Load XML data from storage file (used during startup).
-        
+
         Uses a separate Store instance instead of config entry data because
         config entries use delayed writes and are not designed for multi-MB data.
         Falls back to config entry data for backwards compatibility.
@@ -251,7 +275,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # NEW: Check for and migrate temporary storage from config flow
         # (Config flow writes to temp storage to avoid putting large XML in config entry data)
         from .xml_storage import async_migrate_temp_storage
-        
+
         unique_id = self.config_entry.unique_id
         if unique_id:
             try:
@@ -259,20 +283,30 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self.hass, unique_id, self.config_entry.entry_id
                 )
                 if migrated:
-                    _LOGGER.info("[CONFIG FLOW IMPORT] Successfully migrated XML from temporary storage to permanent storage")
+                    _LOGGER.info(
+                        "[CONFIG FLOW IMPORT] Successfully migrated XML from temporary storage to permanent storage"
+                    )
                     # After migration, the data is already in permanent storage,
                     # so we continue below to load and process it
             except Exception as e:
-                _LOGGER.warning("[CONFIG FLOW IMPORT] Failed to migrate temporary storage: %s", e)
-        
+                _LOGGER.warning(
+                    "[CONFIG FLOW IMPORT] Failed to migrate temporary storage: %s", e
+                )
+
         # LEGACY FALLBACK: Check for initial_xml from config flow (old method, for backwards compatibility)
         # New installations write directly to dedicated temp storage during config flow
         initial_xml = self.config_entry.data.get("initial_xml")
         if initial_xml:
-            _LOGGER.info("[CONFIG FLOW IMPORT - LEGACY] Processing initial XML from config flow setup for entry %s",
-                        self.config_entry.entry_id)
-            _LOGGER.info("[CONFIG FLOW IMPORT - LEGACY] XML size: %d bytes", len(initial_xml))
-            _LOGGER.warning("[CONFIG FLOW IMPORT - LEGACY] Using legacy migration path - XML should have been written to storage during config flow")
+            _LOGGER.info(
+                "[CONFIG FLOW IMPORT - LEGACY] Processing initial XML from config flow setup for entry %s",
+                self.config_entry.entry_id,
+            )
+            _LOGGER.info(
+                "[CONFIG FLOW IMPORT - LEGACY] XML size: %d bytes", len(initial_xml)
+            )
+            _LOGGER.warning(
+                "[CONFIG FLOW IMPORT - LEGACY] Using legacy migration path - XML should have been written to storage during config flow"
+            )
             # Process through normal flow which auto-detects label and stores properly
             await self.async_add_xml_data(initial_xml, store_in_config=True)
 
@@ -281,13 +315,17 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data_updates.pop("initial_xml", None)
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=data_updates
-            ) 
+            )
             # Verify removal
             if "initial_xml" not in self.config_entry.data:
-                _LOGGER.info("[CONFIG FLOW IMPORT - LEGACY] Successfully migrated initial_xml to .storage/green_button_xml_%s and removed from config entry",
-                            self.config_entry.entry_id)
+                _LOGGER.info(
+                    "[CONFIG FLOW IMPORT - LEGACY] Successfully migrated initial_xml to .storage/green_button_xml_%s and removed from config entry",
+                    self.config_entry.entry_id,
+                )
             else:
-                _LOGGER.warning("[CONFIG FLOW IMPORT - LEGACY] Failed to remove initial_xml from config entry data!")
+                _LOGGER.warning(
+                    "[CONFIG FLOW IMPORT - LEGACY] Failed to remove initial_xml from config entry data!"
+                )
             return  # Data already processed
 
         if self.has_existing_entities():
@@ -308,7 +346,10 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         except (ValueError, OSError) as err:
             self.last_update_success = False
-            _LOGGER.warning("[RESTART] Failed to load stored XML data: %s. last_update_success set to False.", err)
+            _LOGGER.warning(
+                "[RESTART] Failed to load stored XML data: %s. last_update_success set to False.",
+                err,
+            )
 
     async def async_reconstruct_stored_usage_points(self) -> list[model.UsagePoint]:
         """Parse all archived XML and apply the normal import reconciliation."""
@@ -334,6 +375,12 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     reconstructed._merge_usage_points(usage_points)
 
         return reconstructed.usage_points
+
+    async def async_sync_stored_usage_points(self) -> None:
+        """Replace active history with the canonical data still in the archive."""
+        self.usage_points = await self.async_reconstruct_stored_usage_points()
+        self.async_set_updated_data({"usage_points": self.usage_points})
+        self.last_update_success = True
 
     def _merge_usage_points(self, new_usage_points: list[model.UsagePoint]) -> None:
         """Merge new usage points with existing ones, combining interval blocks."""
@@ -419,9 +466,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for existing_mr in existing_up.meter_readings:
             matching_new_mr = new_mr_map.get(existing_mr.id)
             if matching_new_mr is None:
-                merged_meter_readings.append(
-                    self._normalize_meter_reading(existing_mr)
-                )
+                merged_meter_readings.append(self._normalize_meter_reading(existing_mr))
             else:
                 merged_mr, replaced, rejected = self._reconcile_meter_reading(
                     existing_mr, matching_new_mr
@@ -452,9 +497,7 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         return merged_meter_readings
 
-    def _normalize_usage_point(
-        self, usage_point: model.UsagePoint
-    ) -> model.UsagePoint:
+    def _normalize_usage_point(self, usage_point: model.UsagePoint) -> model.UsagePoint:
         """Normalize interval data in a newly discovered usage point."""
         fallback_multiplier = self._configured_multiplier(usage_point)
         return dataclasses.replace(
@@ -520,7 +563,9 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and (summary.start, summary.duration) not in latest_by_period
         ]
         accepted = sorted(retained, key=lambda summary: summary.start)
-        for summary in sorted(latest_by_period.values(), key=lambda summary: summary.start):
+        for summary in sorted(
+            latest_by_period.values(), key=lambda summary: summary.start
+        ):
             if any(
                 summary.start < existing.start + existing.duration
                 and existing.start < summary.start + summary.duration
@@ -670,13 +715,10 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
         for reading, source_block_id in records:
-            if (
-                block_records
-                and (
-                    source_block_id != block_id
-                    or reading.reading_type != block_records[0].reading_type
-                    or reading.start != block_records[-1].end
-                )
+            if block_records and (
+                source_block_id != block_id
+                or reading.reading_type != block_records[0].reading_type
+                or reading.start != block_records[-1].end
             ):
                 append_block()
                 block_records = []

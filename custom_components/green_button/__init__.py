@@ -12,6 +12,7 @@ from . import statistics
 from .const import DOMAIN
 from .coordinator import GreenButtonCoordinator
 from .services import async_setup_services, async_unload_services
+from .xml_storage import async_evict_xml_storage
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the Green Button component.
-    
+
     Args:
         hass: Home Assistant instance
         config: Configuration dict (not used - this is a config-entry-based integration)
@@ -90,8 +91,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id, None)
 
         # Preserve source XML for reloads and future setup.
-        storage_key = f"{DOMAIN}_xml_storage_{entry.entry_id}"
-        hass.data[DOMAIN].pop(storage_key, None)
+        async_evict_xml_storage(hass, entry.entry_id)
 
         # If no more entries, unload services
         if not hass.data[DOMAIN]:

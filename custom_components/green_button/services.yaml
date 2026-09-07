@@ -81,6 +81,7 @@ clear_stored_xml:
     'electricity' for electric data, 'gas' for gas data.
     Use this to reset saved storage if it grows too large from multiple imports.
     You will need to re-import your XML data after clearing.
+    Clearing also removes that archive's data from the active Green Button import history.
     This service does not delete statistics from the recorder database. The energy dashboard
     history remains intact. Use Delete Green Button Statistics to clear database statistics.
   fields:
