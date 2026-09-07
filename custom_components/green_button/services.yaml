@@ -1,18 +1,41 @@
 log_meter_reading_intervals:
   name: Log Green Button Meter Reading Intervals
   description: >
-    Log all Green Button meter readings, their interval block date ranges, and mapped sensor entities for all Green Button usage points. This diagnostic service writes detailed information to the Home Assistant log to help debug data import and entity mapping issues. No fields are required.
+    Log meter readings, their interval block date ranges, and mapped sensor entities for one Green Button entry.
+  fields:
+    config_entry_id:
+      name: Config entry
+      description: Select the Green Button entry to inspect.
+      required: true
+      selector:
+        config_entry:
+          integration: green_button
 
 log_stored_xmls:
   name: Log Stored Green Button XML Info
   description: >
-    Log information about stored XML data in the config entry, including labels and date ranges. 
+    Log information about stored XML data for one Green Button entry, including labels and date ranges.
     This helps diagnose why data might be missing after restart.
+  fields:
+    config_entry_id:
+      name: Config entry
+      description: Select the Green Button entry to inspect.
+      required: true
+      selector:
+        config_entry:
+          integration: green_button
 
 delete_statistics:
   name: Delete Green Button Statistics
   description: Delete the imported Green Button statistics associated with a display sensor. Requires an administrator. Legacy sensor statistics are preserved. Re-import your XML data to rebuild the imported series.
   fields:
+    config_entry_id:
+      name: Config entry
+      description: Select the entry that owns the display sensor.
+      required: true
+      selector:
+        config_entry:
+          integration: green_button
     statistic_id:
       name: Display sensor
       description: "The Green Button display entity (e.g., sensor.home_electricity_usage). Its imported green_button: statistics series will be deleted."
@@ -27,8 +50,16 @@ import_espi_xml:
     Import usage data from an XML file or XML content in the ESPI atom format.
     Provide either xml_file_path OR xml, not both.
     The commodity type (electricity or gas) is auto-detected from the XML content.
-    Importing additional data of the same type accumulates with existing data.
+    Importing additional data of the same type accumulates with the selected entry's data.
+    File paths must be under the Home Assistant configuration directory or an allowed external directory.
   fields:
+    config_entry_id:
+      name: Config entry
+      description: Select the Green Button entry that will receive this XML data.
+      required: true
+      selector:
+        config_entry:
+          integration: green_button
     xml_file_path:
       name: XML File Path
       description: "Path to the XML file to import (e.g., /share/myfile.xml). Leave empty if providing XML content directly."
@@ -46,13 +77,20 @@ import_espi_xml:
 clear_stored_xml:
   name: Clear Stored Green Button XML Data
   description: >
-    Clear stored Green Button XML data. Labels are auto-assigned based on commodity type:
+    Clear stored Green Button XML data for one entry. Labels are auto-assigned based on commodity type:
     'electricity' for electric data, 'gas' for gas data.
     Use this to reset saved storage if it grows too large from multiple imports.
     You will need to re-import your XML data after clearing.
     This service does not delete statistics from the recorder database. The energy dashboard
     history remains intact. Use Delete Green Button Statistics to clear database statistics.
   fields:
+    config_entry_id:
+      name: Config entry
+      description: Select the Green Button entry whose archive will be cleared.
+      required: true
+      selector:
+        config_entry:
+          integration: green_button
     commodity:
       name: Commodity Type
       description: "Select which data to clear, or leave empty to clear all."
@@ -68,12 +106,19 @@ clear_stored_xml:
 recalculate_cost_statistics:
   name: Recalculate Green Button Cost Statistics
   description: >
-    Recalculate cost statistics for electricity and/or gas sensors using the current
+    Recalculate cost statistics for one Green Button entry's electricity and/or gas sensors using the current
     power-of-ten multiplier settings. Use this after changing the cost multiplier values
     in the integration options to update all historical cost data with the new multipliers.
     The recalculation uses the stored usage data and applies the new multiplier values
     to regenerate cost statistics for the Energy Dashboard.
   fields:
+    config_entry_id:
+      name: Config entry
+      description: Select the Green Button entry whose cost statistics will be recalculated.
+      required: true
+      selector:
+        config_entry:
+          integration: green_button
     commodity:
       name: Commodity Type
       description: "Select which cost statistics to recalculate."
