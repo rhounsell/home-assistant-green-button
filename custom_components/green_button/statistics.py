@@ -419,19 +419,6 @@ async def _get_all_existing_statistics(
     return result
 
 
-def _convert_to_kwh(value: float, source_unit: Any) -> float:
-    """Convert energy value from source unit to kWh.
-
-    Args:
-        value: The energy value in the source unit
-        source_unit: The source unit (e.g., UnitOfEnergy.WATT_HOUR or string like "Wh")
-
-    Returns:
-        The energy value in kWh
-    """
-    return float(allocation.energy_to_kwh(decimal.Decimal(str(value)), source_unit))
-
-
 class DataExtractor(Protocol):
     """A protocol for an instance that can extract data from an IntervalReading."""
 
@@ -747,22 +734,6 @@ async def clear_statistic(hass: HomeAssistant, statistic_id: str) -> None:
 def _billing_timezone() -> datetime.tzinfo:
     """Return the configured Home Assistant timezone for billing dates."""
     return dt_util.get_default_time_zone()
-
-
-def _gas_daily_totals(
-    readings: Sequence[model.IntervalReading],
-    time_zone: datetime.tzinfo,
-    range_start: datetime.datetime | None = None,
-    range_end: datetime.datetime | None = None,
-) -> dict[datetime.date, decimal.Decimal]:
-    """Allocate gas interval overlap across local calendar days."""
-    return allocation.local_day_values(
-        readings,
-        scaling.interval_value,
-        time_zone,
-        range_start,
-        range_end,
-    )
 
 
 def _is_gas_billing_period_reading(reading: model.IntervalReading) -> bool:

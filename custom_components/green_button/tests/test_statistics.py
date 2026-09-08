@@ -197,7 +197,11 @@ async def test_gas_daily_totals_use_local_dates_and_interval_overlap(
     reading_type = model.ReadingType("type", 7, "CAD", 0, "m³", 3600)
     reading = model.IntervalReading(reading_type, 0, start, duration, value)
 
-    totals = statistics._gas_daily_totals([reading], statistics._billing_timezone())
+    totals = allocation.local_day_values(
+        [reading],
+        scaling.interval_value,
+        statistics._billing_timezone(),
+    )
 
     assert [day.isoformat() for day in totals] == [day for day, _ in expected]
     assert list(totals.values()) == pytest.approx([total for _, total in expected])
