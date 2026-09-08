@@ -3,10 +3,11 @@
 # ruff: noqa: SLF001, TID251
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 from xml.etree import ElementTree as ET
 
-from custom_components.green_button import model, scaling, statistics
+from custom_components.green_button import allocation, model, scaling
 from custom_components.green_button.const import DOMAIN
 from custom_components.green_button.coordinator import GreenButtonCoordinator
 from custom_components.green_button.parsers import espi
@@ -97,7 +98,7 @@ def test_missing_cost_and_unknown_energy_unit_cannot_generate_statistics() -> No
     with pytest.raises(ValueError, match="cost is missing"):
         scaling.usage_summary_cost(summary, 0)
     with pytest.raises(ValueError, match="Unsupported energy unit"):
-        statistics._convert_to_kwh(1, "unsupported")
+        allocation.energy_to_kwh(Decimal(1), "unsupported")
 
 
 async def test_empty_import_is_rejected_before_storage(
@@ -112,9 +113,13 @@ async def test_empty_import_is_rejected_before_storage(
     with (
         patch.object(espi, "parse_xml_with_report", return_value=report),
         patch.object(
-            coordinator, "_trigger_statistics_update_for_all_readings", new_callable=AsyncMock
+            coordinator,
+            "_trigger_statistics_update_for_all_readings",
+            new_callable=AsyncMock,
         ) as trigger_statistics,
-        pytest.raises(UpdateFailed, match="no supported interval readings or summaries"),
+        pytest.raises(
+            UpdateFailed, match="no supported interval readings or summaries"
+        ),
     ):
         await coordinator.async_add_xml_data("<feed />")
 
