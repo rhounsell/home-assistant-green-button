@@ -1,0 +1,167 @@
+# Loads default set of integrations. Do not remove.
+default_config:
+
+logger:
+  default: warn
+  logs:
+    custom_components.green_button: debug
+#    homeassistant.components.sensor.recorder: debug
+#    homeassistant.components.recorder.statistics: debug
+#    homeassistant.components.solaredge: debug
+#    pyinsteon.messages: debug
+#    homeassistant.components.insteon: debug
+#    pyinsteon.topics: debug
+#    pyinsteon.messages: debug
+# Suppress state_class warnings for Green Button sensors
+  filters:
+    homeassistant.components.recorder.statistics:
+      - ".*no longer has a state class.*sensor.home_electricity_consumption.*"
+      - ".*no longer has a state class.*sensor.home_natural_gas.*"
+
+recorder:
+  purge_keep_days: 40
+
+# Text to speech
+tts:
+  - platform: google_translate
+
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+# scan Io and get zfs pool status
+command_line:
+  - sensor:
+      name: "Io ZFS Pool Health"
+      unique_id: io_zfs_pool_health
+      command: >
+        ssh -i /config/ssh/id_ed25519
+        -o BatchMode=yes
+        -o StrictHostKeyChecking=no
+        ha_monitor@192.168.1.200
+        'timestamp=$(date +%s); status=$(zpool status -x | tr "\n" " "); echo "$timestamp $status"'
+      scan_interval: 1800
+
+mqtt:
+  sensor:
+    - name: "Zigbee LQI Sensor"
+      state_topic: "zigbee2mqtt/Phillips Hue Sensor"
+      value_template: "{{ value_json.linkquality }}"
+      unit_of_measurement: "lqi"
+#      device_class: signal_strength
+      state_class: measurement
+      unique_id: zigbee_lqi_phillips_hue_sensor
+      
+template:
+  - trigger:
+      - platform: time
+        at: "00:00:00"
+      - platform: state
+        entity_id: sensor.solaredge_energy_today
+    sensor:
+      - name: "Max Solar Energy Today"
+        unique_id: "Max_solar_energy_today"
+        unit_of_measurement: "kWh"
+        device_class: energy
+        state_class: total
+        state: >
+          {% set current = states('sensor.solaredge_energy_today') | float(0) %}
+          {% if trigger is defined and trigger.platform == 'time' %}
+            0
+          {% else %}
+            {% set prev_max = this.state | float(0) %}
+            {% set prev_source = this.attributes.get('previous_source_value', current) | float(0) %}
+            {% set has_reset = this.attributes.get('has_reset_today', false) %}
+            
+            {% if current < prev_source %}
+              {{ prev_max }}
+            {% elif has_reset %}
+              {% set delta = current - prev_source %}
+              {{ prev_max + delta }}
+            {% else %}
+              {{ [current, prev_max] | max }}
+            {% endif %}
+          {% endif %}
+        attributes:
+          previous_source_value: >
+            {{ states('sensor.solaredge_energy_today') | float(0) }}
+          has_reset_today: >
+            {% if trigger is defined and trigger.platform == 'time' %}
+              false
+            {% else %}
+              {% set current = states('sensor.solaredge_energy_today') | float(0) %}
+              {% set prev_source = this.attributes.get('previous_source_value', current) | float(0) %}
+              {% set has_reset = this.attributes.get('has_reset_today', false) %}
+              {{ (current < prev_source and not has_reset) or has_reset }}
+            {% endif %}
+          last_reset: >
+            {% if trigger is defined and trigger.platform == 'time' %}
+              {{ now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat() }}
+            {% else %}
+              {{ this.attributes.get('last_reset', now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()) }}
+            {% endif %}
+
+  - sensor:
+      - name: "Solar Income Today"
+        unique_id: "sensor.solar_income_today"
+        icon: mdi:currency-usd
+        unit_of_measurement: "$CAN"
+        state_class: total
+        state: >
+          {% set energy_today = states('sensor.max_solar_energy_today') | float (0) %}
+          {# {% set energy_today = states('sensor.solaredge_energy_today') | float (0) %} #}
+          {# Changed source because solaredge_energy_today resets at 8pm local time #}
+          {# Note: solaredge_energy_today is in kWh #}
+          {{ "%0.2f" | format((energy_today * 0.544) | round(2)) }}
+
+  - sensor:
+      - name: "Solar Income this Month"
+        unique_id: "sensor.solar_income_this_month"
+        icon: mdi:currency-usd
+        unit_of_measurement: "$CAN"
+        state_class: total
+        state: >
+          {% set energy_this_month = states('sensor.solaredge_energy_this_month') | float (0) %}
+          {# Note: solaredge_energy_this_month is in Wh #}
+          {{ "%0.2f" | format((energy_this_month * 0.544 * 0.001) | round(2)) }}
+          
+  # zfs degraded sensor. health = off, DEGRADED/FAULTED/UNAVAIL = on
+  - binary_sensor:
+      - name: "Io ZFS Pool Status"
+        unique_id: io_zfs_pool_status
+        device_class: problem
+        state: >
+          {% set s = states('sensor.io_zfs_pool_health') %}
+          {% set health = s.split(' ', 1)[1] if s not in ['unknown', 'unavailable'] and ' ' in s else 'unknown' %}
+          {{ health not in ['unknown', 'unavailable', 'all pools are healthy'] }}
+        attributes:
+          last_check: >
+            {% set s = states('sensor.io_zfs_pool_health') %}
+            {% if s not in ['unknown', 'unavailable'] and ' ' in s %}
+              {{ s.split(' ')[0] | int | timestamp_local }}
+            {% else %}
+              unavailable
+            {% endif %}
+          pool_health: >
+            {% set s = states('sensor.io_zfs_pool_health') %}
+            {{ s.split(' ', 1)[1] if s not in ['unknown', 'unavailable'] and ' ' in s else s }}
+
+  ### expose HA scripts to Google Home
+  - switch:
+    - name: "Set Movie Mode"
+      unique_id: script_set_movie_mode
+      turn_on:
+        - service: script.movie_mode_script
+      turn_off:
+        - service: script.movie_mode_script
+      # Report switch state from the script entity when possible
+      state: "{{ is_state('script.movie_mode_script', 'on') }}"
+      # Use optimistic mode because many scripts don't stay in 'on' state long;
+      # this makes the switch assume the state change when you call the service,
+      # which is often better for integrations like Google Home.
+      optimistic: true
+
+# Example configuration.yaml entry
+#frontend:
+#  extra_module_url:
+#    - /hacsfiles/lovelace-card-mod/card-mod.js?hacstag=190927524400
