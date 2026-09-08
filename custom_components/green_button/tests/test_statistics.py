@@ -491,6 +491,40 @@ async def test_electricity_display_totals_match_complete_hour_statistics(
     )
 
 
+async def test_electricity_allocation_runs_in_the_executor(
+    hass: HomeAssistant,
+) -> None:
+    """Historical interval allocation does not block Home Assistant's event loop."""
+    original_executor_job = hass.async_add_executor_job
+    executor_jobs: list[object] = []
+
+    async def async_add_executor_job(
+        job: Callable[..., object], *args: object
+    ) -> object:
+        executor_jobs.append(job)
+        return await original_executor_job(job, *args)
+
+    with (
+        patch.object(
+            hass, "async_add_executor_job", side_effect=async_add_executor_job
+        ),
+        patch.object(
+            statistics,
+            "_get_all_existing_statistics",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+    ):
+        await statistics._generate_statistics_data(
+            hass,
+            _StatisticsEntity(),  # type: ignore[arg-type]
+            statistics.DefaultDataExtractor(),
+            _partial_hour_meter(False),
+        )
+
+    assert executor_jobs == [statistics._electricity_usage_values]
+
+
 def test_prorated_gas_cost_marks_incomplete_consumption_as_an_estimate() -> None:
     """A partial billing period assigns its bill to measured days by policy."""
     reading_type = model.ReadingType("type", 7, "CAD", 0, "m³", 86400)
@@ -592,6 +626,22 @@ async def test_statistics_validation_failure_does_not_queue_replacement(
             )
 
     queue_task.assert_not_awaited()
+
+
+async def test_unchanged_statistics_skip_recorder_replacement(
+    hass: HomeAssistant,
+) -> None:
+    """Equivalent normalized source records do not rewrite an external series."""
+    metadata = statistics.create_metadata(_StatisticsEntity())  # type: ignore[arg-type]
+    records = [StatisticData(start=HISTORICAL, state=1.0, sum=1.0)]
+
+    with patch.object(
+        statistics._ReplaceStatisticsTask, "queue_task", new_callable=AsyncMock
+    ) as queue_task:
+        assert await statistics._async_replace_statistics(hass, metadata, records)
+        assert not await statistics._async_replace_statistics(hass, metadata, records)
+
+    queue_task.assert_awaited_once_with(hass, metadata, records)
 
 
 @pytest.mark.usefixtures("recorder_mock")

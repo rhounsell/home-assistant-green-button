@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
 from typing import Any
 
@@ -73,17 +72,15 @@ class GreenButtonXmlStorage:
     async def _async_save(self, data: dict[str, Any]) -> None:
         """Save XML data while holding the storage lock."""
         self._data = data
-        storage_file = _get_storage_key(self.entry_id)
-
-        # Calculate approximate size of data being saved
-        data_size_bytes = len(json.dumps(data))
-        data_size_mb = data_size_bytes / (1024 * 1024)
-
+        document_count = sum(
+            len(entry.get("xmls", [])) for entry in data.get("stored_xmls", [])
+        )
         _LOGGER.info(
-            "Saving XML data to .storage/%s (~%.2f MB)", storage_file, data_size_mb
+            "Saving %d Green Button XML document(s) for entry %s",
+            document_count,
+            self.entry_id,
         )
         await self._store.async_save(data)
-        _LOGGER.info("✅ Saved XML data to .storage/%s", storage_file)
 
     def async_delay_save(self, data: dict[str, Any], delay: float = 1.0) -> None:
         """Schedule a delayed save of XML data."""

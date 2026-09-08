@@ -7,11 +7,11 @@ from collections.abc import Callable, Coroutine, Sequence
 import dataclasses
 import datetime
 import decimal
+import hashlib
 import logging
 import math
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, cast, final
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast, final
 
-from homeassistant import exceptions
 from homeassistant.components.recorder import (
     db_schema as recorder_db_schema,
     statistics,
@@ -72,6 +72,7 @@ T = TypeVar("T")
 
 _DATA_STATISTICS_LOCKS = f"{DOMAIN}_statistics_locks"
 _DATA_STATISTICS_TASKS = f"{DOMAIN}_statistics_tasks"
+_DATA_STATISTICS_FINGERPRINTS = f"{DOMAIN}_statistics_fingerprints"
 
 # Notes on statistic behavior:
 #
@@ -128,161 +129,6 @@ _DATA_STATISTICS_TASKS = f"{DOMAIN}_statistics_tasks"
 #     See `_get_oldest_sum_statistic_in_sub_period()`.
 #   -
 #
-
-
-@final
-@dataclasses.dataclass(frozen=False)
-class _SensorStatRecord:
-    timestamp: datetime.datetime
-    last_reset: datetime.datetime | None
-    state: decimal.Decimal
-    sum: decimal.Decimal
-
-    @classmethod
-    def from_dict(cls, record: dict[str, Any]) -> _SensorStatRecord:
-        """Create a stat record from the raw database record."""
-        return _SensorStatRecord(
-            timestamp=record["end"],
-            last_reset=record.get("last_reset"),
-            state=decimal.Decimal(record["state"]),
-            sum=decimal.Decimal(record["sum"]),
-        )
-
-    def to_statistics_data(self, period: Literal["5minute", "hour"]) -> StatisticData:
-        """Create a StatisticData from this record."""
-        return StatisticData(
-            start=self.timestamp - _to_time_delta(period),
-            last_reset=self.last_reset,
-            state=float(self.state),
-            sum=float(self.sum),
-        )
-
-
-@final
-@dataclasses.dataclass(frozen=True)
-class _StatisticSamples:
-    prev_sum_before_end: float | None
-    samples: list[_SensorStatRecord]
-
-    def get_total_change(self) -> float:
-        """Return the total change of the sum if these samples are applied."""
-        if not self.samples:
-            return 0.0
-        if self.prev_sum_before_end is None:
-            return float(self.samples[-1].sum)
-        return float(self.samples[-1].sum) - self.prev_sum_before_end
-
-
-@final
-@dataclasses.dataclass(frozen=True)
-class _MergedIntervalBlock:
-    ids: list[str]
-    reading_type: model.ReadingType
-    start: datetime.datetime
-    duration: datetime.timedelta
-    interval_readings: list[model.IntervalReading]
-
-    @property
-    def end(self) -> datetime.datetime:
-        """Return the block's interval's end time."""
-        return self.start + self.duration
-
-    @classmethod
-    def create(cls, interval_blocks: list[model.IntervalBlock]) -> _MergedIntervalBlock:
-        """Create a new merge block."""
-        if not interval_blocks:
-            raise ValueError("interval_blocks cannot be empty.")
-        return cls(
-            ids=[block.id for block in interval_blocks],
-            reading_type=interval_blocks[0].reading_type,
-            start=interval_blocks[0].start,
-            duration=interval_blocks[-1].end - interval_blocks[0].start,
-            interval_readings=[
-                reading
-                for block in interval_blocks
-                for reading in block.interval_readings
-            ],
-        )
-
-
-def _merge_interval_blocks(
-    interval_blocks: Sequence[model.IntervalBlock],
-) -> list[_MergedIntervalBlock]:
-    res: list[_MergedIntervalBlock] = []
-    merged_blocks: list[model.IntervalBlock] = []
-    for curr_block in interval_blocks:
-        if not merged_blocks:
-            merged_blocks.append(curr_block)
-            continue
-        prev_block = merged_blocks[-1]
-        if prev_block.end == curr_block.start:
-            merged_blocks.append(curr_block)
-            continue
-        res.append(_MergedIntervalBlock.create(merged_blocks))
-        merged_blocks = [curr_block]
-    if merged_blocks:
-        res.append(_MergedIntervalBlock.create(merged_blocks))
-    return res
-
-
-def _to_table(
-    period: Literal["5minute", "hour"],
-) -> type[recorder_db_schema.StatisticsShortTerm | recorder_db_schema.Statistics]:
-    if period == "5minute":
-        return recorder_db_schema.StatisticsShortTerm
-    if period == "hour":
-        return recorder_db_schema.Statistics
-
-
-def _to_time_delta(period: Literal["5minute", "hour"]) -> datetime.timedelta:
-    return _to_table(period).duration
-
-
-def _round_down(
-    datetime_val: datetime.datetime, period: Literal["5minute", "hour"]
-) -> datetime.datetime:
-    if period == "5minute":
-        return datetime_val.replace(
-            minute=datetime_val.minute - (datetime_val.minute % 5),
-            second=0,
-            microsecond=0,
-        )
-    if period == "hour":
-        return datetime_val.replace(
-            minute=0,
-            second=0,
-            microsecond=0,
-        )
-
-
-def _round_up(
-    datetime_val: datetime.datetime, period: Literal["5minute", "hour"]
-) -> datetime.datetime:
-    return _round_down(
-        datetime_val=datetime_val
-        + _to_time_delta(period)
-        - datetime.timedelta.resolution,
-        period=period,
-    )
-
-
-def _is_aligned(
-    datetime_val: datetime.datetime, period: Literal["5minute", "hour"]
-) -> bool:
-    return datetime_val == _round_down(datetime_val, period)
-
-
-def _adjust_for_end_time(
-    datetime_val: datetime.datetime, period: Literal["5minute", "hour"]
-) -> datetime.datetime:
-    """Return the start time of the stat record that would contain the datetime.
-
-    If the datetime is on a period boundary, then return the previous period
-    boundary. This is useful for treating stat records as representing the state
-    of the world at the record's end time when query methods compare ranges
-    against the start time (like the current state of the query methods).
-    """
-    return _round_down(datetime_val - datetime.timedelta.resolution, period)
 
 
 def _queue_task(
@@ -440,10 +286,65 @@ async def _async_replace_statistics(
     hass: HomeAssistant,
     metadata: StatisticMetaData,
     records: list[StatisticData],
-) -> None:
-    """Validate and atomically replace an external statistics series."""
+) -> bool:
+    """Validate and atomically replace an external series when it changed."""
     validated = _validated_statistics(metadata, records)
+    digest = hashlib.sha256()
+    for record in validated:
+        digest.update(
+            (
+                f"{record['start'].isoformat()}\\0{record['state']:.17g}"
+                f"\\0{record['sum']:.17g}\\n"
+            ).encode()
+        )
+    fingerprints = cast(
+        dict[str, str],
+        hass.data.setdefault(_DATA_STATISTICS_FINGERPRINTS, {}),
+    )
+    statistic_id = metadata["statistic_id"]
+    fingerprint = digest.hexdigest()
+    if fingerprints.get(statistic_id) == fingerprint:
+        _LOGGER.debug("Skipping unchanged Green Button statistic %s", statistic_id)
+        return False
+    _LOGGER.info(
+        "Replacing %d records for %s from %s through %s",
+        len(validated),
+        statistic_id,
+        validated[0]["start"],
+        validated[-1]["start"],
+    )
     await _ReplaceStatisticsTask.queue_task(hass, metadata, validated)
+    fingerprints[statistic_id] = fingerprint
+    return True
+
+
+@final
+@dataclasses.dataclass(frozen=False)
+class _ClearStatisticsTask(tasks.RecorderTask):
+    """Clear one external series and settle its waiting caller."""
+
+    hass: HomeAssistant
+    statistic_id: str
+    future: asyncio.Future[None]
+
+    def run(self, instance: Recorder) -> None:
+        try:
+            statistics.clear_statistics(
+                instance=instance, statistic_ids=[self.statistic_id]
+            )
+        except Exception as err:
+            _complete_future_exception(self.future, err)
+            return
+        _complete_future(self.future, None)
+
+    @classmethod
+    def queue_task(cls, hass: HomeAssistant, statistic_id: str) -> asyncio.Future[None]:
+        """Queue the clear operation and return its completion future."""
+
+        def ctor(future: asyncio.Future[None]) -> _ClearStatisticsTask:
+            return cls(hass=hass, statistic_id=statistic_id, future=future)
+
+        return _queue_task(hass, ctor)
 
 
 @final
@@ -518,74 +419,6 @@ async def _get_all_existing_statistics(
     return result
 
 
-def _find_last_statistic_before(
-    existing_stats: list[StatisticData],
-    target_time: datetime.datetime,
-) -> StatisticData | None:
-    """Find the last statistic with start time before target_time.
-
-    Returns None if no such statistic exists.
-    """
-    for stat in reversed(existing_stats):
-        if stat["start"] < target_time:
-            return stat
-    return None
-
-
-def _calculate_running_sum(stats: list[StatisticData]) -> list[StatisticData]:
-    """Calculate running sums through the shared Decimal allocation pipeline."""
-    return [
-        cast(StatisticData, record)
-        for record in allocation.cumulative_records(
-            {
-                stat["start"]: decimal.Decimal(str(stat.get("state", 0)))
-                for stat in stats
-            }
-        )
-    ]
-
-
-def _merge_statistics_with_out_of_order_support(
-    existing_stats: list[StatisticData],
-    new_stats: list[StatisticData],
-    statistic_id: str,
-) -> list[StatisticData]:
-    """Merge new statistics into existing statistics, handling out-of-order imports.
-
-    Algorithm:
-    1. Determine the date range of new data
-    2. Find the last existing statistic before the new data (baseline)
-    3. Remove existing statistics that overlap with OR are after the new data range
-    4. Add new data with cumulative sums starting from baseline
-
-    NOTE: We do NOT preserve statistics after the new data range. The stored XML
-    is the source of truth for this integration. Any statistics not covered by the
-    XML data (including corrupted records auto-generated by HA's recorder) should
-    be discarded.
-
-    Args:
-        existing_stats: List of existing StatisticData sorted by start time
-        new_stats: List of new StatisticData to merge, sorted by start time
-        statistic_id: The ID of the statistic being merged
-
-    Returns:
-        Complete list of StatisticData that should be imported
-    """
-    if not new_stats:
-        return []
-    values = {
-        stat["start"]: decimal.Decimal(str(stat.get("state", 0))) for stat in new_stats
-    }
-    records = allocation.merge_records(existing_stats, values)
-    _LOGGER.debug(
-        "Merged %d source records with %d retained records for %s",
-        len(values),
-        sum(1 for stat in existing_stats if stat["start"] < min(values)),
-        statistic_id,
-    )
-    return [cast(StatisticData, record) for record in records]
-
-
 def _convert_to_kwh(value: float, source_unit: Any) -> float:
     """Convert energy value from source unit to kWh.
 
@@ -597,629 +430,6 @@ def _convert_to_kwh(value: float, source_unit: Any) -> float:
         The energy value in kWh
     """
     return float(allocation.energy_to_kwh(decimal.Decimal(str(value)), source_unit))
-
-
-class _StatsDao:
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        statistic_id: str,
-    ) -> None:
-        self._hass = hass
-        self._statistic_id = statistic_id
-
-    def statistics_during_period_from_end_time(
-        self,
-        start: datetime.datetime,
-        end: datetime.datetime,
-        period: Literal["5minute", "hour"],
-    ) -> list[_SensorStatRecord]:
-        """Return the stats whose end time lies in the range (non-inclusive)."""
-        # We adjust the range by subtracting the resolution and rounding down so
-        # that the results return exactly the stat records whose end time lie in the
-        # range.
-        raw_data = statistics.statistics_during_period(
-            hass=self._hass,
-            start_time=_adjust_for_end_time(start, period),
-            end_time=_adjust_for_end_time(end, period),
-            statistic_ids={self._statistic_id},
-            period=period,
-            types={"sum", "state"},
-            units=None,
-        ).get(self._statistic_id, [])
-        if not raw_data:
-            return []
-
-        data = [
-            _SensorStatRecord.from_dict(cast(dict[str, Any], record))
-            for record in raw_data
-        ]
-        # Remove the head if the stat is before the requested range. This can
-        # happen because `statistics_during_period` will attempt always attempt
-        # to append the most recent stat record that starts before the requested
-        # start time. It does this even if that record's end time is also before
-        # the requested start time. Since we clamp the start time to the period,
-        # this can only happen if there is a gap in data (e.g., if HASS is not
-        # running when it should have collected that data point).
-        if data[0].timestamp < start:
-            return data[1:]
-        return data
-
-    def compute_sum_before(self, timestamp: datetime.datetime) -> _SensorStatRecord:
-        """Compute the sum statistics before the specified time."""
-        # We need to round up because the end time is non-inclusive.
-        sample_datetime = _round_up(
-            timestamp + datetime.timedelta.resolution, "5minute"
-        )
-        sum_before = statistics.statistic_during_period(
-            hass=self._hass,
-            start_time=None,
-            end_time=sample_datetime,
-            statistic_id=self._statistic_id,
-            types={"change"},
-            units=None,
-        ).get("change")
-        if sum_before is None:
-            sum_before = 0
-        sum_decimal = decimal.Decimal(sum_before)
-        return _SensorStatRecord(
-            timestamp=sample_datetime,
-            last_reset=None,
-            state=sum_decimal,
-            sum=sum_decimal,
-        )
-
-
-class _ComputeUpdatedPeriodStatisticsTask(tasks.RecorderTask):
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        statistic_id: str,
-        data_extractor: DataExtractor,
-        interval_block: _MergedIntervalBlock,
-        period: Literal["5minute", "hour"],
-        future: asyncio.Future[_StatisticSamples],
-    ) -> None:
-        self._hass = hass
-        self._statistic_id = statistic_id
-        self._data_extractor = data_extractor
-        self._interval_block = interval_block
-        self._period: Literal["5minute", "hour"] = period
-        self._future = future
-
-    def _statistics_during_period_from_end_time(
-        self,
-        start: datetime.datetime,
-        end: datetime.datetime,
-    ) -> list[_SensorStatRecord]:
-        """Return the stats whose end time lies in the range (non-inclusive)."""
-        # We adjust the range by subtracting the resolution and rounding down so
-        # that the results return exactly the stat records whose end time lie in the
-        # range.
-        raw_data = statistics.statistics_during_period(
-            hass=self._hass,
-            start_time=_adjust_for_end_time(start, self._period),
-            end_time=_adjust_for_end_time(end, self._period),
-            statistic_ids={self._statistic_id},
-            period=self._period,
-            types={"sum", "state"},
-            units=None,
-        ).get(self._statistic_id, [])
-        if not raw_data:
-            return []
-
-        data = [
-            _SensorStatRecord.from_dict(cast(dict[str, Any], record))
-            for record in raw_data
-        ]
-        # Remove the head if the stat is before the requested range. This can
-        # happen because `statistics_during_period` will attempt always attempt
-        # to append the most recent stat record that starts before the requested
-        # start time. It does this even if that record's end time is also before
-        # the requested start time. Since we clamp the start time to the period,
-        # this can only happen if there is a gap in data (e.g., if HASS is not
-        # running when it should have collected that data point).
-        if data[0].timestamp < start:
-            return data[1:]
-        return data
-
-    def _compute_sum_before_old(
-        self, timestamp: datetime.datetime
-    ) -> _SensorStatRecord:
-        # We need to round up because the end time is non-inclusive.
-        sample_datetime = _round_up(
-            timestamp + datetime.timedelta.resolution, "5minute"
-        )
-        sum_before = statistics.statistic_during_period(
-            hass=self._hass,
-            start_time=None,
-            end_time=sample_datetime,
-            statistic_id=self._statistic_id,
-            types={"change"},
-            units=None,
-        ).get("change")
-        if sum_before is None:
-            sum_before = 0
-        sum_decimal = decimal.Decimal(sum_before)
-        return _SensorStatRecord(
-            timestamp=sample_datetime,
-            last_reset=None,
-            state=sum_decimal,
-            sum=sum_decimal,
-        )
-
-    def _compute_sum_before(self, timestamp: datetime.datetime) -> float:
-        # We need to round up because the end time is non-inclusive.
-        sample_datetime = _round_up(
-            timestamp + datetime.timedelta.resolution, "5minute"
-        )
-        sum_before = statistics.statistic_during_period(
-            hass=self._hass,
-            start_time=None,
-            end_time=sample_datetime,
-            statistic_id=self._statistic_id,
-            types={"change"},
-            units=None,
-        ).get("change")
-        if sum_before is None:
-            sum_before = 0.0
-        return sum_before
-
-    def _read_stats_and_generate_samples(
-        self,
-        start: datetime.datetime,
-        end: datetime.datetime,
-    ) -> tuple[datetime.timedelta, list[datetime.datetime]]:
-        sample_period = _to_time_delta(self._period)
-        if self._period == "hour":
-            res = []
-            sample_time = _round_up(start, self._period)
-            # data_idx = 0
-            while sample_time < end:
-                res.append(sample_time)
-                sample_time += sample_period
-            return (sample_period, res)
-        if self._period == "5minute":
-            data = self._statistics_during_period_from_end_time(start, end)
-            return (sample_period, [sample.timestamp for sample in data])
-        # Fallback for unexpected period values
-        return (sample_period, [])
-
-    def _compute_samples(
-        self,
-        start: datetime.datetime,
-        end: datetime.datetime,
-    ) -> _StatisticSamples:
-        sample_period, sample_datetimes = self._read_stats_and_generate_samples(
-            start=start, end=end
-        )
-        sum_before_start = self._compute_sum_before(start)
-        prev_sum_before_end = None
-        if sample_datetimes:
-            prev_sum_before_end = self._compute_sum_before(sample_datetimes[-1])
-        _LOGGER.debug(
-            "[%s] Computing %s samples. Samples to compute: %d. Sum before start: %s. Prev sum before end: %s",
-            self._statistic_id,
-            self._period,
-            len(sample_datetimes),
-            sum_before_start,
-            prev_sum_before_end,
-        )
-
-        reading_idx = 0
-        curr_sum = decimal.Decimal(sum_before_start)
-        reset_time = None
-        res = []
-        for i, sample_datetime in enumerate(sample_datetimes):
-            if i > 0 and i % 10000 == 0:
-                _LOGGER.debug(
-                    "[%s] Finished computing %d samples", self._statistic_id, i
-                )
-            prev_sample_datetime = sample_datetime - sample_period
-            curr_value = None
-            while reading_idx < len(self._interval_block.interval_readings):
-                reading = self._interval_block.interval_readings[reading_idx]
-                if sample_datetime <= reading.start:
-                    # Sample is fully before the reading.
-                    break
-                reading_value = self._data_extractor.get_native_value(reading)
-                reading_period = reading.end - reading.start
-                scale = decimal.Decimal(
-                    (sample_datetime - reading.start) / reading_period
-                )
-                scale = min(scale, decimal.Decimal(1))
-                reset_time = reading.start
-                curr_value = scale * reading_value
-                if prev_sample_datetime <= reading.start:
-                    curr_sum += curr_value
-                else:
-                    prev_value_scale = decimal.Decimal(
-                        (prev_sample_datetime - reading.start) / reading_period
-                    )
-                    prev_value_scale = min(prev_value_scale, decimal.Decimal(1))
-                    curr_sum += curr_value - (prev_value_scale * reading_value)
-                if sample_datetime < reading.end:
-                    break
-                reading_idx += 1
-
-            if curr_value is not None:
-                prev_sample = _SensorStatRecord(
-                    timestamp=sample_datetime,
-                    last_reset=reset_time,
-                    state=curr_value,
-                    sum=curr_sum,
-                )
-                res.append(prev_sample)
-        stat_samples = _StatisticSamples(
-            prev_sum_before_end=prev_sum_before_end, samples=res
-        )
-        if res:
-            _LOGGER.debug(
-                "[%s] Computed %d %s samples. Total change: %s. Latest sample:\n%s",
-                self._statistic_id,
-                len(res),
-                self._period,
-                stat_samples.get_total_change(),
-                res[-1],
-            )
-        else:
-            _LOGGER.debug(
-                "[%s] No %s samples computed", self._statistic_id, self._period
-            )
-        return stat_samples
-
-    def run(self, instance: Recorder) -> None:
-        start = self._interval_block.start
-        end = self._interval_block.end
-        try:
-            samples = self._compute_samples(start=start, end=end)
-        except Exception as err:
-            _complete_future_exception(self._future, err)
-            return
-        _complete_future(self._future, samples)
-
-    @classmethod
-    def queue_task(
-        cls,
-        hass: HomeAssistant,
-        statistic_id: str,
-        data_extractor: DataExtractor,
-        interval_block: _MergedIntervalBlock,
-        period: Literal["5minute", "hour"],
-    ) -> asyncio.Future[_StatisticSamples]:
-        """Queue the task and return a future that completes when the task completes."""
-
-        def ctor(
-            future: asyncio.Future[_StatisticSamples],
-        ) -> _ComputeUpdatedPeriodStatisticsTask:
-            return cls(
-                hass=hass,
-                statistic_id=statistic_id,
-                data_extractor=data_extractor,
-                interval_block=interval_block,
-                period=period,
-                future=future,
-            )
-
-        return _queue_task(hass, ctor)
-
-
-@final
-@dataclasses.dataclass(frozen=False)
-class _ImportStatisticsTask(tasks.RecorderTask):
-    hass: HomeAssistant
-    entity: GreenButtonEntity
-    samples: list[StatisticData]
-    table: type[recorder_db_schema.StatisticsShortTerm | recorder_db_schema.Statistics]
-    future: asyncio.Future[None]
-
-    def run(self, instance: Recorder) -> None:
-        statistic_id = self.entity.long_term_statistics_id
-        _LOGGER.debug(
-            "[%s] Importing %d statistics samples to table '%s'",
-            statistic_id,
-            len(self.samples),
-            self.table.__tablename__,
-        )
-        try:
-            metadata = statistics.get_metadata(
-                self.hass, statistic_ids={statistic_id}
-            ).get(statistic_id, (0, None))[1]
-            if metadata is None:
-                metadata = create_metadata(self.entity)
-            success = statistics.import_statistics(
-                instance, metadata, self.samples, self.table
-            )
-            if not success:
-                recorder_helper.get_instance(self.hass).queue_task(self)
-                return
-        except Exception as err:
-            _complete_future_exception(self.future, err)
-            return
-        _complete_future(self.future, None)
-
-    @classmethod
-    def queue_task(
-        cls,
-        hass: HomeAssistant,
-        entity: GreenButtonEntity,
-        samples: list[StatisticData],
-        table: type[
-            recorder_db_schema.Statistics | recorder_db_schema.StatisticsShortTerm
-        ],
-    ) -> asyncio.Future[None]:
-        """Queue the task and return a future that completes when the task completes."""
-
-        def ctor(future: asyncio.Future[None]) -> _ImportStatisticsTask:
-            return cls(
-                hass=hass,
-                entity=entity,
-                samples=samples,
-                table=table,
-                future=future,
-            )
-
-        return _queue_task(hass, ctor)
-
-
-@final
-@dataclasses.dataclass(frozen=False)
-class _AdjustStatisticsTask(tasks.RecorderTask):
-    _MIN_CHANGE = decimal.Decimal(10) ** -10
-
-    hass: HomeAssistant
-    statistic_id: str
-    start_time: datetime.datetime
-    unit_of_measurement: str
-    sum_adjustment: float
-    future: asyncio.Future[None]
-
-    def run(self, instance: Recorder) -> None:
-        _LOGGER.debug(
-            "[%s] Adjusting statistics after '%s' by %s %s",
-            self.statistic_id,
-            self.start_time,
-            self.sum_adjustment,
-            self.unit_of_measurement,
-        )
-        try:
-            success = statistics.adjust_statistics(
-                instance,
-                self.statistic_id,
-                self.start_time,
-                float(self.sum_adjustment),
-                self.unit_of_measurement,
-            )
-            if not success:
-                recorder_helper.get_instance(self.hass).queue_task(self)
-                return
-        except Exception as err:
-            _complete_future_exception(self.future, err)
-            return
-        _complete_future(self.future, None)
-
-    @classmethod
-    def queue_task(
-        cls,
-        hass: HomeAssistant,
-        statistic_id: str,
-        start_time: datetime.datetime,
-        unit_of_measurement: str,
-        sum_adjustment: float,
-    ) -> asyncio.Future[None]:
-        """Queue the task and return a Future that completes when the task is done."""
-
-        def ctor(future: asyncio.Future[None]) -> _AdjustStatisticsTask:
-            return cls(
-                hass=hass,
-                statistic_id=statistic_id,
-                start_time=start_time,
-                unit_of_measurement=unit_of_measurement,
-                sum_adjustment=sum_adjustment,
-                future=future,
-            )
-
-        return _queue_task(hass, ctor)
-
-
-@final
-@dataclasses.dataclass(frozen=False)
-class _ClearStatisticsTask(tasks.RecorderTask):
-    hass: HomeAssistant
-    statistic_id: str
-    future: asyncio.Future[None]
-
-    def run(self, instance: Recorder) -> None:
-        _LOGGER.debug("[%s] Clearing statistics", self.statistic_id)
-        try:
-            statistics.clear_statistics(
-                instance=instance, statistic_ids=[self.statistic_id]
-            )
-        except Exception as err:
-            _complete_future_exception(self.future, err)
-            return
-        _complete_future(self.future, None)
-
-    @classmethod
-    def queue_task(
-        cls,
-        hass: HomeAssistant,
-        statistic_id: str,
-    ) -> asyncio.Future[None]:
-        """Queue the task and return a Future that completes when the task is done."""
-
-        def ctor(future: asyncio.Future[None]) -> _ClearStatisticsTask:
-            return cls(hass=hass, statistic_id=statistic_id, future=future)
-
-        return _queue_task(hass, ctor)
-
-
-@final
-@dataclasses.dataclass(frozen=False)
-class _TruncateStatisticsAfterTask(tasks.RecorderTask):
-    """Recorder task to delete statistics at and after a cutoff time.
-
-    This removes trailing statistics rows for a statistic_id to prevent
-    leftover future bars from previous imports from appearing in charts.
-    """
-
-    hass: HomeAssistant
-    statistic_id: str
-    cutoff_start: datetime.datetime
-    table: type[recorder_db_schema.StatisticsShortTerm | recorder_db_schema.Statistics]
-    future: asyncio.Future[None]
-
-    def run(self, instance: Recorder) -> None:
-        _LOGGER.info(
-            "[%s] Truncating statistics in table '%s' at and after %s",
-            self.statistic_id,
-            self.table.__tablename__,
-            self.cutoff_start,
-        )
-        try:
-            # Use recorder session to delete rows at and after the cutoff
-            with recorder_helper.session_scope(
-                session=instance.get_session()
-            ) as session:
-                # Find metadata_id for the statistic_id
-                meta = (
-                    session.query(recorder_db_schema.StatisticsMeta)
-                    .filter(
-                        recorder_db_schema.StatisticsMeta.statistic_id
-                        == self.statistic_id
-                    )
-                    .one_or_none()
-                )
-                if meta is not None:
-                    (
-                        session.query(self.table)
-                        .filter(self.table.metadata_id == meta.id)
-                        .filter(self.table.start >= self.cutoff_start)
-                        .delete(synchronize_session=False)
-                    )
-                else:
-                    _LOGGER.debug(
-                        "[%s] No metadata found when truncating; nothing to delete",
-                        self.statistic_id,
-                    )
-        except Exception as err:
-            _complete_future_exception(self.future, err)
-            return
-        _complete_future(self.future, None)
-
-    @classmethod
-    def queue_task(
-        cls,
-        hass: HomeAssistant,
-        statistic_id: str,
-        cutoff_start: datetime.datetime,
-        table: type[
-            recorder_db_schema.StatisticsShortTerm | recorder_db_schema.Statistics
-        ],
-    ) -> asyncio.Future[None]:
-        """Queue the task and return a Future that completes when the truncation is done."""
-
-        def ctor(future: asyncio.Future[None]) -> _TruncateStatisticsAfterTask:
-            return cls(
-                hass=hass,
-                statistic_id=statistic_id,
-                cutoff_start=cutoff_start,
-                table=table,
-                future=future,
-            )
-
-        return _queue_task(hass, ctor)
-
-
-class _UpdateStatisticsTask:
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        stats_dao: _StatsDao,
-        entity: GreenButtonEntity,
-        data_extractor: DataExtractor,
-        meter_reading: model.MeterReading,
-    ) -> None:
-        self._hass = hass
-        self._stats_dao = stats_dao
-        self._entity = entity
-        self._data_extractor = data_extractor
-        self._meter_reading = meter_reading
-
-    @property
-    def _statistic_id(self) -> str:
-        return self._entity.long_term_statistics_id
-
-    async def _update_statistics(
-        self, interval_block: _MergedIntervalBlock, period: Literal["5minute", "hour"]
-    ) -> _StatisticSamples:
-        samples = await _ComputeUpdatedPeriodStatisticsTask.queue_task(
-            hass=self._hass,
-            statistic_id=self._statistic_id,
-            data_extractor=self._data_extractor,
-            interval_block=interval_block,
-            period=period,
-        )
-        await _ImportStatisticsTask.queue_task(
-            hass=self._hass,
-            entity=self._entity,
-            samples=[sample.to_statistics_data(period) for sample in samples.samples],
-            table=_to_table(period),
-        )
-        # NOTE: Removed _AdjustStatisticsTask call - it was causing corruption by applying
-        # adjustments to ALL future statistics, including non-existent dates.
-        # The async_import_statistics API handles proper merging without needing manual adjustments.
-        return samples
-
-    async def _update_for_interval_block(
-        self, interval_block: _MergedIntervalBlock
-    ) -> None:
-        _LOGGER.info(
-            "[%s] Processing %d IntervalReadings for merged IntervalBlock from '%s' to '%s'",
-            self._statistic_id,
-            len(interval_block.interval_readings),
-            interval_block.start,
-            interval_block.end,
-        )
-        await self._update_statistics(interval_block, "hour")
-        await self._update_statistics(interval_block, "5minute")
-
-    async def __call__(self) -> None:
-        _LOGGER.info("[%s] Updating statistics for entity", self._statistic_id)
-        merged_blocks = _merge_interval_blocks(self._meter_reading.interval_blocks)
-        for block in merged_blocks:
-            if not _is_aligned(block.end, "hour"):
-                raise UnalignedIntervalBlocksError(
-                    f"Merged IntervalBlock not aligned at end time. Block ID: {repr(block.ids[-1])}. Block end: '{block.end}'"
-                )
-        for block in merged_blocks:
-            await self._update_for_interval_block(block)
-        _LOGGER.info("[%s] Statistics update complete", self._statistic_id)
-
-    @classmethod
-    def create(
-        cls,
-        hass: HomeAssistant,
-        entity: GreenButtonEntity,
-        data_extractor: DataExtractor,
-        meter_reading: model.MeterReading,
-    ) -> _UpdateStatisticsTask:
-        """Create a new task."""
-        return _UpdateStatisticsTask(
-            hass=hass,
-            stats_dao=_StatsDao(hass, entity.long_term_statistics_id),
-            entity=entity,
-            data_extractor=data_extractor,
-            meter_reading=meter_reading,
-        )
-
-
-class UnalignedIntervalBlocksError(exceptions.HomeAssistantError):
-    """An error raised when a MeterReading contains unaligned readings.
-
-    Unaligned readings cannot be stored so has the potential to cause data
-    corruption.
-    """
 
 
 class DataExtractor(Protocol):
@@ -1294,6 +504,28 @@ def create_metadata(entity: GreenButtonEntity) -> StatisticMetaData:
     }
 
 
+def _electricity_usage_values(
+    meter_reading: model.MeterReading, data_extractor: DataExtractor
+) -> dict[datetime.datetime, decimal.Decimal]:
+    """Build complete-hour energy values without accessing Home Assistant."""
+    return allocation.hourly_values(
+        allocation.interval_readings(meter_reading),
+        lambda reading: allocation.energy_to_kwh(
+            data_extractor.get_native_value(reading),
+            reading.reading_type.unit_of_measurement,
+        ),
+    )
+
+
+def _electricity_cost_values(
+    meter_reading: model.MeterReading, data_extractor: DataExtractor
+) -> dict[datetime.datetime, decimal.Decimal]:
+    """Build complete-hour cost values without accessing Home Assistant."""
+    return allocation.hourly_values(
+        allocation.interval_readings(meter_reading), data_extractor.get_native_value
+    )
+
+
 async def _generate_statistics_data(
     hass: HomeAssistant,
     entity: GreenButtonEntity,
@@ -1307,13 +539,8 @@ async def _generate_statistics_data(
     2. Generating new statistics from the meter reading
     3. Merging them intelligently, recalculating sums as needed
     """
-    readings = allocation.interval_readings(meter_reading)
-    values = allocation.hourly_values(
-        readings,
-        lambda reading: allocation.energy_to_kwh(
-            data_extractor.get_native_value(reading),
-            reading.reading_type.unit_of_measurement,
-        ),
+    values = await hass.async_add_executor_job(
+        _electricity_usage_values, meter_reading, data_extractor
     )
     if not values:
         _LOGGER.info(
@@ -1356,15 +583,9 @@ async def _generate_statistics_data_cost(
         meter_reading: The meter reading to process
         merge_with_existing: If True, merge with existing statistics. If False, regenerate all from scratch.
     """
-    readings = allocation.interval_readings(meter_reading)
-    if not readings:
-        _LOGGER.warning(
-            "No interval readings found in meter reading %s for cost statistics",
-            meter_reading.id,
-        )
-        return []
-
-    values = allocation.hourly_values(readings, data_extractor.get_native_value)
+    values = await hass.async_add_executor_job(
+        _electricity_cost_values, meter_reading, data_extractor
+    )
     if not values:
         _LOGGER.info(
             "No complete hourly cost statistics generated for entity %s",
@@ -1514,6 +735,10 @@ async def _async_update_statistics(
 async def clear_statistic(hass: HomeAssistant, statistic_id: str) -> None:
     """Clear all statistics with the specified ID."""
     await _ClearStatisticsTask.queue_task(hass=hass, statistic_id=statistic_id)
+    fingerprints = cast(
+        dict[str, str], hass.data.get(_DATA_STATISTICS_FINGERPRINTS, {})
+    )
+    fingerprints.pop(statistic_id, None)
 
 
 # -------------------- GAS (m³) DAILY STATISTICS --------------------
@@ -1522,24 +747,6 @@ async def clear_statistic(hass: HomeAssistant, statistic_id: str) -> None:
 def _billing_timezone() -> datetime.tzinfo:
     """Return the configured Home Assistant timezone for billing dates."""
     return dt_util.get_default_time_zone()
-
-
-def _local_days_in_interval(
-    start: datetime.datetime,
-    end: datetime.datetime,
-    time_zone: datetime.tzinfo,
-) -> list[datetime.date]:
-    """Return local calendar dates with physical overlap with an interval."""
-    if start >= end:
-        return []
-
-    day = start.astimezone(time_zone).date()
-    last_day = (end - datetime.timedelta(microseconds=1)).astimezone(time_zone).date()
-    days: list[datetime.date] = []
-    while day <= last_day:
-        days.append(day)
-        day += datetime.timedelta(days=1)
-    return days
 
 
 def _gas_daily_totals(
@@ -1654,7 +861,9 @@ async def _generate_daily_m3_statistics(
     We emit one hourly record per day at 00:00 with the day's total m³ as state.
     """
     time_zone = _billing_timezone()
-    values = gas_usage_values(meter_reading, [], "daily_readings", time_zone)
+    values = await hass.async_add_executor_job(
+        gas_usage_values, meter_reading, [], "daily_readings", time_zone
+    )
     if not values:
         return []
 
@@ -1701,7 +910,13 @@ async def _async_update_gas_statistics(
             len(summaries),
         )
         time_zone = _billing_timezone()
-        values = gas_usage_values(meter_reading, summaries, allocation_mode, time_zone)
+        values = await hass.async_add_executor_job(
+            gas_usage_values,
+            meter_reading,
+            summaries,
+            allocation_mode,
+            time_zone,
+        )
 
         if not values:
             _LOGGER.warning(
@@ -1845,16 +1060,18 @@ async def _async_update_gas_cost_statistics(
             _LOGGER.info("No gas usage summaries provided for %s", entity.entity_id)
             return
 
-        daily_cost, estimated = allocation.prorated_cost_by_day(
-            readings,
+        periods = [
             (
-                (
-                    summary.start,
-                    summary.start + summary.duration,
-                    scaling.usage_summary_cost(summary, gas_cost_multiplier),
-                )
-                for summary in usage_summaries
-            ),
+                summary.start,
+                summary.start + summary.duration,
+                scaling.usage_summary_cost(summary, gas_cost_multiplier),
+            )
+            for summary in usage_summaries
+        ]
+        daily_cost, estimated = await hass.async_add_executor_job(
+            allocation.prorated_cost_by_day,
+            readings,
+            periods,
             scaling.interval_value,
             time_zone,
         )
