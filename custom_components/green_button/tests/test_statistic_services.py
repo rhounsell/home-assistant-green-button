@@ -3,6 +3,7 @@
 # ruff: noqa: TID251
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from custom_components.green_button import model, services, statistics
@@ -229,6 +230,18 @@ async def test_import_targets_only_the_selected_config_entry(
 
     first_import.assert_awaited_once_with("<feed />", store_in_config=True)
     second_import.assert_not_awaited()
+
+
+async def test_import_path_accepts_the_home_assistant_config_directory(
+    hass: HomeAssistant,
+) -> None:
+    """A file under the configuration directory needs no external allowlist entry."""
+    xml_path = Path(hass.config.config_dir) / "green_button_fixture.xml"
+    await hass.async_add_executor_job(xml_path.write_text, "<feed />")
+
+    assert await hass.async_add_executor_job(
+        services._is_allowed_import_path, hass, xml_path
+    )
 
 
 async def test_clear_stored_xml_targets_only_the_selected_config_entry(
