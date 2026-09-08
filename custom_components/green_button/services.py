@@ -74,6 +74,18 @@ def _read_file_sync(file_path: Path) -> str:
     return file_path.read_text(encoding="utf-8")
 
 
+def _is_allowed_import_path(hass: HomeAssistant, path: Path) -> bool:
+    """Allow config files and explicit external directories after resolution."""
+    try:
+        resolved_path = path.resolve()
+        config_dir = Path(hass.config.config_dir).resolve()
+    except OSError:
+        return False
+    return resolved_path.is_relative_to(config_dir) or hass.config.is_allowed_path(
+        str(resolved_path)
+    )
+
+
 async def async_setup_services(hass: HomeAssistant) -> None:
     def _config_entry(call: ServiceCall) -> ConfigEntry:
         """Return the Green Button entry explicitly selected by a service call."""
@@ -259,7 +271,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 _LOGGER.debug("Using absolute path: %s", resolved_path)
 
             path_is_allowed = await hass.async_add_executor_job(
-                hass.config.is_allowed_path, str(resolved_path)
+                _is_allowed_import_path, hass, resolved_path
             )
             if not path_is_allowed:
                 raise HomeAssistantError(
