@@ -10,9 +10,16 @@ PYTHONPATH=.:config uv run --no-sync pytest -p tests.conftest \
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+import decimal
 from unittest.mock import AsyncMock, Mock, patch
 
-from custom_components.green_button import model, scaling, statistics
+from custom_components.green_button import (
+    allocation,
+    model,
+    scaling,
+    sensor,
+    statistics,
+)
 from custom_components.green_button.const import DOMAIN
 from custom_components.green_button.coordinator import GreenButtonCoordinator
 from custom_components.green_button.sensor import (
@@ -110,7 +117,14 @@ def test_source_multiplier_precedes_configured_cost_fallback() -> None:
     declared = model.IntervalReading(declared_type, 800, start, timedelta(hours=1), 1)
     missing = model.IntervalReading(missing_type, 800, start, timedelta(hours=1), 1)
     declared_summary = model.UsageSummary(
-        "declared", start, timedelta(days=1), 800, "CAD", power_of_ten_multiplier=-3
+        "declared",
+        start,
+        timedelta(days=1),
+        800,
+        "CAD",
+        consumption_m3=800,
+        power_of_ten_multiplier=-3,
+        consumption_power_of_ten_multiplier=-3,
     )
     missing_summary = model.UsageSummary(
         "missing", start, timedelta(days=1), 800, "CAD"
@@ -120,6 +134,9 @@ def test_source_multiplier_precedes_configured_cost_fallback() -> None:
     assert float(scaling.interval_cost(missing, -3)) == pytest.approx(0.8)
     assert float(scaling.usage_summary_cost(declared_summary, -5)) == pytest.approx(0.8)
     assert float(scaling.usage_summary_cost(missing_summary, -3)) == pytest.approx(0.8)
+    assert float(scaling.usage_summary_consumption(declared_summary)) == pytest.approx(
+        0.8
+    )
 
 
 @pytest.mark.parametrize(
@@ -180,9 +197,7 @@ async def test_gas_daily_totals_use_local_dates_and_interval_overlap(
     reading_type = model.ReadingType("type", 7, "CAD", 0, "m³", 3600)
     reading = model.IntervalReading(reading_type, 0, start, duration, value)
 
-    totals = statistics._gas_daily_totals(
-        [reading], statistics._billing_timezone()
-    )
+    totals = statistics._gas_daily_totals([reading], statistics._billing_timezone())
 
     assert [day.isoformat() for day in totals] == [day for day, _ in expected]
     assert list(totals.values()) == pytest.approx([total for _, total in expected])
@@ -277,6 +292,7 @@ async def test_summary_only_gas_usage_uses_local_billing_end_date(
         "CAD",
         consumption_m3=10,
     )
+    assert statistics.gas_usage_total(None, [summary], "monthly_increment") == 10
     recorder = Mock()
     recorder.async_add_executor_job = AsyncMock(return_value=None)
 
@@ -308,12 +324,18 @@ async def test_monthly_gas_usage_and_daily_cost_share_available_readings(
     start = datetime(2026, 1, 1, 5, tzinfo=UTC)
     readings = [
         model.IntervalReading(reading_type, 0, start, timedelta(days=1), 4),
-        model.IntervalReading(reading_type, 0, start + timedelta(days=1), timedelta(days=1), 6),
+        model.IntervalReading(
+            reading_type, 0, start + timedelta(days=1), timedelta(days=1), 6
+        ),
     ]
     meter = model.MeterReading(
         "meter",
         reading_type,
-        [model.IntervalBlock("block", reading_type, start, timedelta(days=2), readings)],
+        [
+            model.IntervalBlock(
+                "block", reading_type, start, timedelta(days=2), readings
+            )
+        ],
     )
     summary = model.UsageSummary(
         "summary", start, timedelta(days=2), 100, "CAD", consumption_m3=None
@@ -360,7 +382,11 @@ async def test_monthly_gas_usage_accepts_unrepresented_long_reading(
     meter = model.MeterReading(
         "meter",
         reading_type,
-        [model.IntervalBlock("block", reading_type, start, reading.duration, [reading])],
+        [
+            model.IntervalBlock(
+                "block", reading_type, start, reading.duration, [reading]
+            )
+        ],
     )
     recorder = Mock()
     recorder.async_add_executor_job = AsyncMock(return_value=None)
@@ -378,7 +404,9 @@ async def test_monthly_gas_usage_accepts_unrepresented_long_reading(
             allocation_mode="monthly_increment",
         )
 
-    assert [record["state"] for record in replace_statistics.await_args.args[2]] == [12.0]
+    assert [record["state"] for record in replace_statistics.await_args.args[2]] == [
+        12.0
+    ]
 
 
 async def test_energy_statistics_split_trimmed_multi_hour_intervals(
@@ -433,6 +461,51 @@ async def test_cost_statistics_split_trimmed_multi_hour_intervals(
 
     _assert_hourly_statistics(initial, 2)
     _assert_hourly_statistics(completed, 3)
+
+
+async def test_electricity_display_totals_match_complete_hour_statistics(
+    hass: HomeAssistant,
+) -> None:
+    """A trailing partial interval cannot be included only in the display total."""
+    meter_reading = _partial_hour_meter(False, None)
+    entity = _StatisticsEntity()
+
+    with patch.object(
+        statistics,
+        "_get_all_existing_statistics",
+        new_callable=AsyncMock,
+        return_value=[],
+    ):
+        usage_records = await statistics._generate_statistics_data(
+            hass, entity, statistics.DefaultDataExtractor(), meter_reading
+        )
+        cost_records = await statistics._generate_statistics_data_cost(
+            hass, entity, statistics.CostDataExtractor(-2), meter_reading
+        )
+
+    assert sensor._electricity_usage_total(meter_reading) == pytest.approx(
+        usage_records[-1]["sum"]
+    )
+    assert sensor._electricity_cost_total(meter_reading, -2) == pytest.approx(
+        cost_records[-1]["sum"]
+    )
+
+
+def test_prorated_gas_cost_marks_incomplete_consumption_as_an_estimate() -> None:
+    """A partial billing period assigns its bill to measured days by policy."""
+    reading_type = model.ReadingType("type", 7, "CAD", 0, "m³", 86400)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    reading = model.IntervalReading(reading_type, 0, start, timedelta(days=1), 5)
+
+    costs, estimated = allocation.prorated_cost_by_day(
+        [reading],
+        [(start, start + timedelta(days=2), decimal.Decimal("10"))],
+        scaling.interval_value,
+        UTC,
+    )
+
+    assert estimated
+    assert costs == {start.date(): decimal.Decimal("10")}
 
 
 @pytest.mark.usefixtures("recorder_mock")
@@ -626,7 +699,9 @@ async def test_clear_statistics_task_propagates_recorder_failure(
     task = statistics._ClearStatisticsTask(hass, "green_button:test", future)
 
     with patch.object(
-        statistics.statistics, "clear_statistics", side_effect=RuntimeError("database failed")
+        statistics.statistics,
+        "clear_statistics",
+        side_effect=RuntimeError("database failed"),
     ):
         task.run(Mock())
 
@@ -642,7 +717,9 @@ async def test_queued_recorder_task_ignores_future_cancelled_during_unload(
     queued: list[statistics.tasks.RecorderTask] = []
     recorder.queue_task.side_effect = queued.append
 
-    with patch.object(statistics.recorder_helper, "get_instance", return_value=recorder):
+    with patch.object(
+        statistics.recorder_helper, "get_instance", return_value=recorder
+    ):
         update_task = statistics.async_schedule_statistics_update(
             hass,
             "entry",

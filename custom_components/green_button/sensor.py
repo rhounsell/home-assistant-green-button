@@ -15,7 +15,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import model, scaling, statistics
+from . import allocation, model, scaling, statistics
 from .const import (
     CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
     CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER,
@@ -71,6 +71,31 @@ def _has_interval_readings(meter_reading: model.MeterReading) -> bool:
     )
 
 
+def _electricity_usage_total(meter_reading: model.MeterReading) -> float:
+    """Return the same complete-hour energy total published to statistics."""
+    values = allocation.hourly_values(
+        allocation.interval_readings(meter_reading),
+        lambda reading: allocation.energy_to_kwh(
+            scaling.interval_value(reading), reading.reading_type.unit_of_measurement
+        ),
+    )
+    return float(sum(values.values(), allocation.ZERO))
+
+
+def _electricity_cost_total(
+    meter_reading: model.MeterReading, fallback_multiplier: int
+) -> float | None:
+    """Return the same complete-hour cost total published to statistics."""
+    readings = allocation.interval_readings(meter_reading)
+    if any(reading.cost is None for reading in readings):
+        return None
+    values = allocation.hourly_values(
+        readings,
+        lambda reading: scaling.interval_cost(reading, fallback_multiplier),
+    )
+    return float(sum(values.values(), allocation.ZERO))
+
+
 def _schedule_hass_task_from_any_thread(hass: HomeAssistant, coro) -> None:
     """Schedule a coroutine on HA's event loop from any thread safely.
 
@@ -87,7 +112,9 @@ def _schedule_hass_task_from_any_thread(hass: HomeAssistant, coro) -> None:
         loop.call_soon_threadsafe(lambda: hass.async_create_task(coro))
 
 
-class GreenButtonStatisticsSensor(CoordinatorEntity[GreenButtonCoordinator], SensorEntity):
+class GreenButtonStatisticsSensor(
+    CoordinatorEntity[GreenButtonCoordinator], SensorEntity
+):
     """Display imported totals without automatic sensor statistics."""
 
     _attr_state_class = None
@@ -147,11 +174,14 @@ class GreenButtonSensor(GreenButtonStatisticsSensor):
     def device_info(self) -> DeviceInfo:
         """Group electricity sensors under a dedicated device in the integration UI."""
         return DeviceInfo(
-            identifiers={(DOMAIN, f"{self.coordinator.config_entry.entry_id}_electricity_device")},
+            identifiers={
+                (DOMAIN, f"{self.coordinator.config_entry.entry_id}_electricity_device")
+            },
             name=f"{self.coordinator.config_entry.title} Electricity",
             manufacturer="Green Button",
             model="Electricity",
         )
+
     @property
     def native_value(self) -> float:
         """Return the cached total for display."""
@@ -164,7 +194,7 @@ class GreenButtonSensor(GreenButtonStatisticsSensor):
         )
         _LOGGER.debug(
             "Sensor %s: available property evaluated to %s (last_update_success=%s, data is not None=%s)",
-            getattr(self, 'entity_id', self._attr_unique_id),
+            getattr(self, "entity_id", self._attr_unique_id),
             available,
             self.coordinator.last_update_success,
             self.coordinator.data is not None,
@@ -232,16 +262,7 @@ class GreenButtonSensor(GreenButtonStatisticsSensor):
             self._meter_reading_id, self._usage_point_id
         )
         if meter_reading:
-            # Calculate total energy from all interval blocks (for internal tracking only)
-            total_energy = 0
-            for interval_block in meter_reading.interval_blocks:
-                for interval_reading in interval_block.interval_readings:
-                    if interval_reading.value is not None:
-                        total_energy += float(scaling.interval_value(interval_reading))
-            if total_energy > 0:
-                self._attr_native_value = total_energy / 1000.0
-            else:
-                self._attr_native_value = 0.0
+            self._attr_native_value = _electricity_usage_total(meter_reading)
             _LOGGER.info(
                 "Sensor %s: Internal state set to %.2f kWh (cached for display)",
                 self.entity_id,
@@ -253,9 +274,8 @@ class GreenButtonSensor(GreenButtonStatisticsSensor):
                 self._attr_native_value = 0.0
             _LOGGER.info(
                 "Sensor %s: Internal state set to 0.0 (no meter reading found, NOT written to HA)",
-                    self.entity_id,
-                )
-
+                self.entity_id,
+            )
 
         # Kick off a statistics update if data already exists (e.g., after import)
         if self.coordinator.data and self.coordinator.data.get("usage_points"):
@@ -275,9 +295,9 @@ class GreenButtonSensor(GreenButtonStatisticsSensor):
             for usage_point in usage_points:
                 for meter_reading in usage_point.meter_readings:
                     if (
-                        (self._usage_point_id is None or usage_point.id == self._usage_point_id)
-                        and meter_reading.id == self._meter_reading_id
-                    ):
+                        self._usage_point_id is None
+                        or usage_point.id == self._usage_point_id
+                    ) and meter_reading.id == self._meter_reading_id:
                         # Schedule statistics update (statistics system is idempotent)
                         _LOGGER.info(
                             "Sensor %s: Scheduling statistics update for meter reading %s",
@@ -297,26 +317,13 @@ class GreenButtonSensor(GreenButtonStatisticsSensor):
         self, meter_reading: model.MeterReading
     ) -> None:
         """Update cached values and schedule historical statistics."""
-        # Calculate total energy from all interval blocks
-        total_energy = 0
-        for interval_block in meter_reading.interval_blocks:
-            for interval_reading in interval_block.interval_readings:
-                if interval_reading.value is not None:
-                    # Apply power of ten multiplier
-                    total_energy += float(scaling.interval_value(interval_reading))
-
-        # Convert from Wh to kWh if needed
-        if total_energy > 0:
-            self._attr_native_value = total_energy / 1000.0
-        else:
-            self._attr_native_value = 0
+        self._attr_native_value = _electricity_usage_total(meter_reading)
 
         _LOGGER.debug(
             "🔍 %s: Setting sensor state to %.2f kWh (cumulative).",
             self.entity_id,
             self._attr_native_value,
         )
-
 
         # Update statistics for Energy Dashboard (run in background to not block startup)
         if hasattr(self, "hass") and self.hass is not None:
@@ -342,13 +349,7 @@ class GreenButtonSensor(GreenButtonStatisticsSensor):
 
             # Cache the last statistics sum value for display as sensor state
             # This prevents Energy Dashboard "unavailable" warnings
-            total_energy = sum(
-                float(scaling.interval_value(interval_reading)) / 1000.0
-                for interval_block in meter_reading.interval_blocks
-                for interval_reading in interval_block.interval_readings
-                if interval_reading.value is not None
-            )
-            self._cached_native_value = total_energy
+            self._cached_native_value = _electricity_usage_total(meter_reading)
 
             # Write the state once after statistics import to update the sensor display
             self.async_write_ha_state()
@@ -405,7 +406,9 @@ class GreenButtonCostSensor(GreenButtonStatisticsSensor):
     def device_info(self) -> DeviceInfo:
         """Group electricity cost sensors under the electricity device."""
         return DeviceInfo(
-            identifiers={(DOMAIN, f"{self.coordinator.config_entry.entry_id}_electricity_device")},
+            identifiers={
+                (DOMAIN, f"{self.coordinator.config_entry.entry_id}_electricity_device")
+            },
             name=f"{self.coordinator.config_entry.title} Electricity",
             manufacturer="Green Button",
             model="Electricity",
@@ -428,17 +431,12 @@ class GreenButtonCostSensor(GreenButtonStatisticsSensor):
         if currency:
             self._attr_native_unit_of_measurement = currency
 
-        total_cost = 0.0
-        fallback_multiplier = _cost_multiplier(self.coordinator)
-        for interval_block in meter_reading.interval_blocks:
-            for interval_reading in interval_block.interval_readings:
-                if interval_reading.cost is None:
-                    return None
-                total_cost += float(
-                    scaling.interval_cost(interval_reading, fallback_multiplier)
-                )
-
-        self._cached_native_value = float(total_cost)  # Cache the value
+        total_cost = _electricity_cost_total(
+            meter_reading, _cost_multiplier(self.coordinator)
+        )
+        if total_cost is None:
+            return None
+        self._cached_native_value = total_cost
         return self._cached_native_value
 
     @property
@@ -448,7 +446,7 @@ class GreenButtonCostSensor(GreenButtonStatisticsSensor):
         )
         _LOGGER.debug(
             "Cost Sensor %s: available property evaluated to %s (last_update_success=%s, data is not None=%s)",
-            getattr(self, 'entity_id', self._attr_unique_id),
+            getattr(self, "entity_id", self._attr_unique_id),
             available,
             self.coordinator.last_update_success,
             self.coordinator.data is not None,
@@ -499,8 +497,6 @@ class GreenButtonCostSensor(GreenButtonStatisticsSensor):
             self.entity_id,
         )
 
-
-
         # Kick off a statistics update if data already exists (e.g., after import)
         if self.coordinator.data and self.coordinator.data.get("usage_points"):
             self._handle_coordinator_update()
@@ -512,34 +508,31 @@ class GreenButtonCostSensor(GreenButtonStatisticsSensor):
             for usage_point in usage_points:
                 for meter_reading in usage_point.meter_readings:
                     if (
-                        (self._usage_point_id is None or usage_point.id == self._usage_point_id)
-                        and meter_reading.id == self._meter_reading_id
-                    ):
+                        self._usage_point_id is None
+                        or usage_point.id == self._usage_point_id
+                    ) and meter_reading.id == self._meter_reading_id:
                         _schedule_hass_task_from_any_thread(
                             self.hass, self.update_sensor_and_statistics(meter_reading)
                         )
 
-    async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
+    async def update_sensor_and_statistics(
+        self, meter_reading: model.MeterReading
+    ) -> None:
         """Update cached values and schedule historical statistics."""
         # Update state
-        total_cost = 0.0
-        fallback_multiplier = _cost_multiplier(self.coordinator)
-        for interval_block in meter_reading.interval_blocks:
-            for interval_reading in interval_block.interval_readings:
-                if interval_reading.cost is None:
-                    self._attr_native_value = None
-                    return
-                total_cost += float(
-                    scaling.interval_cost(interval_reading, fallback_multiplier)
-                )
+        total_cost = _electricity_cost_total(
+            meter_reading, _cost_multiplier(self.coordinator)
+        )
+        if total_cost is None:
+            self._attr_native_value = None
+            return
 
         # Set currency
         currency = getattr(meter_reading.reading_type, "currency", None)
         if currency:
             self._attr_native_unit_of_measurement = currency
 
-        self._attr_native_value = float(total_cost)
-
+        self._attr_native_value = total_cost
 
         # Update long-term statistics (run in background to not block startup)
         if hasattr(self, "hass") and self.hass is not None:
@@ -553,7 +546,9 @@ class GreenButtonCostSensor(GreenButtonStatisticsSensor):
                 self.entity_id,
             )
 
-    async def _update_cost_statistics_async(self, meter_reading: model.MeterReading) -> None:
+    async def _update_cost_statistics_async(
+        self, meter_reading: model.MeterReading
+    ) -> None:
         """Update cost statistics in background without blocking."""
         try:
             multiplier = _cost_multiplier(self.coordinator)
@@ -611,7 +606,9 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
     def device_info(self) -> DeviceInfo:
         """Return device metadata for grouping gas entities under a dedicated device."""
         return DeviceInfo(
-            identifiers={(DOMAIN, f"{self.coordinator.config_entry.entry_id}_gas_device")},
+            identifiers={
+                (DOMAIN, f"{self.coordinator.config_entry.entry_id}_gas_device")
+            },
             name=f"{self.coordinator.config_entry.title} Natural Gas",
             manufacturer="Green Button",
             model="Natural Gas",
@@ -640,7 +637,6 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
             self.entity_id,
         )
 
-
         # Kick off a statistics update if data already exists (e.g., after import)
         if self.coordinator.data and self.coordinator.data.get("usage_points"):
             self._handle_coordinator_update()
@@ -653,9 +649,9 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
             for usage_point in self.coordinator.data["usage_points"]:
                 for meter_reading in usage_point.meter_readings:
                     if (
-                        (self._usage_point_id is None or usage_point.id == self._usage_point_id)
-                        and meter_reading.id == self._meter_reading_id
-                    ):
+                        self._usage_point_id is None
+                        or usage_point.id == self._usage_point_id
+                    ) and meter_reading.id == self._meter_reading_id:
                         found_meter_reading = True
                         _schedule_hass_task_from_any_thread(
                             self.hass, self.update_sensor_and_statistics(meter_reading)
@@ -668,7 +664,10 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
             if not found_meter_reading:
                 for usage_point in self.coordinator.data["usage_points"]:
                     if (
-                        (self._usage_point_id is None or usage_point.id == self._usage_point_id)
+                        (
+                            self._usage_point_id is None
+                            or usage_point.id == self._usage_point_id
+                        )
                         and usage_point.id == self._meter_reading_id
                         and usage_point.usage_summaries
                     ):
@@ -685,20 +684,16 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
                         else:
                             _schedule_hass_task_from_any_thread(
                                 self.hass,
-                                self.update_sensor_and_statistics_from_summaries(usage_point),
+                                self.update_sensor_and_statistics_from_summaries(
+                                    usage_point
+                                ),
                             )
                         break
-    async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
+
+    async def update_sensor_and_statistics(
+        self, meter_reading: model.MeterReading
+    ) -> None:
         """Update cached values and schedule historical statistics."""
-        # Update entity state
-        total = 0.0
-        for block in meter_reading.interval_blocks:
-            for rd in block.interval_readings:
-                total += float(scaling.interval_value(rd))
-        self._attr_native_value = total
-
-
-        # Import gas m³ statistics per selected allocation mode
         summaries = self.coordinator.get_usage_summaries_for_meter_reading(
             self._meter_reading_id, self._usage_point_id
         )
@@ -707,11 +702,16 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
             or self.coordinator.config_entry.data.get("gas_usage_allocation")
             or "daily_readings"
         )
+        self._attr_native_value = statistics.gas_usage_total(
+            meter_reading, summaries, usage_allocation_mode
+        )
         # Run statistics update in background to not block startup
         statistics.async_schedule_statistics_update(
             self.hass,
             self.coordinator.config_entry.entry_id,
-            self._update_gas_statistics_async(meter_reading, summaries, usage_allocation_mode),
+            self._update_gas_statistics_async(
+                meter_reading, summaries, usage_allocation_mode
+            ),
         )
         _LOGGER.debug(
             "%s: Gas statistics update scheduled in background.",
@@ -722,7 +722,7 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
         self,
         meter_reading: model.MeterReading,
         summaries: list[model.UsageSummary],
-        usage_allocation_mode: str
+        usage_allocation_mode: str,
     ) -> None:
         """Update gas statistics in background without blocking."""
         try:
@@ -734,13 +734,9 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
                 allocation_mode=usage_allocation_mode,
             )
 
-            # Cache the total value for display as sensor state
-            total = sum(
-                float(scaling.interval_value(rd))
-                for block in meter_reading.interval_blocks
-                for rd in block.interval_readings
+            self._cached_native_value = statistics.gas_usage_total(
+                meter_reading, summaries, usage_allocation_mode
             )
-            self._cached_native_value = total
 
             # Write the state once after statistics import to update the sensor display
             self.async_write_ha_state()
@@ -756,19 +752,17 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
                 self.entity_id,
             )
 
-    async def update_sensor_and_statistics_from_summaries(self, usage_point: model.UsagePoint) -> None:
+    async def update_sensor_and_statistics_from_summaries(
+        self, usage_point: model.UsagePoint
+    ) -> None:
         """Update sensor and statistics when only UsageSummaries are available (no daily MeterReadings)."""
-        # Update entity state (sum of all UsageSummary consumption values)
-        total = sum(us.consumption_m3 or 0.0 for us in usage_point.usage_summaries)
-        self._attr_native_value = total if total > 0 else 0.0
-
-
-        # Import gas statistics in monthly_increment mode (UsageSummaries only)
-        # Run in background to not block startup
         usage_allocation_mode = (
             self.coordinator.config_entry.options.get("gas_usage_allocation")
             or self.coordinator.config_entry.data.get("gas_usage_allocation")
             or "daily_readings"
+        )
+        self._attr_native_value = statistics.gas_usage_total(
+            None, list(usage_point.usage_summaries), usage_allocation_mode
         )
 
         if usage_allocation_mode == "monthly_increment" and usage_point.usage_summaries:
@@ -780,7 +774,9 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
             statistics.async_schedule_statistics_update(
                 self.hass,
                 self.coordinator.config_entry.entry_id,
-                self._update_gas_statistics_from_summaries_async(usage_point, usage_allocation_mode),
+                self._update_gas_statistics_from_summaries_async(
+                    usage_point, usage_allocation_mode
+                ),
             )
             _LOGGER.debug(
                 "%s: Gas statistics update (from summaries) scheduled in background.",
@@ -793,9 +789,7 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
             )
 
     async def _update_gas_statistics_from_summaries_async(
-        self,
-        usage_point: model.UsagePoint,
-        usage_allocation_mode: str
+        self, usage_point: model.UsagePoint, usage_allocation_mode: str
     ) -> None:
         """Update gas statistics from summaries in background without blocking."""
         try:
@@ -807,9 +801,9 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
                 allocation_mode=usage_allocation_mode,
             )
 
-            # Cache the total consumption for display as sensor state
-            total = sum(us.consumption_m3 or 0.0 for us in usage_point.usage_summaries)
-            self._cached_native_value = total if total > 0 else 0.0
+            self._cached_native_value = statistics.gas_usage_total(
+                None, list(usage_point.usage_summaries), usage_allocation_mode
+            )
 
             # Write the state once after statistics import to update the sensor display
             self.async_write_ha_state()
@@ -862,7 +856,9 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
     def device_info(self) -> DeviceInfo:
         """Return device metadata for grouping gas cost under the gas device."""
         return DeviceInfo(
-            identifiers={(DOMAIN, f"{self.coordinator.config_entry.entry_id}_gas_device")},
+            identifiers={
+                (DOMAIN, f"{self.coordinator.config_entry.entry_id}_gas_device")
+            },
             name=f"{self.coordinator.config_entry.title} Natural Gas",
             manufacturer="Green Button",
             model="Natural Gas",
@@ -886,6 +882,21 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
         )
 
     @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Describe the billing-cost allocation used by this display series."""
+        attributes = super().extra_state_attributes
+        allocation_mode = (
+            self.coordinator.config_entry.options.get("gas_cost_allocation")
+            or self.coordinator.config_entry.data.get("gas_cost_allocation")
+            or "pro_rate_daily"
+        )
+        if allocation_mode == "pro_rate_daily":
+            attributes["cost_allocation"] = "estimated_daily_proration"
+        else:
+            attributes["cost_allocation"] = "billing_period_increment"
+        return attributes
+
+    @property
     def name(self) -> str:
         """Return the entity name (delegates to parent SensorEntity for automatic composition)."""
         return super().name  # type: ignore[misc]
@@ -903,7 +914,6 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
             self.entity_id,
         )
 
-
         # Kick off a statistics update if data already exists (e.g., after import)
         if self.coordinator.data and self.coordinator.data.get("usage_points"):
             self._handle_coordinator_update()
@@ -916,9 +926,9 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
             for usage_point in self.coordinator.data["usage_points"]:
                 for meter_reading in usage_point.meter_readings:
                     if (
-                        (self._usage_point_id is None or usage_point.id == self._usage_point_id)
-                        and meter_reading.id == self._meter_reading_id
-                    ):
+                        self._usage_point_id is None
+                        or usage_point.id == self._usage_point_id
+                    ) and meter_reading.id == self._meter_reading_id:
                         found_meter_reading = True
                         _schedule_hass_task_from_any_thread(
                             self.hass, self.update_sensor_and_statistics(meter_reading)
@@ -931,7 +941,10 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
             if not found_meter_reading:
                 for usage_point in self.coordinator.data["usage_points"]:
                     if (
-                        (self._usage_point_id is None or usage_point.id == self._usage_point_id)
+                        (
+                            self._usage_point_id is None
+                            or usage_point.id == self._usage_point_id
+                        )
                         and usage_point.id == self._meter_reading_id
                         and usage_point.usage_summaries
                     ):
@@ -948,14 +961,17 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
                         else:
                             _schedule_hass_task_from_any_thread(
                                 self.hass,
-                                self.update_sensor_and_statistics_from_summaries(usage_point),
+                                self.update_sensor_and_statistics_from_summaries(
+                                    usage_point
+                                ),
                             )
                         break
 
-    async def update_sensor_and_statistics(self, meter_reading: model.MeterReading) -> None:
+    async def update_sensor_and_statistics(
+        self, meter_reading: model.MeterReading
+    ) -> None:
         # Update state
         self._attr_native_value = self.native_value
-
 
         # Update long-term statistics with pro-rated daily cost
         # Run in background to not block startup
@@ -970,7 +986,9 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
         statistics.async_schedule_statistics_update(
             self.hass,
             self.coordinator.config_entry.entry_id,
-            self._update_gas_cost_statistics_async(meter_reading, summaries, allocation_mode),
+            self._update_gas_cost_statistics_async(
+                meter_reading, summaries, allocation_mode
+            ),
         )
         _LOGGER.debug(
             "%s: Gas cost statistics update scheduled in background.",
@@ -981,7 +999,7 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
         self,
         meter_reading: model.MeterReading,
         summaries: list[model.UsageSummary],
-        allocation_mode: str
+        allocation_mode: str,
     ) -> None:
         """Update gas cost statistics in background without blocking."""
         try:
@@ -1004,15 +1022,21 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
                 self.entity_id,
             )
 
-    async def update_sensor_and_statistics_from_summaries(self, usage_point: model.UsagePoint) -> None:
+    async def update_sensor_and_statistics_from_summaries(
+        self, usage_point: model.UsagePoint
+    ) -> None:
         """Update sensor and statistics when only UsageSummaries are available (no MeterReadings)."""
         # Update entity state (sum of all UsageSummary total_cost values)
         if any(us.total_cost is None for us in usage_point.usage_summaries):
             self._attr_native_value = None
             return
-        total = sum(us.total_cost for us in usage_point.usage_summaries)
+        total = sum(
+            float(
+                scaling.usage_summary_cost(us, _cost_multiplier(self.coordinator, True))
+            )
+            for us in usage_point.usage_summaries
+        )
         self._attr_native_value = total if total > 0 else 0.0
-
 
         # Import gas cost statistics
         allocation_mode = (
@@ -1039,7 +1063,9 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
         statistics.async_schedule_statistics_update(
             self.hass,
             self.coordinator.config_entry.entry_id,
-            self._update_gas_cost_statistics_from_summaries_async(usage_point, allocation_mode),
+            self._update_gas_cost_statistics_from_summaries_async(
+                usage_point, allocation_mode
+            ),
         )
         _LOGGER.debug(
             "%s: Gas cost statistics update (from summaries) scheduled in background.",
@@ -1047,9 +1073,7 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
         )
 
     async def _update_gas_cost_statistics_from_summaries_async(
-        self,
-        usage_point: model.UsagePoint,
-        allocation_mode: str
+        self, usage_point: model.UsagePoint, allocation_mode: str
     ) -> None:
         """Update gas cost statistics from summaries in background without blocking."""
         try:
@@ -1154,7 +1178,10 @@ async def async_setup_entry(
                     or entry.data.get("gas_usage_allocation")
                     or "daily_readings"
                 )
-                if allocation_mode == "monthly_increment" and usage_point.usage_summaries:
+                if (
+                    allocation_mode == "monthly_increment"
+                    and usage_point.usage_summaries
+                ):
                     summary_stream_id = (
                         meter_readings[0].id
                         if len(meter_readings) == 1

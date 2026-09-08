@@ -53,3 +53,13 @@ def usage_summary_cost(
         summary.power_of_ten_multiplier, fallback_multiplier
     )
     return decimal.Decimal(str(summary.total_cost)) * decimal.Decimal(10) ** multiplier
+
+
+def usage_summary_consumption(summary: model.UsageSummary) -> decimal.Decimal:
+    """Scale a raw usage-summary volume using its declared multiplier."""
+    if summary.consumption_m3 is None:
+        raise ValueError("Usage summary consumption is missing")
+    multiplier = resolve_multiplier(summary.consumption_power_of_ten_multiplier, 0)
+    return (
+        decimal.Decimal(str(summary.consumption_m3)) * decimal.Decimal(10) ** multiplier
+    )
