@@ -1,180 +1,106 @@
-# Historical Data Handling in Green Button Integration
+# Green Button Data Handling
 
-## Overview
+## Purpose
 
-The Green Button integration handles historical data by **generating its own statistics and bypassing Home Assistant's automatic recorder**. This approach allows the integration to ingest years of historical interval data from Green Button feeds and populate the Energy Dashboard with accurate historical consumption data.
+Green Button imports are historical source data, not a live meter feed. The integration accepts Green Button ESPI Atom/XML documents, preserves the source documents, reconciles their readings into a canonical in-memory history, and publishes integration-owned long-term statistics for Home Assistant's Energy Dashboard. It does not poll a utility or make outbound API calls.
 
-## Architecture
+The display sensors show the total represented by the imported history. The historical series used by the Energy Dashboard is a separate, integration-owned statistic; it is not generated from the display sensor's state history.
 
-### 1. Manual Data Import Process
+## Import and source storage
 
-The integration relies entirely on **manual XML imports** rather than automatic API calls:
+XML can be supplied when the config entry is created, or later through the **Import Green Button ESPI XML** action. The action accepts exactly one of:
 
-- **No automatic polling**: The coordinator has `update_interval=None` - it never fetches data automatically
-- **Service-based imports**: New data is added via the `import_espi_xml` service call
-- **Data merging**: Multiple XML imports are combined intelligently to avoid duplicates
-- **Stored data**: XML data is persisted in the config entry for restart recovery
+- pasted XML content; or
+- an XML file path. Relative paths are resolved from Home Assistant's config directory. Paths outside that directory must be in `allowlist_external_dirs`.
 
-The `_async_update_data()` method only parses already-stored XML data and doesn't perform any external fetching.
+The integration rejects a document that has neither supported interval readings nor usage summaries. It reports and skips unsupported individual readings where possible rather than treating them as zero usage.
 
-### 2. Entity Creation with Duplicate Prevention
-
-Sensors are created dynamically when data becomes available:
-
-- **Entity Registry Checks**: Before creating any sensor, the integration checks if an entity with the same `unique_id` already exists in Home Assistant's entity registry
-- **No Duplicate Creation**: If an entity already exists, creation is skipped with a debug log
-- **Dynamic Creation**: Sensors are created when the coordinator has data, either during initial setup or after XML imports
-
-### 3. Disables Automatic Recorder Statistics
-
-The sensor is configured with `TOTAL_INCREASING` state class:
-
-```python
-_attr_state_class = SensorStateClass.TOTAL_INCREASING
-```
-
-While this signals to Home Assistant that the sensor is cumulative, the integration **prevents the recorder from auto-generating statistics** by:
-
-- **Not calling `async_write_ha_state()`** in the coordinator update cycle
-- The `_handle_coordinator_update()` method explicitly **does NOT** call `super()._handle_coordinator_update()`, which would trigger the recorder to auto-generate statistics
-
-This is critical because the recorder's automatic statistics would create **corrupted records** (state/sum swap, massive consumption values) when given cumulative sensor data without proper context.
-
-### 4. Manually Calculates Energy Values from Raw Interval Data
-
-In `update_sensor_and_statistics()`, the sensor:
-
-```python
-total_energy = 0
-for interval_block in meter_reading.interval_blocks:
-    for interval_reading in interval_block.interval_readings:
-        if interval_reading.value is not None:
-            # Apply power of ten multiplier from the ReadingType
-            power_multiplier = interval_reading.reading_type.power_of_ten_multiplier
-            value = interval_reading.value * (10**power_multiplier)
-            total_energy += value
-
-# Convert from Wh to kWh
-self._attr_native_value = total_energy / 1000.0
-```
-
-This sums up all interval readings from the Green Button data and stores the cumulative total as the sensor state.
-
-### 5. Imports Historical Statistics Using `async_import_statistics`
-
-Instead of relying on the recorder to generate statistics from individual state changes, the integration:
-
-- Calls `statistics.update_statistics()` (electricity) or `statistics.update_gas_statistics()` (gas) with the entire meter reading
-- Uses Home Assistant's `async_import_statistics()` API to bulk-import statistics records
-- Properly handles overlapping/duplicate data without corrupting records
-
-**Gas vs Electricity Statistics:**
-- **Electricity**: Uses `update_statistics()` with hourly bucketing
-- **Gas**: Uses `update_gas_statistics()` with monthly_increment or daily_readings modes
-- **Gas timing**: Statistics generated immediately in `async_added_to_hass()` if data exists
-- **Electricity timing**: Statistics generated in `_handle_coordinator_update()` after data changes
-
-## Data Flow
+Source XML is stored immediately in a private Home Assistant storage document:
 
 ```
-Manual XML Import (via import_espi_xml service)
-    ↓
-Parse into UsagePoint → MeterReading → IntervalBlocks → IntervalReadings
-    ↓
-GreenButtonCoordinator.async_add_xml_data()
-    └─ Merges new data with existing data
-    └─ Calls async_set_updated_data() to notify entities
-    ↓
-_async_create_entities() [Entity Creation]
-    └─ Checks entity registry to prevent duplicates
-    └─ Creates sensors if they don't exist
-    ↓
-GreenButtonSensor.async_added_to_hass() [All Sensors]
-    └─ Initializes sensor state
-    └─ Triggers immediate statistics generation if data exists
-    ↓
-GreenButtonSensor._handle_coordinator_update() [Electricity]
-    └─ Called when coordinator data changes
-    ↓
-update_sensor_and_statistics()
-    ├─ Calculate cumulative total from all interval readings
-    ├─ Set sensor state (visible in UI)
-    └─ Call statistics.update_statistics()
-         ↓
-         statistics._generate_statistics_data()
-         └─ Splits interval readings into hourly buckets
-         └─ Generates hourly records with cumulative sums
-         ↓
-         async_import_statistics() → Home Assistant Statistics Database
-
-GreenButtonGasSensor._handle_coordinator_update() [Gas]
-    └─ Called when coordinator data changes
-    ↓
-update_sensor_and_statistics()
-    └─ Calculate cumulative total from all interval readings
-    └─ Call statistics.update_gas_statistics()
-    └─ Uses monthly_increment or daily_readings mode
-         ↓
-         async_import_statistics() → Home Assistant Statistics Database
+.storage/green_button_xml_<config-entry-id>
 ```
 
-**Key Differences:**
-- **Entity Creation**: Uses entity registry checks to prevent duplicates
-- **Gas Statistics**: Generated immediately in `async_added_to_hass()` if data exists
-- **Electricity Statistics**: Generated in `_handle_coordinator_update()` after data changes
-- **No automatic fetching**: All data comes from manual XML imports
-- **Coordinator role**: Manages data merging, not fetching
+Documents are grouped under an auto-detected `electricity`, `gas`, or fallback `imported_data` label. An SHA-256 content hash prevents the same XML document from being stored twice, even if it is submitted under a different label.
 
-## Why This Approach is Better
+During initial setup, XML entered in the config flow is first held in temporary storage (because an entry ID does not yet exist) and is then migrated to the entry's permanent archive. Older config-entry storage formats are read as backwards-compatible fallbacks.
 
-| Aspect | Recorder Auto-Stats | Manual `async_import_statistics` |
-|--------|-------------------|----------------------------------|
-| **Historical Data** | ❌ Can only generate from current state changes | ✅ Imports all historical intervals from Green Button data |
-| **Data Accuracy** | ❌ Creates corrupted records (state/sum swap) | ✅ Correctly maps interval values to statistics |
-| **Energy Dashboard** | ❌ Fails or shows incorrect consumption | ✅ Shows accurate historical consumption |
-| **Backfill Capability** | ❌ Limited to real-time data | ✅ Can backfill years of historical data |
-| **Flexibility** | ❌ Fixed to real-time state-based stats | ✅ Can handle any interval length (15min, hourly, daily) |
+On startup, the integration reparses every archived document and applies the same reconciliation rules used for new imports. The archive is therefore the authoritative source from which active Green Button history is rebuilt after a restart.
 
-## Benefits
+## Reconciliation of multiple imports
 
-1. **Complete Historical Data**: Can ingest years of interval data from Green Button feeds
-2. **Accurate Energy Dashboard**: Shows correct historical consumption patterns
-3. **Data Integrity**: Avoids corrupted statistics records from improper state/sum tracking
-4. **Flexibility**: Handles multiple interval types (electricity, gas, cost)
-5. **Manual Control**: Allows users to import specific data periods as needed
+Imports do not need to be chronological and may have gaps. Data is organized by provider Usage Point and Meter Reading identifiers.
 
-## Implementation Details
+- Meter readings with different IDs remain separate streams.
+- Interval identity is its start time and duration. A later import replaces an existing interval with the same identity, allowing provider corrections.
+- Intervals that overlap but have different identities are ambiguous. The already accepted coverage is retained and the conflicting interval is logged and skipped.
+- Usage summaries are deduplicated by provider ID or identical period. A new summary that ambiguously overlaps a retained period is skipped.
+- Canonical interval blocks are rebuilt from the accepted, non-overlapping readings.
 
-### Statistics Generation (`statistics.py`)
+This means that reimporting an identical document has no effect, a corrected copy of an identical interval can supersede the previous value, and unrelated or non-overlapping date ranges accumulate normally.
 
-**Electricity Statistics (`_generate_statistics_data`):**
-- Collects all interval readings from meter readings
-- Sorts them chronologically
-- Groups readings into hourly buckets
-- Calculates proportional energy for readings that span multiple hours
-- Skips partial hours to avoid oversized last bars in Energy Dashboard
-- Computes cumulative sums based on existing statistics
+## Entities and display values
 
-**Gas Statistics (`update_gas_statistics`):**
-- Supports two modes: `daily_readings` (daily totals) and `monthly_increment` (monthly billing periods)
-- For `monthly_increment`: Uses UsageSummary data to create monthly increment records
-- For `daily_readings`: Aggregates daily gas consumption from interval readings
-- Handles both interval-based data and summary-based data from different utility formats
+Entities are created dynamically for usable provider streams and retain stable identities based on the config entry, Usage Point, and Meter Reading IDs. This avoids collisions when two Usage Points use the same final Meter Reading path segment. Where an older suffix-based entity ID maps unambiguously to one new stream, its entity registration and external statistic are migrated.
 
-### Metadata Management
+For electricity, each eligible meter stream gets a usage sensor and a cost sensor. Gas usage is represented per eligible gas stream in daily-readings mode. A gas cost entity can be associated with a single gas stream; when several streams share a Usage Point, it is skipped because its billing summaries cannot be attributed safely. With **monthly increment** gas usage selected, a Usage Point with summaries is represented by one usage and one cost stream, including the summary-only case.
 
-The `create_metadata()` function creates Home Assistant `StatisticMetaData` with:
-- `mean_type: StatisticMeanType.NONE` (not `ARITHMETIC` or `CIRCULAR`)
-- `has_sum: True` (enable Energy Dashboard)
-- `unit_of_measurement`: kWh, m³, or currency
-- `unit_class`: None (flexible for multiple sensor types)
+Display values are totals of the records that can be published to their corresponding statistic:
 
-## Notes
+- Electricity usage is the total of complete hourly allocations, converted to kWh.
+- Electricity cost is the total of complete hourly cost allocations. It is unavailable when any included interval lacks cost data; missing cost is not assumed to be zero.
+- Gas usage is a total in m³ based on the selected gas-usage allocation mode.
+- Gas cost is the sum of available billing-summary costs in the source currency (CAD until a source currency is available).
 
-- **Electricity sensors** do NOT call `async_write_ha_state()` during coordinator updates to prevent automatic recorder statistics
-- **Gas sensors** call `async_write_ha_state()` in `async_added_to_hass()` to make entities available, but still prevent recorder statistics
-- Statistics are updated after the sensor state is set, but before `async_write_ha_state()` for electricity sensors
-- Gas statistics are generated immediately in `async_added_to_hass()` if data exists, rather than waiting for coordinator updates
-- The integration uses `await` to ensure statistics are imported before returning control
-- Duplicate or overlapping statistics are handled correctly by Home Assistant's `async_import_statistics()` API
-- No automatic data fetching - all data comes from manual XML imports via the service
+The entities deliberately have no sensor `state_class`. Their occasional state writes update the display only; they do not ask Home Assistant's automatic sensor-statistics pipeline to infer history from present-day state changes.
+
+## Integration-owned statistics
+
+Each display entity exposes a `statistic_id` attribute that points to its associated external statistic. The IDs have the form:
+
+```
+green_button:<SHA-256 hash of the entity unique ID>
+```
+
+They are stable when the user renames an entity and separate from the display entity ID. Metadata marks the series as sourced by `green_button`, with a `sum` and no mean, so it can be selected in the Energy Dashboard.
+
+After an import, restart, or relevant entity setup, background tasks generate the statistics. Work for an individual statistic is serialized, and outstanding tasks are cancelled and drained when its config entry unloads.
+
+For a changed series, the integration validates all generated records, then uses one recorder task and transaction to replace that external statistic's metadata and records. A fingerprint avoids writing an unchanged series. This is intentionally different from both recorder-generated sensor statistics and the former `async_import_statistics()` approach.
+
+Every imported record contains an incremental `state` and a running cumulative `sum`. When a new import changes history, existing records before the earliest new timestamp are retained; records from that timestamp forward are rebuilt so their sums remain correct. This supports backfills and out-of-order imports.
+
+## How each kind of history is allocated
+
+### Electricity usage and cost
+
+Intervals are split across UTC hour boundaries in proportion to the time spent in each hour. Only hours with a full hour of coverage are emitted. The final partial hour is held until later source data completes it, preventing a misleading small final bar in the Energy Dashboard.
+
+Energy values are scaled from the source reading and converted from Wh, kWh, or MWh to kWh. Cost values use the source cost multiplier when one is declared; the configured electricity fallback multiplier is used only when the XML omits one. Electricity cost history is generated only with complete interval-cost coverage.
+
+### Gas usage
+
+Gas uses Home Assistant's configured time zone for billing dates.
+
+- **Daily readings** allocates interval usage by physical overlap with each local calendar day and emits one record at local midnight for that day.
+- **Monthly increment** emits one consumption increment on each billing period's local end date. It prefers `UsageSummary` consumption and can also use a non-overlapping long billing-period interval. This mode supports UsageSummary-only gas XML.
+
+### Gas cost
+
+Gas cost comes from Usage Summary billing totals. With **pro-rate daily**, a billing total is distributed across local days in proportion to the available daily gas usage. Missing day coverage causes the bill to be allocated over the available measured days; when no positive consumption is available, it is split evenly across the billing period. These are estimates, and the display entity identifies the mode as `estimated_daily_proration`.
+
+With **monthly increment**, the full billing cost is recorded on the billing period's local end date. Summary-only data uses this mode because there are no daily readings with which to pro-rate a bill.
+
+The configured gas fallback multiplier is used only if the source does not declare a cost multiplier. A source-declared multiplier always wins.
+
+## Retention, clearing, and rebuilding
+
+The available diagnostic and maintenance actions are scoped to one config entry:
+
+- **Log Green Button Meter Reading Intervals** logs canonical stream coverage and mapped entities.
+- **Log Stored Green Button XML Info** logs archived document labels, sizes, and coverage.
+- **Clear Stored Green Button XML Data** removes all archived XML, or only the selected `electricity` or `gas` label, then rebuilds the active in-memory history from what remains. It does not delete recorder statistics.
+- **Delete Green Button Statistics** deletes the selected display entity's `green_button:` external series only. The XML archive is retained, so reimporting the source data can rebuild it.
+- **Recalculate Green Button Cost Statistics** regenerates electricity and/or gas cost history using the current fallback multiplier settings. Use it after changing those settings; XML-declared multipliers remain unchanged.
+
+Clearing XML and deleting statistics are intentionally separate operations. Clearing the archive stops that source from being part of future reconstruction, while deleting a statistic removes the existing Energy Dashboard history for that one external series.
