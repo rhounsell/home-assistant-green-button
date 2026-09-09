@@ -19,9 +19,18 @@ This custom component has been developed to handle the Green Button data availab
 ## Installation (HACS not set up yet)
 
 1. Copy the green_button folder under custom_components into your Home Assistant custom_components folder
-2. Restart Home Assistant
-3. In the HA UI go to "Configuration" -> "Integrations". Click "+" and search for "Green Button"
-4. Complete the installation with or without providing Green Button XML data
+2. If Green Button XML files will be imported from outside Home Assistant's `/config` directory, add each parent directory that will contain imports to the `homeassistant` section of `configuration.yaml`. For example, to import files from `/share`:
+
+   ```yaml
+   homeassistant:
+     allowlist_external_dirs:
+       - /share
+   ```
+
+   The `/config` directory is available by default; directories outside it must be allowlisted before the import can read files from them.
+3. Restart Home Assistant
+4. In the HA UI go to "Configuration" -> "Integrations". Click "+" and search for "Green Button"
+5. Complete the installation with or without providing Green Button XML data
    - If you skip the XML import during setup, you can import it later using the **Add Entry** button on the Green Button integration or via **Developer Tools → Actions → 'Import Green Button ESPI XML'**
 
 By default, importing electricity usage and billing data will create a "Home Electricity" Green Button device, with entities named "sensor.home_electricity_cost" and "sensor.home_electricity_usage". Importing Natural Gas data will create by default a "Home Natural Gas" device, with "sensor.home_natural_gas_cost" and "sensor.home_natural_gas_usage" sensors.
