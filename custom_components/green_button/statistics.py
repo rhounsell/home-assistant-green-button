@@ -19,8 +19,10 @@ from homeassistant.components.recorder import (
 )
 from homeassistant.components.recorder.models import StatisticData, StatisticMeanType
 from homeassistant.components.recorder.models.statistics import StatisticMetaData
-from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import recorder as recorder_helper
+from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import EnergyConverter, VolumeConverter
 
@@ -171,11 +173,33 @@ def _statistics_lock(hass: HomeAssistant, statistic_id: str) -> asyncio.Lock:
 
 def async_schedule_statistics_update(
     hass: HomeAssistant,
-    entry_id: str,
-    coro: Coroutine[Any, Any, None],
+    entry: ConfigEntry,
+    update_factory: Callable[[], Coroutine[Any, Any, None]],
 ) -> asyncio.Task[None]:
-    """Schedule a statistics update that can be cancelled during unload."""
-    task = hass.async_create_task(coro)
+    """Schedule a post-start statistics update that can be cancelled on unload."""
+
+    async def _async_run_after_started() -> None:
+        started: asyncio.Future[None] = hass.loop.create_future()
+
+        @callback
+        def _mark_started(_hass: HomeAssistant) -> None:
+            if not started.done():
+                started.set_result(None)
+
+        cancel_started_listener = async_at_started(hass, _mark_started)
+        try:
+            await started
+        finally:
+            cancel_started_listener()
+
+        await update_factory()
+
+    entry_id = entry.entry_id
+    task = entry.async_create_background_task(
+        hass,
+        _async_run_after_started(),
+        f"Green Button statistics update {entry_id}",
+    )
     tasks_by_entry = cast(
         dict[str, set[asyncio.Task[None]]],
         hass.data.setdefault(_DATA_STATISTICS_TASKS, {}),
@@ -282,30 +306,118 @@ class _ReplaceStatisticsTask(tasks.RecorderTask):
         return _queue_task(hass, ctor)
 
 
+@final
+@dataclasses.dataclass(frozen=False)
+class _UpsertStatisticsTask(tasks.RecorderTask):
+    """Import only new or changed records in one recorder transaction."""
+
+    metadata: StatisticMetaData
+    records: list[StatisticData]
+    future: asyncio.Future[None]
+
+    def run(self, instance: Recorder) -> None:
+        try:
+            with recorder_helper.session_scope(
+                session=instance.get_session()
+            ) as session:
+                statistics._import_statistics_with_session(  # noqa: SLF001
+                    instance,
+                    session,
+                    self.metadata,
+                    self.records,
+                    recorder_db_schema.Statistics,
+                )
+        except Exception as err:
+            _complete_future_exception(self.future, err)
+            return
+        _complete_future(self.future, None)
+
+    @classmethod
+    def queue_task(
+        cls,
+        hass: HomeAssistant,
+        metadata: StatisticMetaData,
+        records: list[StatisticData],
+    ) -> asyncio.Future[None]:
+        """Queue an atomic upsert and return its completion future."""
+
+        def ctor(future: asyncio.Future[None]) -> _UpsertStatisticsTask:
+            return cls(metadata=metadata, records=records, future=future)
+
+        return _queue_task(hass, ctor)
+
+
+def _statistics_fingerprint(records: Sequence[StatisticData]) -> str:
+    """Return a stable fingerprint for normalized statistics records."""
+    digest = hashlib.sha256()
+    for record in records:
+        start = record["start"].astimezone(datetime.UTC)
+        digest.update(
+            (
+                f"{start.isoformat()}\0{record['state']:.17g}\0{record['sum']:.17g}\n"
+            ).encode()
+        )
+    return digest.hexdigest()
+
+
+def _changed_statistics(
+    existing: Sequence[StatisticData],
+    desired: Sequence[StatisticData],
+) -> tuple[list[StatisticData], bool]:
+    """Return new/changed records and whether timestamps need removal."""
+    existing_by_start = {
+        record["start"].astimezone(datetime.UTC): record for record in existing
+    }
+    desired_starts = {record["start"].astimezone(datetime.UTC) for record in desired}
+    changed = [
+        record
+        for record in desired
+        if (
+            (current := existing_by_start.get(record["start"].astimezone(datetime.UTC)))
+            is None
+            or float(current["state"]) != float(record["state"])
+            or float(current["sum"]) != float(record["sum"])
+        )
+    ]
+    return changed, bool(existing_by_start.keys() - desired_starts)
+
+
 async def _async_replace_statistics(
     hass: HomeAssistant,
     metadata: StatisticMetaData,
     records: list[StatisticData],
+    existing: list[StatisticData] | None = None,
 ) -> bool:
-    """Validate and atomically replace an external series when it changed."""
+    """Synchronize an external series by writing only changed records."""
     validated = _validated_statistics(metadata, records)
-    digest = hashlib.sha256()
-    for record in validated:
-        digest.update(
-            (
-                f"{record['start'].isoformat()}\\0{record['state']:.17g}"
-                f"\\0{record['sum']:.17g}\\n"
-            ).encode()
-        )
     fingerprints = cast(
         dict[str, str],
         hass.data.setdefault(_DATA_STATISTICS_FINGERPRINTS, {}),
     )
     statistic_id = metadata["statistic_id"]
-    fingerprint = digest.hexdigest()
+    fingerprint = _statistics_fingerprint(validated)
     if fingerprints.get(statistic_id) == fingerprint:
         _LOGGER.debug("Skipping unchanged Green Button statistic %s", statistic_id)
         return False
+
+    if existing is None:
+        existing = await _get_all_existing_statistics(hass, statistic_id)
+    changed, requires_replacement = _changed_statistics(existing, validated)
+    if not changed and not requires_replacement:
+        fingerprints[statistic_id] = fingerprint
+        _LOGGER.debug("Skipping unchanged Green Button statistic %s", statistic_id)
+        return False
+
+    if not requires_replacement:
+        _LOGGER.info(
+            "Importing %d new or changed records for %s",
+            len(changed),
+            statistic_id,
+        )
+        await _UpsertStatisticsTask.queue_task(hass, metadata, changed)
+        fingerprints[statistic_id] = fingerprint
+        return True
+
     _LOGGER.info(
         "Replacing %d records for %s from %s through %s",
         len(validated),
@@ -518,6 +630,7 @@ async def _generate_statistics_data(
     entity: GreenButtonEntity,
     data_extractor: DataExtractor,
     meter_reading: model.MeterReading,
+    existing_stats: list[StatisticData] | None = None,
 ) -> list[StatisticData]:
     """Generate statistics data aggregated to full hours with out-of-order import support.
 
@@ -535,10 +648,11 @@ async def _generate_statistics_data(
             entity.entity_id,
         )
         return []
-    existing_stats = await _get_all_existing_statistics(
-        hass,
-        entity.long_term_statistics_id,
-    )
+    if existing_stats is None:
+        existing_stats = await _get_all_existing_statistics(
+            hass,
+            entity.long_term_statistics_id,
+        )
     merged_stats = [
         cast(StatisticData, record)
         for record in allocation.merge_records(existing_stats, values)
@@ -557,6 +671,7 @@ async def _generate_statistics_data_cost(
     data_extractor: DataExtractor,
     meter_reading: model.MeterReading,
     merge_with_existing: bool = True,
+    existing_stats: list[StatisticData] | None = None,
 ) -> list[StatisticData]:
     """Generate hourly cost statistics with out-of-order import support.
 
@@ -582,10 +697,11 @@ async def _generate_statistics_data_cost(
 
     # Get all existing statistics for this entity (only if merging)
     if merge_with_existing:
-        existing_stats = await _get_all_existing_statistics(
-            hass,
-            entity.long_term_statistics_id,
-        )
+        if existing_stats is None:
+            existing_stats = await _get_all_existing_statistics(
+                hass,
+                entity.long_term_statistics_id,
+            )
 
         # Merge new statistics with existing ones, handling out-of-order imports
         merged_stats = [
@@ -651,8 +767,16 @@ async def _async_update_cost_statistics(
         meter_reading.id,
         merge_with_existing,
     )
+    existing_stats = await _get_all_existing_statistics(
+        hass, entity.long_term_statistics_id
+    )
     statistics_data = await _generate_statistics_data_cost(
-        hass, entity, data_extractor, meter_reading, merge_with_existing
+        hass,
+        entity,
+        data_extractor,
+        meter_reading,
+        merge_with_existing,
+        existing_stats,
     )
 
     _LOGGER.info(
@@ -667,9 +791,9 @@ async def _async_update_cost_statistics(
         )
         return
 
-    await _async_replace_statistics(hass, metadata, statistics_data)
+    await _async_replace_statistics(hass, metadata, statistics_data, existing_stats)
     _LOGGER.info(
-        "Replaced %d cost records for entity %s",
+        "Synchronized %d cost records for entity %s",
         len(statistics_data),
         entity.entity_id,
     )
@@ -694,8 +818,11 @@ async def _async_update_statistics(
         entity.entity_id,
         meter_reading.id,
     )
+    existing_stats = await _get_all_existing_statistics(
+        hass, entity.long_term_statistics_id
+    )
     statistics_data = await _generate_statistics_data(
-        hass, entity, data_extractor, meter_reading
+        hass, entity, data_extractor, meter_reading, existing_stats
     )
 
     _LOGGER.info(
@@ -711,9 +838,9 @@ async def _async_update_statistics(
         )
         return
 
-    await _async_replace_statistics(hass, metadata, statistics_data)
+    await _async_replace_statistics(hass, metadata, statistics_data, existing_stats)
     _LOGGER.info(
-        "Replaced %d statistics records for entity %s",
+        "Synchronized %d statistics records for entity %s",
         len(statistics_data),
         entity.entity_id,
     )
@@ -826,6 +953,7 @@ async def _generate_daily_m3_statistics(
     hass: HomeAssistant,
     entity: GreenButtonEntity,
     meter_reading: model.MeterReading,
+    existing_stats: list[StatisticData] | None = None,
 ) -> list[StatisticData]:
     """Generate daily statistics for gas consumption (m³) with out-of-order import support.
 
@@ -838,11 +966,11 @@ async def _generate_daily_m3_statistics(
     if not values:
         return []
 
-    # Get all existing statistics for this entity
-    existing_stats = await _get_all_existing_statistics(
-        hass,
-        entity.long_term_statistics_id,
-    )
+    if existing_stats is None:
+        existing_stats = await _get_all_existing_statistics(
+            hass,
+            entity.long_term_statistics_id,
+        )
 
     return [
         cast(StatisticData, record)
@@ -904,9 +1032,9 @@ async def _async_update_gas_statistics(
             for record in allocation.merge_records(existing_stats, values)
         ]
 
-        await _async_replace_statistics(hass, metadata, records)
+        await _async_replace_statistics(hass, metadata, records, existing_stats)
         _LOGGER.info(
-            "Replaced %d gas usage records for %s (total: %.1f m³)",
+            "Synchronized %d gas usage records for %s (total: %.1f m³)",
             len(records),
             entity.entity_id,
             records[-1].get("sum", 0.0),
@@ -923,13 +1051,20 @@ async def _async_update_gas_statistics(
         )
         return
 
-    data = await _generate_daily_m3_statistics(hass, entity, meter_reading)
+    existing_stats = await _get_all_existing_statistics(
+        hass, entity.long_term_statistics_id
+    )
+    data = await _generate_daily_m3_statistics(
+        hass, entity, meter_reading, existing_stats
+    )
     if not data:
         _LOGGER.info("No gas statistics to import for %s", entity.entity_id)
         return
 
-    await _async_replace_statistics(hass, metadata, data)
-    _LOGGER.info("Replaced %d gas daily records for %s", len(data), entity.entity_id)
+    await _async_replace_statistics(hass, metadata, data, existing_stats)
+    _LOGGER.info(
+        "Synchronized %d gas daily records for %s", len(data), entity.entity_id
+    )
 
 
 async def _async_update_gas_cost_statistics(
@@ -956,6 +1091,7 @@ async def _async_update_gas_cost_statistics(
         merge_with_existing: If True, merge with existing statistics. If False, regenerate all from scratch.
     """
     metadata = create_metadata(entity)
+    existing_stats: list[StatisticData] | None = None
 
     _LOGGER.info(
         "Starting gas cost statistics generation for entity %s (merge_with_existing=%s)",
@@ -1085,8 +1221,10 @@ async def _async_update_gas_cost_statistics(
     if not records:
         return
 
-    await _async_replace_statistics(hass, metadata, records)
-    _LOGGER.info("Replaced %d gas cost records for %s", len(records), entity.entity_id)
+    await _async_replace_statistics(hass, metadata, records, existing_stats)
+    _LOGGER.info(
+        "Synchronized %d gas cost records for %s", len(records), entity.entity_id
+    )
 
 
 async def update_statistics(
