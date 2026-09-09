@@ -8,6 +8,7 @@ PYTHONPATH=.:config uv run --no-sync pytest -p tests.conftest \
 # ruff: noqa: SLF001, TID251
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 import decimal
@@ -660,10 +661,14 @@ async def test_unchanged_statistics_skip_recorder_replacement(
 
 async def test_unchanged_statistics_skip_write_after_restart(
     hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Recorder contents avoid a rewrite when the in-memory fingerprint is empty."""
     metadata = statistics.create_metadata(_StatisticsEntity())  # type: ignore[arg-type]
     records = [StatisticData(start=HISTORICAL, state=1.0, sum=1.0)]
+    caplog.set_level(
+        logging.INFO, logger="custom_components.green_button.statistics"
+    )
 
     with (
         patch.object(
@@ -682,6 +687,10 @@ async def test_unchanged_statistics_skip_write_after_restart(
 
     upsert_task.assert_not_awaited()
     replace_task.assert_not_awaited()
+    assert (
+        f"No changes detected for Green Button statistic {metadata['statistic_id']}; "
+        "recorder was not updated"
+    ) in caplog.messages
 
 
 async def test_statistics_upsert_only_new_and_changed_records(

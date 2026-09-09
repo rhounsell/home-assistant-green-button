@@ -397,7 +397,10 @@ async def _async_replace_statistics(
     statistic_id = metadata["statistic_id"]
     fingerprint = _statistics_fingerprint(validated)
     if fingerprints.get(statistic_id) == fingerprint:
-        _LOGGER.debug("Skipping unchanged Green Button statistic %s", statistic_id)
+        _LOGGER.info(
+            "No changes detected for Green Button statistic %s; recorder was not updated",
+            statistic_id,
+        )
         return False
 
     if existing is None:
@@ -405,7 +408,10 @@ async def _async_replace_statistics(
     changed, requires_replacement = _changed_statistics(existing, validated)
     if not changed and not requires_replacement:
         fingerprints[statistic_id] = fingerprint
-        _LOGGER.debug("Skipping unchanged Green Button statistic %s", statistic_id)
+        _LOGGER.info(
+            "No changes detected for Green Button statistic %s; recorder was not updated",
+            statistic_id,
+        )
         return False
 
     if not requires_replacement:
@@ -792,11 +798,6 @@ async def _async_update_cost_statistics(
         return
 
     await _async_replace_statistics(hass, metadata, statistics_data, existing_stats)
-    _LOGGER.info(
-        "Synchronized %d cost records for entity %s",
-        len(statistics_data),
-        entity.entity_id,
-    )
 
 
 async def _async_update_statistics(
@@ -839,11 +840,6 @@ async def _async_update_statistics(
         return
 
     await _async_replace_statistics(hass, metadata, statistics_data, existing_stats)
-    _LOGGER.info(
-        "Synchronized %d statistics records for entity %s",
-        len(statistics_data),
-        entity.entity_id,
-    )
 
 
 async def clear_statistic(hass: HomeAssistant, statistic_id: str) -> None:
@@ -1033,12 +1029,6 @@ async def _async_update_gas_statistics(
         ]
 
         await _async_replace_statistics(hass, metadata, records, existing_stats)
-        _LOGGER.info(
-            "Synchronized %d gas usage records for %s (total: %.1f m³)",
-            len(records),
-            entity.entity_id,
-            records[-1].get("sum", 0.0),
-        )
 
         return
 
@@ -1062,9 +1052,6 @@ async def _async_update_gas_statistics(
         return
 
     await _async_replace_statistics(hass, metadata, data, existing_stats)
-    _LOGGER.info(
-        "Synchronized %d gas daily records for %s", len(data), entity.entity_id
-    )
 
 
 async def _async_update_gas_cost_statistics(
@@ -1222,9 +1209,6 @@ async def _async_update_gas_cost_statistics(
         return
 
     await _async_replace_statistics(hass, metadata, records, existing_stats)
-    _LOGGER.info(
-        "Synchronized %d gas cost records for %s", len(records), entity.entity_id
-    )
 
 
 async def update_statistics(
