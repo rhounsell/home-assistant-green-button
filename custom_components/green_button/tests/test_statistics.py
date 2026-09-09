@@ -36,7 +36,8 @@ import pytest
 from homeassistant.components.recorder import statistics as recorder_statistics
 from homeassistant.components.recorder.models import StatisticData, StatisticMeanType
 from homeassistant.components.sensor import DATA_COMPONENT, SensorDeviceClass
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.setup import async_setup_component
 from tests.common import MockConfigEntry
 from tests.components.recorder.common import (
@@ -639,13 +640,106 @@ async def test_unchanged_statistics_skip_recorder_replacement(
     metadata = statistics.create_metadata(_StatisticsEntity())  # type: ignore[arg-type]
     records = [StatisticData(start=HISTORICAL, state=1.0, sum=1.0)]
 
-    with patch.object(
-        statistics._ReplaceStatisticsTask, "queue_task", new_callable=AsyncMock
-    ) as queue_task:
+    with (
+        patch.object(
+            statistics, "_get_all_existing_statistics", new=AsyncMock(return_value=[])
+        ),
+        patch.object(
+            statistics._UpsertStatisticsTask, "queue_task", new_callable=AsyncMock
+        ) as upsert_task,
+        patch.object(
+            statistics._ReplaceStatisticsTask, "queue_task", new_callable=AsyncMock
+        ) as replace_task,
+    ):
         assert await statistics._async_replace_statistics(hass, metadata, records)
         assert not await statistics._async_replace_statistics(hass, metadata, records)
 
-    queue_task.assert_awaited_once_with(hass, metadata, records)
+    upsert_task.assert_awaited_once_with(hass, metadata, records)
+    replace_task.assert_not_awaited()
+
+
+async def test_unchanged_statistics_skip_write_after_restart(
+    hass: HomeAssistant,
+) -> None:
+    """Recorder contents avoid a rewrite when the in-memory fingerprint is empty."""
+    metadata = statistics.create_metadata(_StatisticsEntity())  # type: ignore[arg-type]
+    records = [StatisticData(start=HISTORICAL, state=1.0, sum=1.0)]
+
+    with (
+        patch.object(
+            statistics,
+            "_get_all_existing_statistics",
+            new=AsyncMock(return_value=records),
+        ),
+        patch.object(
+            statistics._UpsertStatisticsTask, "queue_task", new_callable=AsyncMock
+        ) as upsert_task,
+        patch.object(
+            statistics._ReplaceStatisticsTask, "queue_task", new_callable=AsyncMock
+        ) as replace_task,
+    ):
+        assert not await statistics._async_replace_statistics(hass, metadata, records)
+
+    upsert_task.assert_not_awaited()
+    replace_task.assert_not_awaited()
+
+
+async def test_statistics_upsert_only_new_and_changed_records(
+    hass: HomeAssistant,
+) -> None:
+    """An append and correction write only their affected records."""
+    metadata = statistics.create_metadata(_StatisticsEntity())  # type: ignore[arg-type]
+    existing = [
+        StatisticData(start=HISTORICAL, state=1.0, sum=1.0),
+        StatisticData(start=HISTORICAL + timedelta(hours=1), state=1.0, sum=2.0),
+    ]
+    desired = [
+        existing[0],
+        StatisticData(start=HISTORICAL + timedelta(hours=1), state=2.0, sum=3.0),
+        StatisticData(start=HISTORICAL + timedelta(hours=2), state=1.0, sum=4.0),
+    ]
+
+    with (
+        patch.object(
+            statistics._UpsertStatisticsTask, "queue_task", new_callable=AsyncMock
+        ) as upsert_task,
+        patch.object(
+            statistics._ReplaceStatisticsTask, "queue_task", new_callable=AsyncMock
+        ) as replace_task,
+    ):
+        assert await statistics._async_replace_statistics(
+            hass, metadata, desired, existing
+        )
+
+    upsert_task.assert_awaited_once_with(hass, metadata, desired[1:])
+    replace_task.assert_not_awaited()
+
+
+async def test_removed_statistics_use_full_replacement(
+    hass: HomeAssistant,
+) -> None:
+    """Removing source coverage still uses the atomic replacement path."""
+    metadata = statistics.create_metadata(_StatisticsEntity())  # type: ignore[arg-type]
+    desired = [StatisticData(start=HISTORICAL, state=1.0, sum=1.0)]
+    existing = [
+        *desired,
+        StatisticData(start=HISTORICAL + timedelta(hours=1), state=1.0, sum=2.0),
+    ]
+
+    with (
+        patch.object(
+            statistics._UpsertStatisticsTask, "queue_task", new_callable=AsyncMock
+        ) as upsert_task,
+        patch.object(
+            statistics._ReplaceStatisticsTask, "queue_task", new_callable=AsyncMock
+        ) as replace_task,
+    ):
+        assert await statistics._async_replace_statistics(
+            hass, metadata, desired, existing
+        )
+
+    replace_task.assert_awaited_once_with(hass, metadata, desired)
+    upsert_task.assert_not_awaited()
 
 
 @pytest.mark.usefixtures("recorder_mock")
@@ -728,6 +822,33 @@ async def test_statistics_writers_serialize_a_series(
     assert calls == ["start", "end", "start", "end"]
 
 
+async def test_statistics_tasks_wait_for_started_without_blocking_startup(
+    hass: HomeAssistant,
+) -> None:
+    """A statistics job is a background task and begins only after HA starts."""
+    started = asyncio.Event()
+
+    async def update() -> None:
+        started.set()
+
+    entry = MockConfigEntry(domain=DOMAIN, entry_id="entry")
+    entry.add_to_hass(hass)
+    hass.set_state(CoreState.starting)
+    task = statistics.async_schedule_statistics_update(hass, entry, update)
+    await asyncio.sleep(0)
+
+    assert not started.is_set()
+    assert task not in hass._tasks
+    assert task in hass._background_tasks
+    assert task in entry._background_tasks
+
+    hass.set_state(CoreState.running)
+    hass.bus.async_fire_internal(EVENT_HOMEASSISTANT_STARTED)
+    await task
+
+    assert started.is_set()
+
+
 async def test_statistics_tasks_are_cancelled_on_unload(
     hass: HomeAssistant,
 ) -> None:
@@ -738,9 +859,12 @@ async def test_statistics_tasks_are_cancelled_on_unload(
         started.set()
         await asyncio.Event().wait()
 
-    task = statistics.async_schedule_statistics_update(hass, "entry", wait_forever())
+    entry = MockConfigEntry(domain=DOMAIN, entry_id="entry")
+    entry.add_to_hass(hass)
+    hass.set_state(CoreState.running)
+    task = statistics.async_schedule_statistics_update(hass, entry, wait_forever)
     await started.wait()
-    await statistics.async_cancel_statistics_tasks(hass, "entry")
+    await statistics.async_cancel_statistics_tasks(hass, entry.entry_id)
 
     assert task.cancelled()
 
@@ -770,17 +894,20 @@ async def test_queued_recorder_task_ignores_future_cancelled_during_unload(
     recorder = Mock()
     queued: list[statistics.tasks.RecorderTask] = []
     recorder.queue_task.side_effect = queued.append
+    entry = MockConfigEntry(domain=DOMAIN, entry_id="entry")
+    entry.add_to_hass(hass)
 
     with patch.object(
         statistics.recorder_helper, "get_instance", return_value=recorder
     ):
+        hass.set_state(CoreState.running)
         update_task = statistics.async_schedule_statistics_update(
             hass,
-            "entry",
-            statistics.clear_statistic(hass, "green_button:test"),
+            entry,
+            lambda: statistics.clear_statistic(hass, "green_button:test"),
         )
         await asyncio.sleep(0)
-        await statistics.async_cancel_statistics_tasks(hass, "entry")
+        await statistics.async_cancel_statistics_tasks(hass, entry.entry_id)
 
     assert update_task.cancelled()
     assert len(queued) == 1

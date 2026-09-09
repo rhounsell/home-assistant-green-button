@@ -329,8 +329,8 @@ class GreenButtonSensor(GreenButtonStatisticsSensor):
         if hasattr(self, "hass") and self.hass is not None:
             statistics.async_schedule_statistics_update(
                 self.hass,
-                self.coordinator.config_entry.entry_id,
-                self._update_statistics_async(meter_reading),
+                self.coordinator.config_entry,
+                lambda: self._update_statistics_async(meter_reading),
             )
             _LOGGER.debug(
                 "%s: Statistics update scheduled in background.",
@@ -538,8 +538,8 @@ class GreenButtonCostSensor(GreenButtonStatisticsSensor):
         if hasattr(self, "hass") and self.hass is not None:
             statistics.async_schedule_statistics_update(
                 self.hass,
-                self.coordinator.config_entry.entry_id,
-                self._update_cost_statistics_async(meter_reading),
+                self.coordinator.config_entry,
+                lambda: self._update_cost_statistics_async(meter_reading),
             )
             _LOGGER.debug(
                 "%s: Cost statistics update scheduled in background.",
@@ -708,8 +708,8 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
         # Run statistics update in background to not block startup
         statistics.async_schedule_statistics_update(
             self.hass,
-            self.coordinator.config_entry.entry_id,
-            self._update_gas_statistics_async(
+            self.coordinator.config_entry,
+            lambda: self._update_gas_statistics_async(
                 meter_reading, summaries, usage_allocation_mode
             ),
         )
@@ -773,8 +773,8 @@ class GreenButtonGasSensor(GreenButtonStatisticsSensor):
             # Call update_gas_statistics in background - no meter reading available
             statistics.async_schedule_statistics_update(
                 self.hass,
-                self.coordinator.config_entry.entry_id,
-                self._update_gas_statistics_from_summaries_async(
+                self.coordinator.config_entry,
+                lambda: self._update_gas_statistics_from_summaries_async(
                     usage_point, usage_allocation_mode
                 ),
             )
@@ -985,8 +985,8 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
         )
         statistics.async_schedule_statistics_update(
             self.hass,
-            self.coordinator.config_entry.entry_id,
-            self._update_gas_cost_statistics_async(
+            self.coordinator.config_entry,
+            lambda: self._update_gas_cost_statistics_async(
                 meter_reading, summaries, allocation_mode
             ),
         )
@@ -1062,8 +1062,8 @@ class GreenButtonGasCostSensor(GreenButtonStatisticsSensor):
         # Call update_gas_cost_statistics in background - no meter reading available
         statistics.async_schedule_statistics_update(
             self.hass,
-            self.coordinator.config_entry.entry_id,
-            self._update_gas_cost_statistics_from_summaries_async(
+            self.coordinator.config_entry,
+            lambda: self._update_gas_cost_statistics_from_summaries_async(
                 usage_point, allocation_mode
             ),
         )
