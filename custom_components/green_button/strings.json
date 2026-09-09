@@ -46,7 +46,7 @@
   "options": {
     "step": {
       "init": {
-        "description": "",
+        "description": "Changing either gas allocation option reloads the integration and may create new gas statistics. After generation finishes, select the new gas usage and/or cost statistic in the Energy Dashboard. Existing dashboard selections are not updated automatically.",
         "data": {
           "name": "[%key:component::green_button::config::step::user::data::name%]",
           "usage_point_href": "[%key:component::green_button::config::step::user::data::usage_point_href%]",

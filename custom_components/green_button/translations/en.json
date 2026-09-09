@@ -86,7 +86,7 @@
           "electricity_cost_power_of_ten_multiplier": "Fallback scale for electricity values and costs when their XML omits powerOfTenMultiplier: raw value × 10^N. A multiplier declared in the XML always takes precedence. Run the 'Recalculate Cost Statistics' service after changing this to update existing cost statistics with the new multiplier.",
           "gas_cost_power_of_ten_multiplier": "Fallback scale for gas values and costs when their XML omits powerOfTenMultiplier: raw value × 10^N. A multiplier declared in the XML always takes precedence. Run the 'Recalculate Cost Statistics' service after changing this to update existing cost statistics with the new multiplier."
         },
-        "description": ""
+        "description": "Changing either gas allocation option reloads the integration and may create new gas statistics. After generation finishes, select the new gas usage and/or cost statistic in the Energy Dashboard. Existing dashboard selections are not updated automatically."
       }
     }
   }
