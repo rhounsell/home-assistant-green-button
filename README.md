@@ -35,32 +35,49 @@ This custom component has been developed to handle the Green Button data availab
 
 By default, importing electricity usage and billing data will create a "Home Electricity" Green Button device, with entities named "sensor.home_electricity_cost" and "sensor.home_electricity_usage". Importing Natural Gas data will create by default a "Home Natural Gas" device, with "sensor.home_natural_gas_cost" and "sensor.home_natural_gas_usage" sensors.
 
-Statistics will automatically be generated for these sensors and can be imported into the Energy dashboard. The "usage" sensors have a state_class of "total_increasing", and the "cost" sensors have a state_class of "total". It's the statistics that you'll want to examine for periodic usage rather than the raw data in the sensors themselves.
+Statistics are automatically generated for these sensors and can be added to the Energy dashboard. The "usage" sensors have a state_class of "total_increasing", and the "cost" sensors have a state_class of "total". Examine the statistics, rather than the raw sensor state, for periodic usage.
 
-It may take a few minutes for all the associated statisitics to be generated. The related sensor may not be available to add into the Energy dashbord until the generation is completed.
+Imported Green Button history is stored in integration-owned statistics with stable IDs. This keeps imported history intact if a display entity is renamed or recreated, and prevents Home Assistant's automatic sensor-statistics pipeline from duplicating it.
+
+It may take a few minutes for all associated statistics to be generated. The related sensor may not be available to add to the Energy Dashboard until generation is complete.
 
 Review the [Green Button Component Description](GREEN_BUTTON_COMPONENT_DESCRIPTION.md) for detail on how the Green Button custom component functions.
 
 ## Data Imports
 
-Green Button XML blocks do not need to be imported in chronological order, and can have gaps between the dates for imported blocks of data. Any data that is imported that overlaps pre-existing data will be merged with that data. If there is overlapping data, the statistics generation will resolve them. The drawback to overlapping data will be a larger than necessary green_button_xml file in /config/.storage
+Green Button XML blocks do not need to be imported in chronological order, and gaps between imported date ranges are supported. The integration reconciles overlap at the individual interval level: a later import replaces an identical interval, while an ambiguous overlap with a different interval length retains the existing coverage and is logged. Re-importing an identical XML document is ignored.
 
-When importing xml files, it's probably easiest to locate the file to be imported in Home Assistant's **share** folder, which appears under the config folder, and can be referenced in the file path using **/share/**/<green_button_xml_file.xml>
+The import action requires a **Config entry**; select the Green Button integration entry that should receive the data. Provide either a file path or pasted XML content, not both. Setup accepts relative file paths resolved from `/config`; when using the import action, an XML file under `/config` can be used directly and a file outside it must be in an allowlisted directory. For example, after adding `/share` to `allowlist_external_dirs`, use `/share/<green_button_xml_file.xml>`.
 
-### Power Of Ten Multiplier for Cost
-The Green Button spec says that the [default power-of-ten-multiplier for cost](https://www.greenbuttonalliance.org/costandcurrency) is "-5", but that providers may choose to use a different value. The Green Button component allows the default multipliers for cost for gas and for electricity to be overridden if your provider uses a non-standard cost power-of-ten-multiplier.
+The import rejects XML documents with no supported readings or summaries. Invalid or unsupported readings are skipped, and missing cost data is not treated as zero-cost data; cost statistics are generated only when the available source data has complete cost coverage.
 
-If the value is ever changed after Green Button data has been imported, the new value will apply to any new imported cost data. To force recalculation of previously-imported costs, run the *Recalculate Green Button Cost Statistics* action under Developer Tools -> Actions.
+## Options
+
+Open the Green Button integration's **Configure** page to change these options:
+
+- **Gas usage allocation**: use daily gas readings, or record usage as a single increment for each billing period.
+- **Gas cost allocation**: pro-rate a billing cost across its days, or record it as a single monthly increment.
+- **Electricity and gas cost power-of-ten multipliers**: fallback scales used only if the XML omits `powerOfTenMultiplier`. A multiplier declared in the XML always takes precedence.
+
+Long gas billing intervals and summary-only gas data are supported. After changing a fallback cost multiplier, run **Recalculate Green Button Cost Statistics** to update existing cost history; XML-declared multipliers continue to take precedence.
+
+### Power-of-Ten Multiplier for Cost
+The Green Button spec says that the [default power-of-ten-multiplier for cost](https://www.greenbuttonalliance.org/costandcurrency) is "-5", but providers may choose a different value. The component uses the `powerOfTenMultiplier` declared in the XML whenever it is present. The electricity and gas multiplier options are fallbacks for sources that omit that value.
+
+If a fallback value is changed after Green Button data has been imported, it applies to new applicable imports. To recalculate previously-imported costs that used the fallback, run the *Recalculate Green Button Cost Statistics* action under Developer Tools -> Actions.
 
 ## Services/Actions
 
-There are several actions (services) related to the Green Button custom component available under **Developer Tools → Actions**. As of this writing, they are:
+The following Green Button actions are available under **Developer Tools → Actions**. Each requires a **Config entry** so it affects only the selected Green Button integration. Actions that change imported data or statistics require an administrator.
+
 - Log Green Button Meter Reading Intervals
 - Log Stored Green Button XML Info
 - Delete Green Button Statistics
 - Import Green Button ESPI XML
 - Clear Stored Green Button XML Data
 - Recalculate Green Button Cost Statistics
+
+**Clear Stored Green Button XML Data** removes the selected entry's stored XML archive and active import history, but leaves existing recorder and Energy Dashboard statistics untouched. Use **Delete Green Button Statistics** to remove the selected display sensor's imported Green Button statistics; re-import the XML data to rebuild them.
 
 ## Notes
 
