@@ -155,6 +155,138 @@ async def test_recalculation_writes_the_canonical_electricity_stream_once(
     assert update.await_args.kwargs["merge_with_existing"] is False
 
 
+async def test_recalculation_writes_every_electricity_cost_stream(
+    hass: HomeAssistant,
+) -> None:
+    """Every electricity cost sensor is rebuilt from its own canonical stream."""
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+    coordinator = GreenButtonCoordinator(hass, entry)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"coordinator": coordinator}
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    reading_type = model.ReadingType("type", 1, "CAD", -3, "Wh", 3600)
+
+    def meter_reading(identifier: str, cost: int) -> model.MeterReading:
+        """Build one cost-bearing hourly electricity stream."""
+        reading = model.IntervalReading(
+            reading_type, cost, start, timedelta(hours=1), 1000
+        )
+        return model.MeterReading(
+            identifier,
+            reading_type,
+            [
+                model.IntervalBlock(
+                    identifier,
+                    reading_type,
+                    start,
+                    timedelta(hours=1),
+                    [reading],
+                )
+            ],
+        )
+
+    first_meter = meter_reading("first-meter", 1000)
+    second_meter = meter_reading("second-meter", 2000)
+    usage_point = model.UsagePoint(
+        "point", SensorDeviceClass.ENERGY, [first_meter, second_meter]
+    )
+    registry = er.async_get(hass)
+    for meter in (first_meter, second_meter):
+        registered = registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            stream_unique_id(entry.entry_id, usage_point.id, meter.id, "_cost"),
+            config_entry=entry,
+        )
+        hass.states.async_set(registered.entity_id, "0")
+    await services.async_setup_services(hass)
+
+    with (
+        patch.object(
+            coordinator,
+            "async_reconstruct_stored_usage_points",
+            new=AsyncMock(return_value=[usage_point]),
+        ),
+        patch.object(
+            statistics, "update_cost_statistics", new_callable=AsyncMock
+        ) as update,
+    ):
+        await hass.services.async_call(
+            DOMAIN,
+            "recalculate_cost_statistics",
+            {"config_entry_id": entry.entry_id},
+            blocking=True,
+        )
+
+    assert [call.args[3] for call in update.await_args_list] == [
+        first_meter,
+        second_meter,
+    ]
+    assert all(
+        call.kwargs["merge_with_existing"] is False for call in update.await_args_list
+    )
+
+
+async def test_recalculation_keeps_gas_meter_for_daily_cost_proration(
+    hass: HomeAssistant,
+) -> None:
+    """Monthly gas usage can still rebuild cost from its detailed meter stream."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={
+            "gas_usage_allocation": "monthly_increment",
+            "gas_cost_allocation": "pro_rate_daily",
+        },
+    )
+    entry.add_to_hass(hass)
+    coordinator = GreenButtonCoordinator(hass, entry)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"coordinator": coordinator}
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    reading_type = model.ReadingType("type", 1, "CAD", -3, "m³", 86400)
+    reading = model.IntervalReading(reading_type, None, start, timedelta(days=1), 10)
+    meter = model.MeterReading(
+        "meter",
+        reading_type,
+        [
+            model.IntervalBlock(
+                "block", reading_type, start, timedelta(days=1), [reading]
+            )
+        ],
+    )
+    summary = model.UsageSummary(
+        "summary", start, timedelta(days=30), 1000, "CAD", 10, -3
+    )
+    usage_point = model.UsagePoint("point", SensorDeviceClass.GAS, [meter], [summary])
+    unique_id = stream_unique_id(entry.entry_id, usage_point.id, meter.id, "_gas_cost")
+    registered = er.async_get(hass).async_get_or_create(
+        "sensor", DOMAIN, unique_id, config_entry=entry
+    )
+    hass.states.async_set(registered.entity_id, "0")
+    await services.async_setup_services(hass)
+
+    with (
+        patch.object(
+            coordinator,
+            "async_reconstruct_stored_usage_points",
+            new=AsyncMock(return_value=[usage_point]),
+        ),
+        patch.object(
+            statistics, "update_gas_cost_statistics", new_callable=AsyncMock
+        ) as update,
+    ):
+        await hass.services.async_call(
+            DOMAIN,
+            "recalculate_cost_statistics",
+            {"config_entry_id": entry.entry_id},
+            blocking=True,
+        )
+
+    update.assert_awaited_once()
+    assert update.await_args.args[2] is meter
+    assert update.await_args.kwargs["allocation_mode"] == "pro_rate_daily"
+    assert update.await_args.kwargs["merge_with_existing"] is False
+
+
 async def test_delete_targets_external_statistics(hass: HomeAssistant) -> None:
     """The legacy entity-ID input resolves to the new series for deletion."""
     config_entry = MockConfigEntry(domain=DOMAIN)

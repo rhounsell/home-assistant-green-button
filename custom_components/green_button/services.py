@@ -500,10 +500,15 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 # Find cost sensor entities for this usage point
                 if is_gas:
                     # Gas cost sensor
-                    allocation_mode = (
+                    usage_allocation_mode = (
                         entry.options.get("gas_usage_allocation")
                         or entry.data.get("gas_usage_allocation")
                         or "daily_readings"
+                    )
+                    cost_allocation_mode = (
+                        entry.options.get("gas_cost_allocation")
+                        or entry.data.get("gas_cost_allocation")
+                        or "pro_rate_daily"
                     )
 
                     eligible_mrs = [
@@ -520,7 +525,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     # Determine the meter_reading_id using the same selection
                     # policy as sensor setup.
                     if (
-                        allocation_mode == "monthly_increment"
+                        usage_allocation_mode == "monthly_increment"
                         and usage_point.usage_summaries
                     ):
                         meter_reading_id = (
@@ -574,16 +579,26 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     # Get summaries
                     summaries = list(usage_point.usage_summaries)
 
-                    # Get meter reading if available
-                    meter_reading = None
+                    # A single detailed stream remains the source for daily cost
+                    # proration even when gas usage is published monthly.
+                    meter_reading = next(
+                        (
+                            mr
+                            for mr in usage_point.meter_readings
+                            if mr.id == meter_reading_id
+                        ),
+                        None,
+                    )
                     if (
-                        allocation_mode != "monthly_increment"
-                        or not usage_point.usage_summaries
+                        cost_allocation_mode == "pro_rate_daily"
+                        and meter_reading is None
                     ):
-                        for mr in usage_point.meter_readings:
-                            if mr.id == meter_reading_id:
-                                meter_reading = mr
-                                break
+                        _LOGGER.info(
+                            "Using monthly gas cost increments for %s because no "
+                            "detailed meter stream is available for proration",
+                            entity_id,
+                        )
+                        cost_allocation_mode = "monthly_increment"
 
                     # Create a mock entity object for statistics
                     class MockGasCostEntity:
@@ -620,11 +635,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     )
 
                     try:
-                        cost_allocation_mode = (
-                            entry.options.get("gas_cost_allocation")
-                            or entry.data.get("gas_cost_allocation")
-                            or "pro_rate_daily"
-                        )
                         await statistics.update_gas_cost_statistics(
                             hass,
                             mock_entity,
@@ -703,50 +713,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                         )
                         continue
 
-                    # Pick the primary meter reading (matches sensor creation: sorted by ID, first one)
-                    primary_electric_mr = min(eligible_electric_mrs, key=lambda mr: mr.id)
-
-                    # Get the cost sensor entity ID based on the primary meter reading
-                    unique_id = stream_unique_id(
-                        entry.entry_id,
-                        usage_point.id,
-                        primary_electric_mr.id,
-                        "_cost",
-                    )
-                    entity_id = entity_registry.async_get_entity_id(
-                        "sensor", DOMAIN, unique_id
-                    )
-
-                    if not entity_id:
-                        _LOGGER.warning(
-                            "Electricity cost sensor not found for %s", unique_id
-                        )
-                        continue
-
-                    # Get the entity state object
-                    entity_state = hass.states.get(entity_id)
-                    if not entity_state:
-                        _LOGGER.warning(
-                            "Electricity cost sensor state not found for %s", entity_id
-                        )
-                        continue
-
-                    # Get electricity cost multiplier
                     multiplier = scaling.configured_multiplier(
                         entry,
                         CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
                         DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
                     )
-                    _LOGGER.info(
-                        "Recalculating electricity cost statistics for %s", entity_id
-                    )
-                    _LOGGER.info(
-                        "Processing canonical meter reading %s for entity %s",
-                        primary_electric_mr.id,
-                        entity_id,
-                    )
 
-                    # Create a mock entity object for statistics
                     class MockElectricityCostEntity:
                         """Mock entity for electricity cost statistics recalculation."""
 
@@ -769,33 +741,66 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                             """Return the currency unit used by the cost statistic."""
                             return self._attr_native_unit_of_measurement
 
-                    mock_entity = MockElectricityCostEntity(
-                        entity_id,
-                        entity_state.name or "Electricity Cost",
-                        primary_electric_mr.reading_type.currency,
-                        unique_id,
-                    )
-
-                    try:
-                        await statistics.update_cost_statistics(
-                            hass,
-                            mock_entity,
-                            statistics.CostDataExtractor(multiplier),
-                            primary_electric_mr,
-                            merge_with_existing=False,
+                    for meter_reading in sorted(
+                        eligible_electric_mrs, key=lambda mr: mr.id
+                    ):
+                        unique_id = stream_unique_id(
+                            entry.entry_id,
+                            usage_point.id,
+                            meter_reading.id,
+                            "_cost",
                         )
+                        entity_id = entity_registry.async_get_entity_id(
+                            "sensor", DOMAIN, unique_id
+                        )
+                        if not entity_id:
+                            _LOGGER.warning(
+                                "Electricity cost sensor not found for %s", unique_id
+                            )
+                            continue
+
+                        entity_state = hass.states.get(entity_id)
+                        if not entity_state:
+                            _LOGGER.warning(
+                                "Electricity cost sensor state not found for %s",
+                                entity_id,
+                            )
+                            continue
 
                         _LOGGER.info(
-                            "✅ Recalculated electricity cost statistics for %s",
+                            "Recalculating electricity cost statistics for %s",
                             entity_id,
                         )
-                        recalculated_count += 1
-                    except ValueError as err:
-                        _LOGGER.error(
-                            "❌ Failed to recalculate electricity cost statistics for %s: %s",
+                        _LOGGER.info(
+                            "Processing canonical meter reading %s for entity %s",
+                            meter_reading.id,
                             entity_id,
-                            err,
                         )
+                        mock_entity = MockElectricityCostEntity(
+                            entity_id,
+                            entity_state.name or "Electricity Cost",
+                            meter_reading.reading_type.currency,
+                            unique_id,
+                        )
+                        try:
+                            await statistics.update_cost_statistics(
+                                hass,
+                                mock_entity,
+                                statistics.CostDataExtractor(multiplier),
+                                meter_reading,
+                                merge_with_existing=False,
+                            )
+                            _LOGGER.info(
+                                "✅ Recalculated electricity cost statistics for %s",
+                                entity_id,
+                            )
+                            recalculated_count += 1
+                        except ValueError as err:
+                            _LOGGER.error(
+                                "❌ Failed to recalculate electricity cost statistics for %s: %s",
+                                entity_id,
+                                err,
+                            )
 
         if recalculated_count > 0:
             _LOGGER.info(
