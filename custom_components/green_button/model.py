@@ -6,10 +6,10 @@ North American Energy Standards Board.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
 import dataclasses
 import datetime
 import functools
+from collections.abc import Collection, Sequence
 from typing import final
 
 from homeassistant.components import sensor
@@ -27,7 +27,7 @@ class IntervalReading:
     duration: datetime.timedelta
     value: int
 
-    def __lt__(self, other: "IntervalBlock") -> bool:
+    def __lt__(self, other: IntervalBlock) -> bool:
         """Return whether or not this reading's start time is before the other's."""
         return self.start < other.start
 
@@ -53,7 +53,7 @@ class IntervalBlock:
         """Post-process the data."""
         object.__setattr__(self, "interval_readings", sorted(self.interval_readings))
 
-    def __lt__(self, other: "IntervalBlock") -> bool:
+    def __lt__(self, other: IntervalBlock) -> bool:
         """Return whether or not this block's start time is before the other's."""
         return self.start < other.start
 
