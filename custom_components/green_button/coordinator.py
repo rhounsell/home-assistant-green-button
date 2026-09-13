@@ -373,7 +373,9 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     espi.parse_xml, xml_data
                 )
                 if usage_points:
-                    reconstructed._merge_usage_points(usage_points)
+                    GreenButtonCoordinator._merge_usage_points(
+                        reconstructed, usage_points
+                    )
 
         return reconstructed.usage_points
 
