@@ -15,6 +15,7 @@ import decimal
 from unittest.mock import AsyncMock, Mock, patch
 
 from custom_components.green_button import (
+    _statistics_recorder,
     allocation,
     model,
     scaling,
@@ -303,7 +304,11 @@ async def test_summary_only_gas_usage_uses_local_billing_end_date(
     recorder.async_add_executor_job = AsyncMock(return_value=None)
 
     with (
-        patch.object(statistics.recorder_helper, "get_instance", return_value=recorder),
+        patch.object(
+            _statistics_recorder.recorder_helper,
+            "get_instance",
+            return_value=recorder,
+        ),
         patch.object(
             statistics, "_async_replace_statistics", new_callable=AsyncMock
         ) as replace_statistics,
@@ -350,7 +355,11 @@ async def test_monthly_gas_usage_and_daily_cost_share_available_readings(
     recorder.async_add_executor_job = AsyncMock(return_value=None)
 
     with (
-        patch.object(statistics.recorder_helper, "get_instance", return_value=recorder),
+        patch.object(
+            _statistics_recorder.recorder_helper,
+            "get_instance",
+            return_value=recorder,
+        ),
         patch.object(
             statistics, "_async_replace_statistics", new_callable=AsyncMock
         ) as replace_statistics,
@@ -398,7 +407,11 @@ async def test_monthly_gas_usage_accepts_unrepresented_long_reading(
     recorder.async_add_executor_job = AsyncMock(return_value=None)
 
     with (
-        patch.object(statistics.recorder_helper, "get_instance", return_value=recorder),
+        patch.object(
+            _statistics_recorder.recorder_helper,
+            "get_instance",
+            return_value=recorder,
+        ),
         patch.object(
             statistics, "_async_replace_statistics", new_callable=AsyncMock
         ) as replace_statistics,
@@ -620,7 +633,7 @@ async def test_statistics_validation_failure_does_not_queue_replacement(
 ) -> None:
     """Reject an invalid replacement before it reaches the recorder."""
     with patch.object(
-        statistics._ReplaceStatisticsTask,
+        _statistics_recorder._ReplaceStatisticsTask,
         "queue_task",
         new_callable=AsyncMock,
     ) as queue_task:
@@ -643,13 +656,19 @@ async def test_unchanged_statistics_skip_recorder_replacement(
 
     with (
         patch.object(
-            statistics, "_get_all_existing_statistics", new=AsyncMock(return_value=[])
+            _statistics_recorder,
+            "_get_all_existing_statistics",
+            new=AsyncMock(return_value=[]),
         ),
         patch.object(
-            statistics._UpsertStatisticsTask, "queue_task", new_callable=AsyncMock
+            _statistics_recorder._UpsertStatisticsTask,
+            "queue_task",
+            new_callable=AsyncMock,
         ) as upsert_task,
         patch.object(
-            statistics._ReplaceStatisticsTask, "queue_task", new_callable=AsyncMock
+            _statistics_recorder._ReplaceStatisticsTask,
+            "queue_task",
+            new_callable=AsyncMock,
         ) as replace_task,
     ):
         assert await statistics._async_replace_statistics(hass, metadata, records)
@@ -667,20 +686,24 @@ async def test_unchanged_statistics_skip_write_after_restart(
     metadata = statistics.create_metadata(_StatisticsEntity())  # type: ignore[arg-type]
     records = [StatisticData(start=HISTORICAL, state=1.0, sum=1.0)]
     caplog.set_level(
-        logging.INFO, logger="custom_components.green_button.statistics"
+        logging.INFO, logger="custom_components.green_button._statistics_recorder"
     )
 
     with (
         patch.object(
-            statistics,
+            _statistics_recorder,
             "_get_all_existing_statistics",
             new=AsyncMock(return_value=records),
         ),
         patch.object(
-            statistics._UpsertStatisticsTask, "queue_task", new_callable=AsyncMock
+            _statistics_recorder._UpsertStatisticsTask,
+            "queue_task",
+            new_callable=AsyncMock,
         ) as upsert_task,
         patch.object(
-            statistics._ReplaceStatisticsTask, "queue_task", new_callable=AsyncMock
+            _statistics_recorder._ReplaceStatisticsTask,
+            "queue_task",
+            new_callable=AsyncMock,
         ) as replace_task,
     ):
         assert not await statistics._async_replace_statistics(hass, metadata, records)
@@ -710,10 +733,14 @@ async def test_statistics_upsert_only_new_and_changed_records(
 
     with (
         patch.object(
-            statistics._UpsertStatisticsTask, "queue_task", new_callable=AsyncMock
+            _statistics_recorder._UpsertStatisticsTask,
+            "queue_task",
+            new_callable=AsyncMock,
         ) as upsert_task,
         patch.object(
-            statistics._ReplaceStatisticsTask, "queue_task", new_callable=AsyncMock
+            _statistics_recorder._ReplaceStatisticsTask,
+            "queue_task",
+            new_callable=AsyncMock,
         ) as replace_task,
     ):
         assert await statistics._async_replace_statistics(
@@ -737,10 +764,14 @@ async def test_removed_statistics_use_full_replacement(
 
     with (
         patch.object(
-            statistics._UpsertStatisticsTask, "queue_task", new_callable=AsyncMock
+            _statistics_recorder._UpsertStatisticsTask,
+            "queue_task",
+            new_callable=AsyncMock,
         ) as upsert_task,
         patch.object(
-            statistics._ReplaceStatisticsTask, "queue_task", new_callable=AsyncMock
+            _statistics_recorder._ReplaceStatisticsTask,
+            "queue_task",
+            new_callable=AsyncMock,
         ) as replace_task,
     ):
         assert await statistics._async_replace_statistics(
@@ -883,10 +914,12 @@ async def test_clear_statistics_task_propagates_recorder_failure(
 ) -> None:
     """A recorder clear error resolves the queued task's waiting future."""
     future: asyncio.Future[None] = hass.loop.create_future()
-    task = statistics._ClearStatisticsTask(hass, "green_button:test", future)
+    task = _statistics_recorder._ClearStatisticsTask(
+        hass, "green_button:test", future
+    )
 
     with patch.object(
-        statistics.statistics,
+        _statistics_recorder.statistics,
         "clear_statistics",
         side_effect=RuntimeError("database failed"),
     ):
@@ -901,13 +934,13 @@ async def test_queued_recorder_task_ignores_future_cancelled_during_unload(
 ) -> None:
     """A queued recorder completion cannot overwrite an unload cancellation."""
     recorder = Mock()
-    queued: list[statistics.tasks.RecorderTask] = []
+    queued: list[_statistics_recorder.tasks.RecorderTask] = []
     recorder.queue_task.side_effect = queued.append
     entry = MockConfigEntry(domain=DOMAIN, entry_id="entry")
     entry.add_to_hass(hass)
 
     with patch.object(
-        statistics.recorder_helper, "get_instance", return_value=recorder
+        _statistics_recorder.recorder_helper, "get_instance", return_value=recorder
     ):
         hass.set_state(CoreState.running)
         update_task = statistics.async_schedule_statistics_update(

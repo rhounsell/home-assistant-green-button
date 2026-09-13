@@ -10,7 +10,10 @@ from custom_components.green_button import model, services, statistics
 from custom_components.green_button.const import DOMAIN
 from custom_components.green_button.coordinator import GreenButtonCoordinator
 from custom_components.green_button.parsers import espi
-from custom_components.green_button.statistic_ids import statistic_id_from_unique_id
+from custom_components.green_button.statistic_ids import (
+    statistic_id_from_unique_id,
+    stream_unique_id,
+)
 from custom_components.green_button.xml_storage import async_get_xml_storage
 import pytest
 
@@ -22,17 +25,17 @@ from tests.common import MockConfigEntry, MockUser
 
 
 @pytest.mark.parametrize(
-    ("device_class", "identity", "updater_name"),
+    ("device_class", "suffix", "updater_name"),
     [
         pytest.param(
             SensorDeviceClass.ENERGY,
-            "meter_cost",
+            "_cost",
             "update_cost_statistics",
             id="electricity",
         ),
         pytest.param(
             SensorDeviceClass.GAS,
-            "point_gas_cost",
+            "_gas_cost",
             "update_gas_cost_statistics",
             id="gas",
         ),
@@ -41,7 +44,7 @@ from tests.common import MockConfigEntry, MockUser
 async def test_recalculation_targets_external_statistics(
     hass: HomeAssistant,
     device_class: SensorDeviceClass,
-    identity: str,
+    suffix: str,
     updater_name: str,
 ) -> None:
     """Service-created entities use the same ID mapping as display sensors."""
@@ -58,13 +61,6 @@ async def test_recalculation_targets_external_statistics(
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "coordinator": GreenButtonCoordinator(hass, entry)
     }
-    storage = await async_get_xml_storage(hass, entry.entry_id)
-    await storage.async_add_xml("<feed />", "fixture")
-    unique_id = f"{entry.entry_id}_{identity}"
-    registered = er.async_get(hass).async_get_or_create(
-        "sensor", DOMAIN, unique_id, config_entry=entry
-    )
-    hass.states.async_set(registered.entity_id, "0")
     start = datetime(2026, 7, 1, tzinfo=UTC)
     rt = model.ReadingType("type", 1, "CAD", -3, "Wh", 3600)
     reading = model.IntervalReading(rt, 1000, start, timedelta(hours=1), 1000)
@@ -79,6 +75,13 @@ async def test_recalculation_targets_external_statistics(
         [mr],
         [model.UsageSummary("summary", start, timedelta(days=30), 1.0, "CAD", 1)],
     )
+    storage = await async_get_xml_storage(hass, entry.entry_id)
+    await storage.async_add_xml("<feed />", "fixture")
+    unique_id = stream_unique_id(entry.entry_id, up.id, mr.id, suffix)
+    registered = er.async_get(hass).async_get_or_create(
+        "sensor", DOMAIN, unique_id, config_entry=entry
+    )
+    hass.states.async_set(registered.entity_id, "0")
     await services.async_setup_services(hass)
 
     with (
@@ -107,9 +110,11 @@ async def test_recalculation_writes_the_canonical_electricity_stream_once(
     entry.add_to_hass(hass)
     coordinator = GreenButtonCoordinator(hass, entry)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"coordinator": coordinator}
-    unique_id = f"{entry.entry_id}_meter_cost"
     registered = er.async_get(hass).async_get_or_create(
-        "sensor", DOMAIN, unique_id, config_entry=entry
+        "sensor",
+        DOMAIN,
+        stream_unique_id(entry.entry_id, "point", "meter", "_cost"),
+        config_entry=entry,
     )
     hass.states.async_set(registered.entity_id, "0")
     start = datetime(2026, 7, 1, tzinfo=UTC)

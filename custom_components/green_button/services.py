@@ -6,7 +6,6 @@ import logging
 from pathlib import Path
 
 import voluptuous as vol
-
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -25,7 +24,7 @@ from .const import (
 )
 from .coordinator import GreenButtonCoordinator
 from .parsers import espi
-from .statistic_ids import statistic_id_from_unique_id
+from .statistic_ids import statistic_id_from_unique_id, stream_unique_id
 from .xml_storage import async_get_xml_storage
 
 _LOGGER = logging.getLogger(__name__)
@@ -70,12 +69,12 @@ RECALCULATE_COST_STATISTICS_SCHEMA = vol.Schema(
 
 
 def _read_file_sync(file_path: Path) -> str:
-    """Read file content synchronously."""
+    """Return UTF-8 text read synchronously from a file path."""
     return file_path.read_text(encoding="utf-8")
 
 
 def _is_allowed_import_path(hass: HomeAssistant, path: Path) -> bool:
-    """Allow config files and explicit external directories after resolution."""
+    """Return whether a resolved path is in config or an allowed external directory."""
     try:
         resolved_path = path.resolve()
         config_dir = Path(hass.config.config_dir).resolve()
@@ -87,6 +86,8 @@ def _is_allowed_import_path(hass: HomeAssistant, path: Path) -> bool:
 
 
 async def async_setup_services(hass: HomeAssistant) -> None:
+    """Register administrator-only services for the Green Button integration."""
+
     def _config_entry(call: ServiceCall) -> ConfigEntry:
         """Return the Green Button entry explicitly selected by a service call."""
         entry_id = call.data[CONF_CONFIG_ENTRY_ID]
@@ -149,7 +150,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                         )
 
     async def log_stored_xmls_service(call: ServiceCall) -> None:
-        """Log information about stored XMLs in storage files."""
+        """Log archived XML labels, sizes, and parsed coverage for the selected entry."""
 
         for entry in [_config_entry(call)]:
             _LOGGER.info("=" * 60)
@@ -230,13 +231,13 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                                     "        UsageSummaries: %d",
                                     len(up.usage_summaries),
                                 )
-                    except Exception as e:
-                        _LOGGER.error("        Failed to parse XML: %s", e)
+                    except espi.EspiXmlParseError as err:
+                        _LOGGER.error("        Failed to parse XML: %s", err)
 
             _LOGGER.info("=" * 60)
 
     async def import_espi_xml_service(call: ServiceCall) -> None:
-        """Handle the import_espi_xml service call."""
+        """Validate and import ESPI XML for the selected Green Button entry."""
         xml_path = call.data.get("xml_file_path", "").strip()
         xml_content = call.data.get("xml", "").strip()
 
@@ -355,7 +356,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             raise HomeAssistantError(f"Failed to import ESPI XML: {err}") from err
 
     async def delete_statistics_service(call: ServiceCall) -> None:
-        """Handle the delete_statistics service call."""
+        """Delete an external statistic owned by the selected Green Button entry."""
         statistic_id = call.data["statistic_id"]
         config_entry = _config_entry(call)
 
@@ -392,7 +393,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             raise HomeAssistantError(f"Failed to delete statistics: {err}") from err
 
     async def clear_stored_xml_service(call: ServiceCall) -> None:
-        """Handle the clear_stored_xml service call."""
+        """Clear archived XML for the selected entry and resync its stored usage data."""
 
         # commodity maps directly to label (electricity or gas)
         label_to_clear = call.data.get("commodity")
@@ -400,7 +401,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         for entry in [_config_entry(call)]:
             # Use new separate storage file
             xml_storage = await async_get_xml_storage(hass, entry.entry_id)
-            removed_count, remaining_count = await xml_storage.async_clear_label(
+            removed_count, _remaining_count = await xml_storage.async_clear_label(
                 label_to_clear
             )
             coordinator: GreenButtonCoordinator | None = (
@@ -433,7 +434,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     _LOGGER.info("No stored XMLs found for entry %s", entry.entry_id)
 
     async def recalculate_cost_statistics_service(call: ServiceCall) -> None:
-        """Handle the recalculate_cost_statistics service call."""
+        """Rebuild selected electricity or gas cost statistics from archived source data."""
         commodity = call.data.get("commodity", "both")
 
         _LOGGER.info("Recalculating cost statistics for commodity: %s", commodity)
@@ -505,42 +506,42 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                         or "daily_readings"
                     )
 
-                    # Determine the meter_reading_id based on allocation mode
+                    eligible_mrs = [
+                        mr
+                        for mr in usage_point.meter_readings
+                        if mr.interval_blocks
+                        and any(
+                            ir.value is not None
+                            for blk in mr.interval_blocks
+                            for ir in blk.interval_readings
+                        )
+                    ]
+
+                    # Determine the meter_reading_id using the same selection
+                    # policy as sensor setup.
                     if (
                         allocation_mode == "monthly_increment"
                         and usage_point.usage_summaries
                     ):
-                        meter_reading_id = usage_point.id
-                    elif usage_point.meter_readings:
-                        # Find the primary meter reading (same logic as sensor creation)
-                        eligible_mrs = [
-                            mr
-                            for mr in usage_point.meter_readings
-                            if mr.interval_blocks
-                            and any(
-                                ir.value is not None
-                                for blk in mr.interval_blocks
-                                for ir in blk.interval_readings
-                            )
-                        ]
-                        if not eligible_mrs:
-                            _LOGGER.debug(
-                                "No eligible gas meter readings for %s", usage_point.id
-                            )
-                            continue
-                        primary_mr = sorted(eligible_mrs, key=lambda mr: mr.id)[0]
+                        meter_reading_id = (
+                            eligible_mrs[0].id
+                            if len(eligible_mrs) == 1
+                            else usage_point.id
+                        )
+                    elif eligible_mrs:
+                        primary_mr = min(eligible_mrs, key=lambda mr: mr.id)
                         meter_reading_id = primary_mr.id
                     else:
                         _LOGGER.debug("No gas data available for %s", usage_point.id)
                         continue
 
                     # Find the gas cost sensor entity
-                    clean_id = (
-                        meter_reading_id.split("/")[-1]
-                        if "/" in meter_reading_id
-                        else meter_reading_id
+                    unique_id = stream_unique_id(
+                        entry.entry_id,
+                        usage_point.id,
+                        meter_reading_id,
+                        "_gas_cost",
                     )
-                    unique_id = f"{entry.entry_id}_{clean_id}_gas_cost"
                     entity_id = entity_registry.async_get_entity_id(
                         "sensor", DOMAIN, unique_id
                     )
@@ -591,6 +592,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                         def __init__(
                             self, entity_id: str, name: str, unit: str, unique_id: str
                         ):
+                            """Initialize metadata needed to update a gas cost statistic."""
                             self.entity_id = entity_id
                             self._statistic_id = statistic_id_from_unique_id(unique_id)
                             self.name = name
@@ -598,10 +600,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
                         @property
                         def long_term_statistics_id(self) -> str:
+                            """Return the external statistic ID selected for recalculation."""
                             return self._statistic_id
 
                         @property
                         def native_unit_of_measurement(self) -> str:
+                            """Return the currency unit used by the cost statistic."""
                             return self._attr_native_unit_of_measurement
 
                     currency = (
@@ -634,11 +638,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                             "✅ Recalculated gas cost statistics for %s", entity_id
                         )
                         recalculated_count += 1
-                    except Exception as e:
+                    except ValueError as err:
                         _LOGGER.error(
                             "❌ Failed to recalculate gas cost statistics for %s: %s",
                             entity_id,
-                            e,
+                            err,
                         )
 
                 else:
@@ -700,17 +704,15 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                         continue
 
                     # Pick the primary meter reading (matches sensor creation: sorted by ID, first one)
-                    primary_electric_mr = sorted(
-                        eligible_electric_mrs, key=lambda mr: mr.id
-                    )[0]
+                    primary_electric_mr = min(eligible_electric_mrs, key=lambda mr: mr.id)
 
                     # Get the cost sensor entity ID based on the primary meter reading
-                    clean_id = (
-                        primary_electric_mr.id.split("/")[-1]
-                        if "/" in primary_electric_mr.id
-                        else primary_electric_mr.id
+                    unique_id = stream_unique_id(
+                        entry.entry_id,
+                        usage_point.id,
+                        primary_electric_mr.id,
+                        "_cost",
                     )
-                    unique_id = f"{entry.entry_id}_{clean_id}_cost"
                     entity_id = entity_registry.async_get_entity_id(
                         "sensor", DOMAIN, unique_id
                     )
@@ -751,6 +753,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                         def __init__(
                             self, entity_id: str, name: str, unit: str, unique_id: str
                         ):
+                            """Initialize metadata needed to update an electricity cost statistic."""
                             self.entity_id = entity_id
                             self._statistic_id = statistic_id_from_unique_id(unique_id)
                             self.name = name
@@ -758,10 +761,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
                         @property
                         def long_term_statistics_id(self) -> str:
+                            """Return the external statistic ID selected for recalculation."""
                             return self._statistic_id
 
                         @property
                         def native_unit_of_measurement(self) -> str:
+                            """Return the currency unit used by the cost statistic."""
                             return self._attr_native_unit_of_measurement
 
                     mock_entity = MockElectricityCostEntity(
@@ -785,11 +790,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                             entity_id,
                         )
                         recalculated_count += 1
-                    except Exception as e:
+                    except ValueError as err:
                         _LOGGER.error(
                             "❌ Failed to recalculate electricity cost statistics for %s: %s",
                             entity_id,
-                            e,
+                            err,
                         )
 
         if recalculated_count > 0:
@@ -854,7 +859,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
 
 async def async_unload_services(hass: HomeAssistant) -> None:
-    """Unload services for the Green Button integration."""
+    """Unregister services for the Green Button integration."""
     hass.services.async_remove(DOMAIN, SERVICE_IMPORT_ESPI_XML)
     hass.services.async_remove(DOMAIN, SERVICE_DELETE_STATISTICS)
     hass.services.async_remove(DOMAIN, SERVICE_LOG_METER_READING_INTERVALS)

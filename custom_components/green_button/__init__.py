@@ -19,12 +19,12 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 
-async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
     """Set up the Green Button component.
 
     Args:
         hass: Home Assistant instance
-        config: Configuration dict (not used - this is a config-entry-based integration)
+        _config: Configuration dict retained for Home Assistant's setup callback.
     """
     _LOGGER.info("Setting up Green Button component services")
     try:

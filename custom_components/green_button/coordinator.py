@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from bisect import bisect_left
 import dataclasses
 import datetime
 import logging
+from bisect import bisect_left
+from collections.abc import Collection
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from . import model, scaling
@@ -22,7 +24,7 @@ from .const import (
     DOMAIN,
 )
 from .parsers import espi
-from .xml_storage import async_get_xml_storage
+from .xml_storage import async_get_xml_storage, async_migrate_temp_storage
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -272,10 +274,8 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Falls back to config entry data for backwards compatibility.
         """
 
-        # NEW: Check for and migrate temporary storage from config flow
-        # (Config flow writes to temp storage to avoid putting large XML in config entry data)
-        from .xml_storage import async_migrate_temp_storage
-
+        # Migrate XML staged by the config flow from unique-ID temporary storage.
+        # The fallback below supports legacy config-entry XML and failed temp writes.
         unique_id = self.config_entry.unique_id
         if unique_id:
             try:
@@ -288,9 +288,10 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                     # After migration, the data is already in permanent storage,
                     # so we continue below to load and process it
-            except Exception as e:
+            except (HomeAssistantError, OSError) as err:
                 _LOGGER.warning(
-                    "[CONFIG FLOW IMPORT] Failed to migrate temporary storage: %s", e
+                    "[CONFIG FLOW IMPORT] Failed to migrate temporary storage: %s",
+                    err,
                 )
 
         # LEGACY FALLBACK: Check for initial_xml from config flow (old method, for backwards compatibility)
@@ -547,8 +548,8 @@ class GreenButtonCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @staticmethod
     def _merge_usage_summaries(
-        existing_summaries: list[model.UsageSummary],
-        new_summaries: list[model.UsageSummary],
+        existing_summaries: Collection[model.UsageSummary],
+        new_summaries: Collection[model.UsageSummary],
     ) -> list[model.UsageSummary]:
         """Deduplicate summaries and retain existing coverage on ambiguity."""
         latest_by_id = {summary.id: summary for summary in new_summaries}

@@ -1,8 +1,8 @@
 """Pure interval allocation helpers for Green Button historical statistics."""
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
 import datetime
 import decimal
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 from . import model

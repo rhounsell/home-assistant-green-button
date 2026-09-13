@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import dataclasses
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any, Final, final
 
+import voluptuous as vol
 from homeassistant.components import sensor
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import selector
-import voluptuous as vol
 
 from . import model
 from .parsers import espi

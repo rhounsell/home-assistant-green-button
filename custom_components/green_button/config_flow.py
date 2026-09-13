@@ -4,20 +4,23 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
-from homeassistant import config_entries
-from homeassistant.helpers import selector
 import voluptuous as vol
+from homeassistant import config_entries
+from homeassistant.components.sensor import SensorDeviceClass
+from homeassistant.helpers import selector
+from homeassistant.helpers.storage import Store
 
 from . import configs, const
 from .const import (
-    DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
-    DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER,
     CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
     CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER,
+    DEFAULT_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
+    DEFAULT_GAS_COST_POWER_OF_TEN_MULTIPLIER,
 )
 from .parsers import espi
+from .xml_storage import _get_temp_storage_key
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,6 +29,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
     """Handle a config flow for Green Button."""
 
     VERSION = 1
+
+    def is_matching(self, other_flow: Self) -> bool:
+        """Return whether two flows resolved to the same provider account."""
+        return self.unique_id is not None and self.unique_id == other_flow.unique_id
 
     @staticmethod
     def async_get_options_flow(
@@ -168,7 +175,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                                 _read, xml_path_obj
                             )
                             user_input["xml"] = xml_content
-                        except (OSError, IOError, UnicodeDecodeError):
+                        except (OSError, UnicodeDecodeError):
                             errors["xml_file_path"] = "file_read_error"
                             errors.setdefault("base", "file_read_error")
             elif input_type == "xml":
@@ -211,19 +218,16 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
         # don't have the entry_id yet. The coordinator will migrate it during setup.
         xml_content = user_input.get("xml", "")
         if xml_content:
-            _LOGGER.info("[CONFIG FLOW] Saving XML (%d bytes) to temporary storage using unique_id: %s", 
+            _LOGGER.info("[CONFIG FLOW] Saving XML (%d bytes) to temporary storage using unique_id: %s",
                         len(xml_content), config.unique_id)
             # Create a temporary storage instance using the TEMP prefix
-            from .xml_storage import _get_temp_storage_key
-            from homeassistant.helpers.storage import Store
-            
             temp_store = Store(
                 self.hass,
                 1,  # version
                 _get_temp_storage_key(config.unique_id),
                 private=True,
             )
-            
+
             try:
                 # Parse XML to detect commodity type for auto-labeling
                 usage_points = await self.hass.async_add_executor_job(
@@ -233,23 +237,26 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                 label = "imported_data"
                 if usage_points:
                     for up in usage_points:
-                        if hasattr(up, 'service_category') and up.service_category:
-                            if up.service_category.kind == 0:
-                                label = "electricity"
-                                break
-                            elif up.service_category.kind == 1:
-                                label = "gas"
-                                break
+                        if up.sensor_device_class == SensorDeviceClass.ENERGY:
+                            label = "electricity"
+                            break
+                        if up.sensor_device_class == SensorDeviceClass.GAS:
+                            label = "gas"
+                            break
                 _LOGGER.info("[CONFIG FLOW] Auto-detected label '%s' from XML", label)
-                
+
                 # Save to temporary storage
                 temp_data = {"stored_xmls": [{"label": label, "xmls": [xml_content]}]}
                 await temp_store.async_save(temp_data)
-                
-                _LOGGER.info("[CONFIG FLOW] Successfully saved XML to temporary .storage/%s (will be migrated to permanent storage during setup)", 
+
+                _LOGGER.info("[CONFIG FLOW] Successfully saved XML to temporary .storage/%s (will be migrated to permanent storage during setup)",
                             _get_temp_storage_key(config.unique_id))
-            except Exception as e:
-                _LOGGER.error("[CONFIG FLOW] Failed to save XML to temporary storage, falling back to config entry: %s", e)
+            except (OSError, ValueError) as err:
+                _LOGGER.error(
+                    "[CONFIG FLOW] Failed to parse or save XML to temporary storage; "
+                    "falling back to config entry: %s",
+                    err,
+                )
                 # Fallback to old method if storage fails
                 config_data["initial_xml"] = xml_content
 
