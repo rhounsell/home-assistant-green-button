@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any, Self
 
@@ -12,7 +13,7 @@ from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.helpers import selector
 from homeassistant.helpers.storage import Store
 
-from . import configs, const
+from . import configs, const, model
 from .const import (
     CONF_ELECTRICITY_COST_POWER_OF_TEN_MULTIPLIER,
     CONF_GAS_COST_POWER_OF_TEN_MULTIPLIER,
@@ -23,6 +24,16 @@ from .parsers import espi
 from .xml_storage import _get_temp_storage_key
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _initial_xml_label(usage_points: Collection[model.UsagePoint]) -> str:
+    """Return the archive label matching the first recognized source commodity."""
+    for usage_point in usage_points:
+        if usage_point.sensor_device_class == SensorDeviceClass.ENERGY:
+            return "electricity"
+        if usage_point.sensor_device_class == SensorDeviceClass.GAS:
+            return "gas"
+    return "imported_data"
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
@@ -233,16 +244,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                 usage_points = await self.hass.async_add_executor_job(
                     espi.parse_xml, xml_content
                 )
-                # Auto-detect label (simplified version of coordinator's method)
-                label = "imported_data"
-                if usage_points:
-                    for up in usage_points:
-                        if up.sensor_device_class == SensorDeviceClass.ENERGY:
-                            label = "electricity"
-                            break
-                        if up.sensor_device_class == SensorDeviceClass.GAS:
-                            label = "gas"
-                            break
+                # Auto-detect the archive label from the parsed model commodity.
+                label = _initial_xml_label(usage_points)
                 _LOGGER.info("[CONFIG FLOW] Auto-detected label '%s' from XML", label)
 
                 # Save to temporary storage
