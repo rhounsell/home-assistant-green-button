@@ -1,114 +1,104 @@
-# Monthly Increment Workaround for Mismatched Billing Periods
+# Monthly Gas Increment Handling
 
-## Problem
-Enbridge's Green Button API returns XML with:
-- **UsageSummary**: Previous FINALIZED billing period (e.g., July 26 - Aug 24)
-- **IntervalReading**: Current IN-PROGRESS billing period (e.g., Aug 25 - Sep 26)
+## Purpose
 
-When using `monthly_increment` allocation mode, only UsageSummary periods were used, causing:
-- Bars to appear at the previous billing period end (Aug 24)
-- Current billing period (Aug 25 - Sep 26) not shown
+Some Enbridge Green Button exports contain finalized `UsageSummary` statements
+for an earlier billing period and a longer `IntervalReading` for the more recent
+period. The integration supports this pattern when **Gas usage allocation** is
+set to `monthly_increment`, without inventing daily consumption.
 
-## Solution
-The workaround detects long IntervalReadings (≥7 days) that don't overlap with any UsageSummary and treats them as billing periods.
+For example, an export can contain:
 
-### Logic Flow
+- a finalized summary for July 26 through August 24; and
+- a multi-day meter reading for August 25 through September 26.
 
-1. **Collect UsageSummaries**
-   - Add all UsageSummary entries as billing periods
-   - Use `consumption_m3` from `currentBillingPeriodOverAllConsumption`
+Both can be represented as billing-period increments when they describe
+separate coverage.
 
-2. **Check IntervalReadings**
-   - Find IntervalReadings with duration ≥7 days (likely billing periods)
-   - Check if they overlap with any UsageSummary (>50% overlap)
-   - If NO overlap → treat as a billing period
+## Current behavior
 
-3. **Process All Periods**
-   - Sort by period end date
-   - Place bar at end of period (00:00 of end date)
-   - Calculate cumulative sum
+The integration builds one normalized monthly series from archived XML:
 
-### What Happens When Next Month's XML Arrives?
+1. `UsageSummary` consumption is authoritative for its billing period.
+2. A multi-day `IntervalReading` is also included only when it does not overlap
+   any `UsageSummary` period.
+3. A multi-day reading means either its declared interval length or its actual
+   duration is longer than one day. There is no former seven-day minimum.
+4. Each increment is written at local midnight on the billing period's local
+   end date. Values sharing an end date are combined before recorder import.
+5. Daily readings are not presented as complete monthly billing periods.
 
-#### Scenario: Current State (October 17)
-- **UsageSummary**: July 26 - Aug 24 (52 m³) → Bar at Aug 24
-- **IntervalReading**: Aug 25 - Sep 26 (54 m³) → Bar at Sep 26 (from workaround)
+This prevents double counting: if a later XML document adds a finalized
+`UsageSummary` that overlaps a previously used multi-day reading, the summary
+remains authoritative and the overlapping reading is not added again.
 
-#### Next Month (After September 26)
-Enbridge will provide:
-- **UsageSummary #1**: July 26 - Aug 24 (52 m³) → Bar at Aug 24
-- **UsageSummary #2**: Aug 25 - Sep 26 (54 m³) → Bar at Sep 26 (OFFICIAL)
-- **IntervalReading**: Sep 27 - Oct XX (XX m³) → Bar at Oct XX (from workaround)
+## When the next export arrives
 
-**The transition is seamless:**
-1. The workaround-created Sep 26 bar gets replaced by the official UsageSummary bar
-2. Both use the same date (Sep 26) and value (54 m³)
-3. New workaround bar appears for Oct period
+Suppose the first export contains:
 
-### Key Design Decisions
+- `UsageSummary`: July 26–August 24, 52 m³; and
+- non-overlapping `IntervalReading`: August 25–September 26, 54 m³.
 
-1. **50% Overlap Threshold**
-   - Prevents duplicates when UsageSummary and IntervalReading cover same period
-   - Allows for slight date mismatches
+The monthly usage series contains one increment for each period. When a later
+export supplies the finalized August 25–September 26 summary, canonical source
+reconciliation retains one representation of that period rather than adding a
+second bar. The next non-overlapping multi-day reading can represent the newer
+period in the same way.
 
-2. **Prefer Official Data**
-   - UsageSummaries are always used when available
-   - IntervalReadings only used when no matching UsageSummary exists
+## Statistics and source safety
 
-3. **Clear + Reimport**
-   - Each update clears all statistics and rebuilds from scratch
-   - Ensures old workaround bars are replaced by official data
+Imported usage and cost history is written to integration-owned
+`green_button:` external statistics. Display sensors do not produce automatic
+Home Assistant sensor statistics, so imported history is not counted again as
+present-day consumption.
 
-4. **Minimum 7-Day Period**
-   - Filters out daily IntervalReadings
-   - Only treats multi-week readings as billing periods
+Updates are source-driven and non-destructive where possible: unchanged series
+produce no recorder write, and changed timestamps are upserted. A complete
+transactional replacement is used only when a source update removes timestamps
+that already exist in the external series. The integration does **not** clear
+all statistics on every import.
 
-## Code Changes
+Original XML is stored by commodity and replayed through the same canonical
+merge path on startup and cost recalculation. Re-importing identical XML is
+ignored.
 
-### File: `statistics.py`
+## Cost allocation is separate
 
-#### Function: `update_gas_statistics()`
+Gas usage and cost allocation are independent options:
 
-**Added:**
-- `periods_to_process` list to hold billing periods from both sources
-- Logic to scan IntervalReadings for long-duration readings
-- Overlap detection to prevent duplicates
-- Logging to show source of each billing period
+- `monthly_increment` cost writes one billing-period cost increment.
+- `pro_rate_daily` estimates daily cost from available detailed consumption and
+  the applicable `UsageSummary` total. This requires a single attributable
+  detailed meter stream; summary-only data uses monthly cost increments.
 
-**Modified:**
-- Loop variable from `us` (UsageSummary) to tuple `(period_start, period_end, consumption_m3, source)`
-- Fallback logic now uses `period_start` instead of `us.start`
+After changing a fallback cost multiplier, use **Recalculate Green Button Cost
+Statistics** for the selected config entry and commodity. XML-declared
+`powerOfTenMultiplier` values continue to take precedence over configured
+fallbacks.
 
-## Testing
+## Verification and recovery
 
-After implementing this workaround:
+1. Use **Log Stored Green Button XML Info** to confirm the archived source
+   documents and their actual coverage.
+2. Verify the Energy Dashboard is using the matching imported usage and cost
+   external series for the selected config entry.
+3. If an administrator intentionally deletes a display sensor's imported
+   statistics, keep the archived XML, then reload the integration to regenerate
+   the series from that canonical archive.
 
-1. **Current behavior** (October 17):
-   - Should see TWO bars:
-     - Aug 24 (or Aug 22 in local time): 52 m³ from UsageSummary
-     - Sep 26: 54 m³ from IntervalReading workaround
+**Clear Stored Green Button XML Data** is not a statistic-repair action: it
+removes the selected source archive and active in-memory history, but it leaves
+existing recorder statistics intact. Delete statistics only as a deliberate,
+separate administrator action after confirming the archive covers the history
+that must be rebuilt.
 
-2. **After next XML import** (post-Sep 26):
-   - Aug 24 bar remains (52 m³)
-   - Sep 26 bar updated/confirmed (54 m³) from official UsageSummary
-   - New bar for Oct period from IntervalReading workaround
+## Limits
 
-3. **To verify**:
-   - Delete statistics: `green_button.delete_statistics`
-   - Re-import XML
-   - Check Energy Dashboard for correct bar placement
-
-## Limitations
-
-- Only works for gas sensors (not electricity, which has different patterns)
-- Requires IntervalReading to span ≥7 days
-- Assumes Enbridge's pattern: previous UsageSummary + current IntervalReading
-- If both UsageSummary and IntervalReading exist for same period with different values, UsageSummary wins
-
-## Future Enhancements
-
-Potential improvements:
-1. Make MIN_BILLING_PERIOD_DAYS configurable
-2. Add user option to prefer IntervalReading over UsageSummary
-3. Detect and warn about value mismatches between sources
-4. Support electricity with similar pattern
+- This policy is for gas billing-period increments; electricity continues to
+  use its own complete-hour allocation path.
+- A multi-day reading that overlaps a `UsageSummary` is deliberately withheld
+  rather than split or guessed.
+- The component cannot establish provider billing semantics beyond the XML
+  coverage it receives. If a provider uses different boundaries or values for
+  summaries and readings, compare them with the provider bill before treating
+  them as interchangeable.
