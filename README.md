@@ -7,7 +7,6 @@
 [![pre-commit][pre-commit-shield]][pre-commit]
 [![Black][black-shield]][black]
 
-[![hacs][hacsbadge]][hacs]
 [![Project Maintenance][maintenance-shield]][user_profile]
 
 A custom component for Home Assistant that will import Green Button Usage and Cost data, and then generate statistics which can be added to the Energy dashboard.
@@ -16,7 +15,7 @@ The Green Button data needs to be in the ESPI XML Schema Definition, contained i
 
 This custom component has been developed to handle the Green Button data available from Hydro Ottawa and Enbridge Gas. It may or may not work with other sources of Green Button data.
 
-## Installation (HACS not set up yet)
+## Manual installation
 
 1. Copy the green_button folder under custom_components into your Home Assistant custom_components folder
 2. If Green Button XML files will be imported from outside Home Assistant's `/config` directory, add each parent directory that will contain imports to the `homeassistant` section of `configuration.yaml`. For example, to import files from `/share`:
@@ -29,17 +28,18 @@ This custom component has been developed to handle the Green Button data availab
 
    The `/config` directory is available by default; directories outside it must be allowlisted before the import can read files from them.
 3. Restart Home Assistant
-4. In the HA UI go to "Configuration" -> "Integrations". Click "+" and search for "Green Button"
-5. Complete the installation with or without providing Green Button XML data
-   - If you skip the XML import during setup, you can import it later using the **Add Entry** button on the Green Button integration or via **Developer Tools → Actions → 'Import Green Button ESPI XML'**
+4. In the HA UI, go to **Settings -> Devices & services**, select **Add integration**, and search for "Green Button".
+5. Create a config entry, named **Home** by default, with or without providing Green Button XML data.
+   - If you skip the XML import during setup, import it later with **Developer Tools -> Actions -> Import Green Button ESPI XML** and select the config entry (for example, **Home**) that should own the data.
+   - Use **Add Entry** only when you need a distinct config entry for a separate utility account, home, or test dataset.
 
-By default, importing electricity usage and billing data will create a "Home Electricity" Green Button device, with entities named "sensor.home_electricity_cost" and "sensor.home_electricity_usage". Importing Natural Gas data will create by default a "Home Natural Gas" device, with "sensor.home_natural_gas_cost" and "sensor.home_natural_gas_usage" sensors.
+With the default **Home** config-entry name, electricity imports typically create a **Home Electricity** device with display entities such as `sensor.home_electricity_cost` and `sensor.home_electricity_usage`. Gas imports similarly create a **Home Natural Gas** device. Entity IDs vary when the config entry is renamed or an export contains multiple usable streams.
 
-Statistics are automatically generated for these sensors and can be added to the Energy dashboard. The "usage" sensors have a state_class of "total_increasing", and the "cost" sensors have a state_class of "total". Examine the statistics, rather than the raw sensor state, for periodic usage.
+The display entities show the totals represented by the imported history. They deliberately have no `state_class`; the integration creates separate `green_button:` statistics for the Energy Dashboard. For example, select **Usage (`sensor.home_electricity_usage`, imported)** for the default **Home** electricity-usage entity. Examine the imported statistic, rather than the raw display-entity state, for periodic usage.
 
 Imported Green Button history is stored in integration-owned statistics with stable IDs. This keeps imported history intact if a display entity is renamed or recreated, and prevents Home Assistant's automatic sensor-statistics pipeline from duplicating it.
 
-It may take a few minutes for all associated statistics to be generated. The related sensor may not be available to add to the Energy Dashboard until generation is complete.
+It may take a few minutes for all associated statistics to be generated. The imported statistic may not be available to add to the Energy Dashboard until generation is complete.
 
 Review the [Green Button Component Description](GREEN_BUTTON_COMPONENT_DESCRIPTION.md) for detail on how the Green Button custom component functions.
 
@@ -66,9 +66,9 @@ The Green Button spec says that the [default power-of-ten-multiplier for cost](h
 
 If a fallback value is changed after Green Button data has been imported, it applies to new applicable imports. To recalculate previously-imported costs that used the fallback, run the *Recalculate Green Button Cost Statistics* action under Developer Tools -> Actions.
 
-## Services/Actions
+## Actions
 
-The following Green Button actions are available under **Developer Tools → Actions**. Each requires a **Config entry** so it affects only the selected Green Button integration. Actions that change imported data or statistics require an administrator.
+The following Green Button actions are available under **Developer Tools -> Actions**. Each requires a **Config entry** so it affects only the selected Green Button integration. Actions that change imported data or statistics require an administrator.
 
 - Log Green Button Meter Reading Intervals
 - Log Stored Green Button XML Info
@@ -79,15 +79,7 @@ The following Green Button actions are available under **Developer Tools → Act
 
 **Clear Stored Green Button XML Data** removes the selected entry's stored XML archive and active import history, but leaves existing recorder and Energy Dashboard statistics untouched. Use **Delete Green Button Statistics** to remove the selected display sensor's imported Green Button statistics; re-import the XML data to rebuild them.
 
-## Notes
-
-None of the original tests or development support files such as .pre-commit-config.yaml have been updated or, for that matter, used when updating this component.
-
 ## Credits
-
-This project was originally generated from [@oncleben31](https://github.com/oncleben31)'s [Home Assistant Custom Component Cookiecutter](https://github.com/oncleben31/cookiecutter-homeassistant-custom-component) template.
-
-Code template was mainly taken from [@Ludeeus](https://github.com/ludeeus)'s [integration_blueprint][integration_blueprint] template.
 
 Forked from the Green Button project created by [@vqvu](https://github.com/vqvu).
 
@@ -96,14 +88,8 @@ Forked from the Green Button project created by [@vqvu](https://github.com/vqvu)
 [integration_blueprint]: https://github.com/custom-components/integration_blueprint
 [black]: https://github.com/psf/black
 [black-shield]: https://img.shields.io/badge/code%20style-black-000000.svg?style=for-the-badge
-[commits-shield]: https://img.shields.io/github/commit-activity/y/vqvu/home-assistant-green-button.svg?style=for-the-badge
-[commits]: https://github.com/vqvu/home-assistant-green-button/commits/main
-[hacs]: https://hacs.xyz
-[hacsbadge]: https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge
-[license-shield]: https://img.shields.io/github/license/vqvu/home-assistant-green-button.svg?style=for-the-badge
+[license-shield]: https://img.shields.io/github/license/rhounsell/home-assistant-green-button.svg?style=for-the-badge
 [maintenance-shield]: https://img.shields.io/badge/maintainer-%40rhounsell-blue.svg?style=for-the-badge
 [pre-commit]: https://github.com/pre-commit/pre-commit
 [pre-commit-shield]: https://img.shields.io/badge/pre--commit-enabled-brightgreen?style=for-the-badge
-[releases-shield]: https://img.shields.io/github/release/vqvu/home-assistant-green-button.svg?style=for-the-badge
-[releases]: https://github.com/vqvu/home-assistant-green-button/releases
 [user_profile]: https://github.com/rhounsell

@@ -1,106 +1,149 @@
-# Energy Dashboard Setup for Green Button Integration
+# Green Button Energy Dashboard Setup
 
-## No Recorder Configuration Required
+## What the integration does
 
-The Green Button integration is designed to work directly with the Energy Dashboard **without requiring any recorder exclusions**. The component calculates its own statistics without using the Home Assistant recorder, which doesn't work well with historical data.
+Green Button imports are historical source data, not a live utility feed. The
+integration accepts Green Button ESPI Atom/XML documents, keeps an archive of
+the accepted source data, and publishes its own long-term statistics for the
+Home Assistant Energy Dashboard. It does not poll a provider or make outbound
+API calls.
 
-### How It Works
+The entities shown by the integration are display entities: their values are
+the totals represented by the imported history. The Energy Dashboard history
+is stored in separate, integration-owned external statistics. It is not
+created from the display entity's state history, so no recorder exclusions or
+other recorder configuration are needed.
 
-1. **Sensors have `state_class`** - Required for Energy Dashboard compatibility
-2. **State only updates after XML import** - Prevents continuous state changes
-3. **No automatic statistics compilation** - Because states don't change during normal operation
-4. **Manual statistics import** - Historical data is imported via `async_import_statistics()`
-5. **Last imported total displayed** - Sensors show the cumulative total from the last import
+## Config entries
 
-### Quick Setup
+Each Green Button setup in Home Assistant is a separate **config entry**. It
+owns its XML archive, entities, and imported statistics, so every import,
+diagnostic, and maintenance action asks you to select the entry it should
+affect. The entry name is chosen during setup; for example, an entry named
+**Home** in your production instance appears as **Home** in the action's
+**Config entry** selector. Select that entry whenever you want to work with
+its imported data.
 
-1. Install the Green Button integration
-2. Import your XML data using **Developer Tools → Actions**:
-   - Action: `green_button.import_espi_xml`
-   - Provide either `xml_file_path` or paste XML content directly
-3. Configure sensors in Energy Dashboard
-4. Done! No additional configuration needed
+Multiple entries are useful for genuinely separate datasets, such as different
+homes, utility accounts, or a test import that must not mix with production.
+Each entry keeps its own options as well as its archive, entities, and
+statistics. One entry is normally enough for a single home: multiple
+electricity or gas streams within the same export are handled by that entry.
 
-## Verifying It's Working
+## Quick setup
 
-After setup, check that:
-1. ✅ Sensors show in Energy Dashboard configuration (not "unexpected state class")
-2. ✅ Sensors show numeric values (last imported cumulative total)
-3. ✅ Sensors show as "Available" (green checkmark)
-4. ✅ **No warnings** about "Entity not tracked" or "Fix issue"
-5. ✅ **Data appears in Energy Dashboard graphs** (the important part!)
-6. ✅ No duplicate statistics in Developer Tools → Statistics
+1. Install the integration and create a Green Button config entry.
+2. Import an ESPI XML document during setup, or later with **Import Green
+   Button ESPI XML** under Developer Tools -> Actions. Select the config entry
+   that should own the data, then provide either pasted XML or one XML file
+   path.
+3. If the XML file is outside Home Assistant's configuration directory, add
+   its parent directory to `homeassistant.allowlist_external_dirs` in
+   `configuration.yaml` and restart Home Assistant before importing it.
+4. Wait for the background statistics generation to finish, then select the
+   imported Green Button usage and cost statistics in the Energy Dashboard.
 
-See the services.yaml file for a list of other useful Green Button actions that can be called from the Home Assistant UI.
+The imported statistic IDs begin with `green_button:`. An entity also exposes
+its associated ID in the `statistic_id` attribute. Select the matching
+integration-owned statistic in the Energy Dashboard rather than relying on
+the display entity's state history.
+
+## How imported data is handled
+
+The XML archive is the authoritative source. On restart, the integration reads
+the archived documents and rebuilds the same canonical history and statistics.
+This makes a restart safe and allows additional exports to be imported later.
+
+- Imports may arrive out of chronological order and may have gaps.
+- Re-importing identical XML is ignored.
+- A later reading with the same start time and duration replaces the earlier
+  reading, allowing a provider correction.
+- Ambiguous overlapping readings with different intervals are retained from
+  the already accepted source and the conflicting reading is logged rather
+  than guessed.
+- Unsupported readings are skipped where possible. Missing cost data is not
+  treated as zero cost.
+
+Electricity history is allocated to complete UTC hours. Gas daily history uses
+the Home Assistant local time zone; gas can instead be published as one
+increment per billing period. Cost allocation and its power-of-ten multiplier
+settings are separate from usage allocation. For the full allocation and
+reconciliation rules, see [Green Button Data Handling](DATA_HANDLING_EXPLANATION.md)
+and [Monthly Gas Increment Handling](GAS_MONTHLY_INCREMENT_HANDLING.md).
+
+## Verify the import
+
+After importing data:
+
+1. In Developer Tools -> Statistics, find the `green_button:` statistics for
+   the imported usage and cost series.
+2. Confirm their time range and totals match the XML export and the utility
+   bill. A display entity shows the imported total; it is not itself a live
+   meter reading.
+3. Add the matching imported usage and cost series to the Energy Dashboard.
+4. If the data does not look right, use the diagnostic actions below and check
+   the Home Assistant logs before deleting data.
+
+## Actions
+
+All actions are scoped to one selected Green Button config entry. Actions that
+change source data or statistics require an administrator.
+
+- **Log Green Button Meter Reading Intervals** logs accepted stream coverage
+  and the entities mapped to it.
+- **Log Stored Green Button XML Info** logs archived XML labels, sizes, and
+  date coverage.
+- **Import Green Button ESPI XML** imports one XML document from pasted
+  content or a permitted file path.
+- **Recalculate Green Button Cost Statistics** regenerates electricity and/or
+  gas cost history after changing a fallback cost multiplier. A multiplier
+  declared in the XML continues to take precedence.
+- **Clear Stored Green Button XML Data** removes archived XML for all data or
+  one commodity, then rebuilds active source history from the remaining
+  archive. It does not delete Energy Dashboard statistics.
+- **Delete Green Button Statistics** removes only the selected display
+  entity's imported `green_button:` statistic. The XML archive is retained.
+
+## Repair and recovery
+
+Use the diagnostic actions first to confirm the archived source coverage and
+the selected config entry. The two destructive actions intentionally do
+different things:
+
+- Use **Clear Stored Green Button XML Data** only when the archived source
+  itself should no longer participate in future reconstruction. It leaves
+  existing recorder and Energy Dashboard statistics in place.
+- Use **Delete Green Button Statistics** only when the imported statistic for
+  one display entity must be removed. Keep the source XML archive, then
+  re-import the source data to rebuild the statistic.
+
+Do not use either action merely to refresh an Energy Dashboard view. First
+check that the dashboard is using the expected `green_button:` statistic and
+that the archive covers the period you intend to retain.
 
 ## Troubleshooting
 
-### "Unexpected state class" Error
+### The entity is unavailable or no statistic appears
 
-- Reload the integration after updating to the latest version
-- Restart Home Assistant if the issue persists
+- Confirm that the XML has supported readings or summaries; a document with no
+  usable data is rejected.
+- Confirm that the correct config entry was selected for the import.
+- For file imports, confirm that the path is under the configuration directory
+  or is listed in `allowlist_external_dirs`.
+- Use **Log Stored Green Button XML Info** and **Log Green Button Meter Reading
+  Intervals**, then review the Home Assistant logs.
 
-### "Entity unavailable" or Shows Zero
+### The Energy Dashboard has no data or the wrong series
 
-- No data has been imported yet
-- Import XML data using **Developer Tools → Actions**:
-  - Action: `green_button.import_espi_xml`
-  - Provide either `xml_file_path` (e.g., `/config/data.xml`) or paste XML content directly
-- Check integration logs for import errors using **Settings → System → Logs**
-- Use `green_button.log_meter_reading_intervals` action to verify the coordinator has parsed the XML data
+- Verify that the dashboard selection is the `green_button:` imported
+  statistic associated with the display entity.
+- Check the statistic's date range against the archived XML coverage.
+- Wait for background generation after an import, restart, or relevant entity
+  setup to complete.
 
-### Duplicate or Corrupted Statistics
+### Costs are incorrectly scaled
 
-If you upgraded from an older version that used recorder exclusions:
-1. Remove the old recorder exclusions from `configuration.yaml` (search for `green_button` or sensor entity names)
-2. Restart Home Assistant (required for configuration changes to take effect)
-3. Delete corrupted statistics using **Developer Tools → Actions**:
-   - Action: `green_button.delete_statistics`
-   - Statistic ID: `sensor.your_sensor_name` (e.g., `sensor.home_electricity_usage`)
-   - Repeat for each Green Button sensor that has corrupted data
-4. Reload the Green Button integration:
-   - Go to **Settings → Devices & Services → Green Button**
-   - Click the three dots menu → **Reload**
-5. Re-import your XML data using **Developer Tools → Actions**:
-   - Action: `green_button.import_espi_xml`
-   - Provide either `xml_file_path` (e.g., `/config/data.xml`) or paste XML content directly
-
-### Energy Dashboard Shows Wrong Data
-
-- Check that statistics exist using **Developer Tools → Statistics**
-- Verify the date range of imported statistics matches your XML data
-- Use `green_button.log_meter_reading_intervals` action to see what data was parsed
-- Look for import errors in **Settings → System → Logs**
-
-## Technical Details
-
-The Green Button integration prevents automatic statistics compilation by:
-
-1. **Overriding coordinator update behavior** - Does not call `async_write_ha_state()` on every coordinator data update
-2. **Writing state only after import** - State is written once after statistics are imported
-3. **Returning cached value** - `native_value` returns the last imported total (prevents "unavailable" warnings)
-4. **Manual statistics management** - Uses `async_import_statistics()` for complete control over historical data
-
-### State Classes Used
-
-- **Energy sensors** (consumption, gas): `TOTAL_INCREASING`
-- **Cost sensors**: `TOTAL` (allows for refunds/credits)
-
-### Why This Works
-
-- **State changes only on import** - Not during normal operation or coordinator updates
-- **No continuous state history** - Prevents Recorder's automatic statistics compilation
-- **Manual statistics import** - Imports historical data with correct timestamps
-- **Energy Dashboard compatible** - Sensors have valid states and proper `state_class`
-
-This design provides:
-- ✅ Full control over statistics
-- ✅ No duplicate or corrupted data
-- ✅ Energy Dashboard compatibility
-- ✅ No recorder configuration needed
-- ✅ No warnings or "Fix issue" messages
-- Writes state ONCE at startup (makes entity available)
-- Does NOT update state during normal operation (prevents auto-generation)
-- Manually imports statistics via `async_import_statistics()` (for historical data)
-
-This pattern allows Energy Dashboard compatibility while maintaining full control over statistics.
+- Check whether the source XML declares `powerOfTenMultiplier`; it overrides
+  the integration's fallback multiplier.
+- If the XML omits it, update the applicable fallback cost multiplier in the
+  integration options and run **Recalculate Green Button Cost Statistics**.
